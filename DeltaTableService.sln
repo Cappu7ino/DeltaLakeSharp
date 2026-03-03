@@ -1,0 +1,56 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeltaTableService.Client", "src\DeltaTableService.Client\DeltaTableService.Client.csproj", "{D00590A2-F824-459B-B2CD-8536101F4CA2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeltaTableService.Tests", "tests\DeltaTableService.Tests\DeltaTableService.Tests.csproj", "{31124DF6-F123-4BF3-858E-731824E36416}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DeltaTableService.Benchmark", "benchmarks\DeltaTableService.Benchmark\DeltaTableService.Benchmark.csproj", "{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{E1F1C5A0-1001-4001-8001-000000000001}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{E1F1C5A0-1001-4001-8001-000000000002}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "benchmarks", "benchmarks", "{E1F1C5A0-1001-4001-8001-000000000003}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Debug|x64.ActiveCfg = Debug|x64
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Debug|x64.Build.0 = Debug|x64
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Release|x64.ActiveCfg = Release|x64
+		{D00590A2-F824-459B-B2CD-8536101F4CA2}.Release|x64.Build.0 = Release|x64
+		{31124DF6-F123-4BF3-858E-731824E36416}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{31124DF6-F123-4BF3-858E-731824E36416}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{31124DF6-F123-4BF3-858E-731824E36416}.Debug|x64.ActiveCfg = Debug|x64
+		{31124DF6-F123-4BF3-858E-731824E36416}.Debug|x64.Build.0 = Debug|x64
+		{31124DF6-F123-4BF3-858E-731824E36416}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{31124DF6-F123-4BF3-858E-731824E36416}.Release|Any CPU.Build.0 = Release|Any CPU
+		{31124DF6-F123-4BF3-858E-731824E36416}.Release|x64.ActiveCfg = Release|x64
+		{31124DF6-F123-4BF3-858E-731824E36416}.Release|x64.Build.0 = Release|x64
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.ActiveCfg = Debug|x64
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Debug|x64.Build.0 = Debug|x64
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|x64.ActiveCfg = Release|x64
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{D00590A2-F824-459B-B2CD-8536101F4CA2} = {E1F1C5A0-1001-4001-8001-000000000001}
+		{31124DF6-F123-4BF3-858E-731824E36416} = {E1F1C5A0-1001-4001-8001-000000000002}
+		{A1B2C3D4-E5F6-7890-ABCD-EF1234567890} = {E1F1C5A0-1001-4001-8001-000000000003}
+	EndGlobalSection
+EndGlobal
