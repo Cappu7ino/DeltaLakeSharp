@@ -124,12 +124,14 @@ namespace DeltaTableService.Benchmark
 
             var v1Start = _v1Container.BuildAndStartAsync(
                 dockerfilePath: _dockerfilePath,
-                imageName: "delta-table-service:bench");
+                imageName: "delta-table-service:bench",
+                skipBuildIfExists: true);
 
             var v2Start = _v2Container.BuildAndStartAsync(
                 dockerfilePath: _dockerfilePath,
                 mode: ServiceMode.V2_DataFusion,
-                imageName: "delta-table-service-v2:bench");
+                imageName: "delta-table-service-v2:bench",
+                skipBuildIfExists: true);
 
             await Task.WhenAll(v1Start, v2Start);
             Logger.Info($"Containers started in {sw.Elapsed.TotalSeconds:F1}s.");

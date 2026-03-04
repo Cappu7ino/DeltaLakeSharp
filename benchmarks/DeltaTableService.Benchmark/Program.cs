@@ -7,9 +7,10 @@ using BenchmarkDotNet.Running;
 using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Analysers;
 using BenchmarkDotNet.Diagnosers;
+using BenchmarkDotNet.Exporters;
+using BenchmarkDotNet.Toolchains.InProcess.Emit;
 using BenchmarkDotNet.Exporters.Csv;
 using BenchmarkDotNet.Exporters.Json;
-using BenchmarkDotNet.Toolchains.InProcess.Emit;
 
 namespace DeltaTableService.Benchmark
 {
@@ -93,13 +94,13 @@ namespace DeltaTableService.Benchmark
                 AddAnalyser(EnvironmentAnalyser.Default);
                 AddDiagnoser(MemoryDiagnoser.Default);
                 AddColumnProvider(DefaultColumnProviders.Instance);
-                AddExporter(CsvExporter.Default, JsonExporter.Brief);
+                AddExporter(MarkdownExporter.GitHub);
             }
         }
 
         /// <summary>
         /// Configuration for running benchmarks to get accurate and rich measurement results for analysis.
-        /// Uses <see cref="Job.Default"/> with server GC, memory diagnostics, and CSV/JSON exporters.
+        /// Uses <see cref="Job.Default"/> with server GC, memory diagnostics, and CSV/JSON/Markdown exporters.
         /// </summary>
         internal class BenchmarkConfig : ManualConfig
         {
@@ -113,6 +114,7 @@ namespace DeltaTableService.Benchmark
                 AddDiagnoser(MemoryDiagnoser.Default);
                 AddColumnProvider(DefaultColumnProviders.Instance);
                 AddExporter(CsvExporter.Default, JsonExporter.Brief);
+                AddExporter(MarkdownExporter.GitHub);
             }
         }
     }
