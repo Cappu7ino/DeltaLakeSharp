@@ -1,0 +1,7 @@
+{
+    "vscode-nmake-tools.installRazzleSourcesFormatterExtension": false,
+    "vscode-nmake-tools.installOsRepoRustHelperExtension": false,
+    "rust-analyzer.linkedProjects": [
+        "src/DeltaTableService.Server/v3/Cargo.toml"
+    ]
+}

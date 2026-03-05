@@ -29,11 +29,19 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         /// Reuses the same Arrow Flight protocol as V1.
         /// </summary>
         V2_DataFusion,
+
+        /// <summary>
+        /// V3 backend using a native Rust binary (arrow-flight + DataFusion + delta-rs).
+        /// Spawned as a child process instead of Docker container.
+        /// Uses the same Arrow Flight protocol as V1/V2.
+        /// </summary>
+        V3_Rust,
     }
 
     /// <summary>
     /// High-level client for the Delta Table Service.
-    /// Supports V1 (PySpark + Arrow Flight) and V2 (DataFusion + Arrow Flight) backends.
+    /// Supports V1 (PySpark + Arrow Flight), V2 (DataFusion + Arrow Flight),
+    /// and V3 (native Rust + Arrow Flight) backends.
     /// All Arrow and gRPC types are kept internal — callers interact exclusively
     /// with standard .NET types (<see cref="DataTable"/>, dictionaries, etc.)
     /// and the models in <see cref="Models"/>.
@@ -81,6 +89,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
             {
                 ServiceMode.V1_Spark => new FlightClientWrapper(serverUri),
                 ServiceMode.V2_DataFusion => new FlightClientWrapper(serverUri),
+                ServiceMode.V3_Rust => new FlightClientWrapper(serverUri),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown service mode"),
             };
         }

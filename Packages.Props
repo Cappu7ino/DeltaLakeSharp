@@ -3,13 +3,13 @@
 -->
 <Project>
   <ItemGroup Label="Package Versions used by this repository">
-    <PackageReference Update="Apache.Arrow" Version="18.0.0" />
-    <PackageReference Update="Apache.Arrow.Flight" Version="18.0.0" />
+    <PackageReference Update="Apache.Arrow" Version="22.1.0" />
+    <PackageReference Update="Apache.Arrow.Flight" Version="22.1.0" />
     <PackageReference Update="Azure.Identity" Version="1.11.4" />
     <PackageReference Update="Microsoft.Data.SqlClient" Version="5.2.0" />
     <PackageReference Update="Azure.Storage.Files.DataLake" Version="12.11.0" />
-    <PackageReference Update="Google.Protobuf" Version="3.28.2" />
-    <PackageReference Update="Grpc.Net.Client" Version="2.65.0" />
+    <PackageReference Update="Google.Protobuf" Version="3.34.0" />
+    <PackageReference Update="Grpc.Net.Client" Version="2.76.0" />
     <PackageReference Update="Testcontainers" Version="4.3.0" />
     <PackageReference Update="Microsoft.NET.Test.Sdk" Version="16.5.0" />
     <PackageReference Update="MSTest.TestAdapter" Version="2.1.1" />
