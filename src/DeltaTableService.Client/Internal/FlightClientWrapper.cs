@@ -68,10 +68,15 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         public async Task<TableSchema> GetSchemaAsync(
             string path,
             StorageConfig? storageConfig = null,
+            long? version = null,
             CancellationToken cancellationToken = default)
         {
             var cmd = new Dictionary<string, object> { ["path"] = path };
             AddStorageConfig(cmd, storageConfig);
+            if (version.HasValue)
+            {
+                cmd["version"] = version.Value;
+            }
             byte[] commandJson = JsonSerializer.SerializeToUtf8Bytes(cmd);
             Schema arrowSchema = await GetArrowSchemaAsync(commandJson).ConfigureAwait(false);
             return ArrowConverter.ToTableSchema(arrowSchema);
@@ -81,9 +86,11 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         public IAsyncEnumerable<RecordBatch> ReadTableAsync(
             string path,
             StorageConfig? storageConfig = null,
+            long? numRows = null,
+            long? version = null,
             CancellationToken cancellationToken = default)
         {
-            byte[] commandJson = BuildReadCommand(path, storageConfig);
+            byte[] commandJson = BuildReadCommand(path, storageConfig, numRows, version);
             return GetRecordBatchesStreamingAsync(commandJson, cancellationToken);
         }
 
@@ -93,6 +100,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             string? tablePath = null,
             string? tableName = null,
             StorageConfig? storageConfig = null,
+            long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             // Always use GetFlightInfo + DoGet streaming path, regardless of
@@ -108,6 +116,10 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
                 cmd["table_name"] = tableName;
             }
             AddStorageConfig(cmd, storageConfig);
+            if (version.HasValue)
+            {
+                cmd["version"] = version.Value;
+            }
             byte[] commandJson = JsonSerializer.SerializeToUtf8Bytes(cmd);
             await foreach (RecordBatch batch in GetRecordBatchesStreamingAsync(commandJson, cancellationToken).ConfigureAwait(false))
             {
@@ -436,13 +448,21 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         //  Helper methods
         // ------------------------------------------------------------------ //
 
-        private static byte[] BuildReadCommand(string path, StorageConfig? storageConfig)
+        private static byte[] BuildReadCommand(string path, StorageConfig? storageConfig, long? numRows = null, long? version = null)
         {
             var cmd = new Dictionary<string, object>
             {
                 ["path"] = path,
             };
             AddStorageConfig(cmd, storageConfig);
+            if (numRows.HasValue)
+            {
+                cmd["num_rows"] = numRows.Value;
+            }
+            if (version.HasValue)
+            {
+                cmd["version"] = version.Value;
+            }
             return JsonSerializer.SerializeToUtf8Bytes(cmd);
         }
 

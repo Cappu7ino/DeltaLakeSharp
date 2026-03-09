@@ -1,0 +1,4 @@
+# Exclude the V3 Rust project from Docker build context.
+# The v3/target/ directory contains ~11 GB of Rust build artifacts
+# and causes Docker image builds to hang during context transfer.
+v3/

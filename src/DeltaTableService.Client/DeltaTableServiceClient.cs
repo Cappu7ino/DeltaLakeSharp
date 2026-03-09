@@ -113,7 +113,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         // ------------------------------------------------------------------ //
 
         /// <summary>
-        /// Reads all rows and columns from a Delta table and streams them as
+        /// Reads rows from a Delta table and streams them as
         /// Arrow <see cref="RecordBatch"/> objects as they arrive from the server.
         /// Use <see cref="ReadStreamExtensions.ToDataTableAsync"/> to materialise
         /// the result as a <see cref="DataTable"/>, or
@@ -121,13 +121,17 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         /// </summary>
         /// <param name="path">Path to the Delta table (local or abfss://).</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="numRows">Optional maximum number of rows to return.</param>
+        /// <param name="version">Optional Delta table version for time-travel reads.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public async IAsyncEnumerable<RecordBatch> ReadTableAsync(
             string path,
             StorageConfig storageConfig = null,
+            long? numRows = null,
+            long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            await foreach (RecordBatch batch in _backend.ReadTableAsync(path, storageConfig, cancellationToken).ConfigureAwait(false))
+            await foreach (RecordBatch batch in _backend.ReadTableAsync(path, storageConfig, numRows, version, cancellationToken).ConfigureAwait(false))
             {
                 yield return batch;
             }
@@ -142,13 +146,15 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         /// </summary>
         /// <param name="path">Path to the Delta table.</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="version">Optional Delta table version for time-travel reads.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public Task<TableSchema> GetSchemaAsync(
             string path,
             StorageConfig storageConfig = null,
+            long? version = null,
             CancellationToken cancellationToken = default)
         {
-            return _backend.GetSchemaAsync(path, storageConfig, cancellationToken);
+            return _backend.GetSchemaAsync(path, storageConfig, version, cancellationToken);
         }
 
         // ------------------------------------------------------------------ //
@@ -167,15 +173,17 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         /// <param name="tablePath">Optional path to a Delta table to register before executing.</param>
         /// <param name="tableName">Optional logical table name to use in the SQL query.</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="version">Optional Delta table version for time-travel reads.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public async IAsyncEnumerable<RecordBatch> ExecuteQueryAsync(
             string sql,
             string tablePath = null,
             string tableName = null,
             StorageConfig storageConfig = null,
+            long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            await foreach (RecordBatch batch in _backend.ExecuteQueryAsync(sql, tablePath, tableName, storageConfig, cancellationToken).ConfigureAwait(false))
+            await foreach (RecordBatch batch in _backend.ExecuteQueryAsync(sql, tablePath, tableName, storageConfig, version, cancellationToken).ConfigureAwait(false))
             {
                 yield return batch;
             }

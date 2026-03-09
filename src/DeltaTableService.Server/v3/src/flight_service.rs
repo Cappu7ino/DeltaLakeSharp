@@ -20,17 +20,12 @@ use tokio::sync::Notify;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::warn;
 
-use crate::delta::table_manager::TableManager;
 use crate::handlers;
 
 /// The Flight service implementation for V3.
 pub struct DeltaFlightService {
     /// Shared shutdown signal. When notified, the server initiates graceful shutdown.
     shutdown: Arc<Notify>,
-
-    /// Delta table manager (placeholder for Phase 2+).
-    #[allow(dead_code)]
-    table_manager: TableManager,
 }
 
 impl DeltaFlightService {
@@ -38,7 +33,6 @@ impl DeltaFlightService {
     pub fn new() -> Self {
         Self {
             shutdown: Arc::new(Notify::new()),
-            table_manager: TableManager::new(),
         }
     }
 
@@ -81,12 +75,13 @@ impl FlightService for DeltaFlightService {
 
     async fn get_flight_info(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
-        // TODO(phase2): Parse command JSON, open Delta table, return FlightInfo.
-        Err(Status::unimplemented(
-            "GetFlightInfo will be implemented in Phase 2",
-        ))
+        let descriptor = request.into_inner();
+        let info = handlers::read::handle_get_flight_info(descriptor)
+            .await
+            .map_err(tonic::Status::from)?;
+        Ok(Response::new(info))
     }
 
     // ---- PollFlightInfo (not used) ---------------------------------------
@@ -102,12 +97,13 @@ impl FlightService for DeltaFlightService {
 
     async fn get_schema(
         &self,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> Result<Response<SchemaResult>, Status> {
-        // TODO(phase2): Parse command JSON, open Delta table, return schema.
-        Err(Status::unimplemented(
-            "GetSchema will be implemented in Phase 2",
-        ))
+        let descriptor = request.into_inner();
+        let result = handlers::read::handle_get_schema(descriptor)
+            .await
+            .map_err(tonic::Status::from)?;
+        Ok(Response::new(result))
     }
 
     // ---- DoGet (Phase 2) -------------------------------------------------
@@ -116,12 +112,13 @@ impl FlightService for DeltaFlightService {
 
     async fn do_get(
         &self,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<Self::DoGetStream>, Status> {
-        // TODO(phase2): Decode ticket, execute scan/query, stream batches.
-        Err(Status::unimplemented(
-            "DoGet will be implemented in Phase 2",
-        ))
+        let ticket = request.into_inner();
+        let stream = handlers::read::handle_do_get(ticket)
+            .await
+            .map_err(tonic::Status::from)?;
+        Ok(Response::new(stream))
     }
 
     // ---- DoPut (Phase 3) -------------------------------------------------

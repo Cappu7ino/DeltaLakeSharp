@@ -22,20 +22,24 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Gets the schema of a Delta table.
+        /// Gets the schema of a Delta table, optionally at a specific version.
         /// </summary>
         Task<TableSchema> GetSchemaAsync(
             string path,
             StorageConfig? storageConfig = null,
+            long? version = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>
-        /// Reads all rows and columns from a Delta table, streaming Arrow
-        /// RecordBatches as they arrive.
+        /// Reads rows from a Delta table, streaming Arrow RecordBatches as
+        /// they arrive. Optionally limits the number of rows returned and/or
+        /// reads a specific historical version.
         /// </summary>
         IAsyncEnumerable<RecordBatch> ReadTableAsync(
             string path,
             StorageConfig? storageConfig = null,
+            long? numRows = null,
+            long? version = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -45,12 +49,14 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         /// <paramref name="tableName"/> are provided, the server registers the
         /// Delta table before executing the query (required for stateless
         /// engines like DataFusion). When omitted, the SQL is executed directly.
+        /// Optionally reads a specific historical version of the table.
         /// </summary>
         IAsyncEnumerable<RecordBatch> ExecuteQueryAsync(
             string sql,
             string? tablePath = null,
             string? tableName = null,
             StorageConfig? storageConfig = null,
+            long? version = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>
