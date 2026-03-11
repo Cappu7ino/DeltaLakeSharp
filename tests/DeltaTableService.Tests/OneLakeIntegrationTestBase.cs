@@ -836,5 +836,65 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
 
             Assert.AreEqual(2, dt.Rows.Count, "Expected 2 rows after insert into configured table.");
         }
+
+        /// <summary>
+        /// Creates a Delta table with change data feed enabled at creation time,
+        /// inserts rows, and verifies the rows can be read back normally.
+        /// </summary>
+        protected async Task CreateTableWithChangeDataFeed_InsertAndReadBack_Core(
+            StorageConfig storageConfig,
+            string abfssPath)
+        {
+            EnsureInitialized();
+
+            var schema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            var config = new Dictionary<string, string>
+            {
+                ["delta.enableChangeDataFeed"] = "true",
+            };
+
+            ExecuteResult createResult = await Client.CreateTableAsync(
+                abfssPath, schema, config, storageConfig);
+            Assert.IsTrue(createResult.Success,
+                $"CreateTableAsync failed: {createResult.Message}");
+
+            var rows = new[]
+            {
+                new object[] { 1, "Alice" },
+                new object[] { 2, "Bob" },
+                new object[] { 3, "Charlie" },
+            };
+            var batch = ArrowConverter.FromRows(rows, schema);
+            await Client.InsertAsync(
+                abfssPath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch),
+                mode: SaveMode.Append,
+                storageConfig: storageConfig);
+
+            DataTable dt = await Client.ReadTableAsync(abfssPath, storageConfig)
+                .ToDataTableAsync();
+
+            Assert.AreEqual(3, dt.Rows.Count, "Expected 3 rows after insert into CDF-enabled table.");
+            Assert.AreEqual(2, dt.Columns.Count,
+                "Expected 2 columns (id, name); CDF metadata columns should not appear in normal reads.");
+
+            var rowsByName = new Dictionary<string, DataRow>();
+            for (int i = 0; i < dt.Rows.Count; i++)
+            {
+                string name = dt.Rows[i]["name"]?.ToString() ?? "";
+                rowsByName[name] = dt.Rows[i];
+            }
+
+            Assert.IsTrue(rowsByName.ContainsKey("Alice"), "Missing Alice");
+            Assert.IsTrue(rowsByName.ContainsKey("Bob"), "Missing Bob");
+            Assert.IsTrue(rowsByName.ContainsKey("Charlie"), "Missing Charlie");
+            Assert.AreEqual(1L, Convert.ToInt64(rowsByName["Alice"]["id"]), "Alice should have id=1");
+            Assert.AreEqual(2L, Convert.ToInt64(rowsByName["Bob"]["id"]), "Bob should have id=2");
+            Assert.AreEqual(3L, Convert.ToInt64(rowsByName["Charlie"]["id"]), "Charlie should have id=3");
+        }
     }
 }

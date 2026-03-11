@@ -184,5 +184,17 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
 
             await CreateTableWithConfig_RespectsConfiguration_Core(config, abfssPath);
         }
+
+        // ================================================================== //
+        //  Write path: CreateTable with Change Data Feed
+        // ================================================================== //
+
+        [TestMethod]
+        public async Task OneLake_V1_CreateTableWithChangeDataFeed_InsertAndReadBack_Succeeds()
+        {
+            var (config, abfssPath, _) = await GetWriteTableConfigAsync();
+
+            await CreateTableWithChangeDataFeed_InsertAndReadBack_Core(config, abfssPath);
+        }
     }
 }

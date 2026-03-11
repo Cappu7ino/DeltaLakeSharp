@@ -8,6 +8,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Apache.Arrow;
+using Apache.Arrow.Types;
 using Microsoft.ADMS.Testing.DeltaTableService.Client;
 using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -955,6 +956,522 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 $"Expected 2 rows for id > 2 (id=3 deleted), got {ids.Count}.");
             Assert.AreEqual(4, ids[0]);
             Assert.AreEqual(5, ids[1]);
+        }
+
+        // ================================================================== //
+        //  Phase 3: Write path — helpers
+        // ================================================================== //
+
+        /// <summary>
+        /// Creates a fresh temp directory path for a write test table.
+        /// The caller is responsible for cleaning up.
+        /// </summary>
+        private static string NewWriteTestTablePath()
+        {
+            return Path.Combine(_tempDir!, $"write_test_{Guid.NewGuid():N}");
+        }
+
+        /// <summary>
+        /// Builds an Arrow schema with (id: Int32, name: Utf8).
+        /// </summary>
+        private static Schema BuildIdNameSchema()
+        {
+            return new Schema.Builder()
+                .Field(new Field("id", Int32Type.Default, nullable: true))
+                .Field(new Field("name", StringType.Default, nullable: true))
+                .Build();
+        }
+
+        /// <summary>
+        /// Creates a RecordBatch with the given (id, name) rows.
+        /// </summary>
+        private static RecordBatch BuildIdNameBatch(int[] ids, string[] names)
+        {
+            Schema schema = BuildIdNameSchema();
+            return new RecordBatch.Builder()
+                .Append("id", nullable: true, new Int32Array.Builder().AppendRange(ids).Build())
+                .Append("name", nullable: true, new StringArray.Builder().AppendRange(names).Build())
+                .Build();
+        }
+
+        /// <summary>
+        /// Wraps a single RecordBatch as an IAsyncEnumerable for InsertAsync/MergeDataAsync.
+        /// </summary>
+        private static async IAsyncEnumerable<RecordBatch> ToAsyncEnumerable(RecordBatch batch)
+        {
+            yield return batch;
+            await Task.CompletedTask; // satisfy async requirement
+        }
+
+        /// <summary>
+        /// Reads all rows from a table and returns (ids, names) sorted by id.
+        /// Handles both StringArray and StringViewArray from delta-rs.
+        /// </summary>
+        private static async Task<List<(int id, string? name)>> ReadAllRowsSorted(
+            DeltaTableServiceClient client, string tablePath)
+        {
+            var ids = new List<int>();
+            var names = new List<string?>();
+
+            await foreach (RecordBatch batch in client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int32Array)batch.Column(0);
+                IArrowArray nameCol = batch.Column(1);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    ids.Add(idArray.GetValue(i)!.Value);
+                    names.Add(nameCol switch
+                    {
+                        StringArray sa => sa.GetString(i),
+                        StringViewArray sva => sva.GetString(i),
+                        _ => throw new InvalidOperationException(
+                            $"Unexpected array type: {nameCol.GetType().Name}")
+                    });
+                }
+            }
+
+            return ids.Zip(names, (id, name) => (id, name))
+                .OrderBy(x => x.id)
+                .ToList();
+        }
+
+        // ================================================================== //
+        //  Phase 3: CreateTableAsync
+        // ================================================================== //
+
+        [TestMethod]
+        public async Task V3_CreateTable_CreatesEmptyTable()
+        {
+            string tablePath = NewWriteTestTablePath();
+            var schema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult result = await _client!.CreateTableAsync(tablePath, schema);
+
+            Assert.IsTrue(result.Success, $"CreateTable failed: {result.Message}");
+            Assert.IsTrue(result.Message.Contains("created"),
+                $"Expected 'created' in message, got: {result.Message}");
+
+            // Verify schema via GetSchema.
+            TableSchema readBackSchema = await _client!.GetSchemaAsync(tablePath);
+            Assert.AreEqual(2, readBackSchema.Columns.Count);
+            Assert.AreEqual("id", readBackSchema.Columns[0].Name);
+            Assert.AreEqual("int32", readBackSchema.Columns[0].DataType);
+            Assert.AreEqual("name", readBackSchema.Columns[1].Name);
+            Assert.AreEqual("string", readBackSchema.Columns[1].DataType);
+        }
+
+        [TestMethod]
+        public async Task V3_CreateTable_WithConfiguration()
+        {
+            string tablePath = NewWriteTestTablePath();
+            var schema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("value", "string"),
+            });
+            var config = new Dictionary<string, string>
+            {
+                ["delta.appendOnly"] = "true",
+            };
+
+            ExecuteResult result = await _client!.CreateTableAsync(tablePath, schema, configuration: config);
+
+            Assert.IsTrue(result.Success, $"CreateTable with config failed: {result.Message}");
+
+            // Verify table is readable.
+            TableSchema readBackSchema = await _client!.GetSchemaAsync(tablePath);
+            Assert.AreEqual(2, readBackSchema.Columns.Count);
+        }
+
+        // ================================================================== //
+        //  Phase 3: InsertAsync (DoPut write)
+        // ================================================================== //
+
+        [TestMethod]
+        public async Task V3_Insert_Overwrite_WritesData()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            // Create the table first.
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            // Insert data via overwrite.
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch batch = BuildIdNameBatch(
+                new[] { 10, 20, 30 },
+                new[] { "ten", "twenty", "thirty" });
+
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch), SaveMode.Overwrite);
+
+            // Read back and verify.
+            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            Assert.AreEqual(3, rows.Count, $"Expected 3 rows, got {rows.Count}.");
+            Assert.AreEqual((10, "ten"), (rows[0].id, rows[0].name));
+            Assert.AreEqual((20, "twenty"), (rows[1].id, rows[1].name));
+            Assert.AreEqual((30, "thirty"), (rows[2].id, rows[2].name));
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Append_AddsRows()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            // Create and insert initial data.
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch batch1 = BuildIdNameBatch(
+                new[] { 1, 2 }, new[] { "a", "b" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch1), SaveMode.Overwrite);
+
+            // Append more rows.
+            RecordBatch batch2 = BuildIdNameBatch(
+                new[] { 3, 4 }, new[] { "c", "d" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch2), SaveMode.Append);
+
+            // Verify total: 2 + 2 = 4 rows.
+            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            Assert.AreEqual(4, rows.Count, $"Expected 4 rows after append, got {rows.Count}.");
+            Assert.AreEqual(1, rows[0].id);
+            Assert.AreEqual(4, rows[3].id);
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Overwrite_ReplacesExistingData()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+
+            // Write initial data.
+            RecordBatch batch1 = BuildIdNameBatch(
+                new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch1), SaveMode.Overwrite);
+
+            // Overwrite with different data.
+            RecordBatch batch2 = BuildIdNameBatch(
+                new[] { 100, 200 }, new[] { "x", "y" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch2), SaveMode.Overwrite);
+
+            // Verify only the overwrite data remains.
+            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            Assert.AreEqual(2, rows.Count, $"Expected 2 rows after overwrite, got {rows.Count}.");
+            Assert.AreEqual((100, "x"), (rows[0].id, rows[0].name));
+            Assert.AreEqual((200, "y"), (rows[1].id, rows[1].name));
+        }
+
+        // ================================================================== //
+        //  Phase 3: DeleteAsync (DoAction execute_dml)
+        // ================================================================== //
+
+        [TestMethod]
+        public async Task V3_Delete_WithPredicate_RemovesMatchingRows()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            // Create table and insert data: (1,a), (2,b), (3,c).
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch batch = BuildIdNameBatch(
+                new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch), SaveMode.Overwrite);
+
+            // Delete rows where id > 1.
+            ExecuteResult deleteResult = await _client!.DeleteAsync(
+                "DELETE FROM tbl WHERE id > 1", tablePath, "tbl");
+
+            Assert.IsTrue(deleteResult.Success, $"Delete failed: {deleteResult.Message}");
+
+            // Verify only id=1 remains.
+            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            Assert.AreEqual(1, rows.Count, $"Expected 1 row after delete, got {rows.Count}.");
+            Assert.AreEqual((1, "a"), (rows[0].id, rows[0].name));
+        }
+
+        [TestMethod]
+        public async Task V3_Delete_AllRows_LeavesEmptyTable()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch batch = BuildIdNameBatch(
+                new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch), SaveMode.Overwrite);
+
+            // Delete all rows.
+            ExecuteResult deleteResult = await _client!.DeleteAsync(
+                "DELETE FROM tbl WHERE true", tablePath, "tbl");
+
+            Assert.IsTrue(deleteResult.Success, $"Delete all failed: {deleteResult.Message}");
+
+            // Verify zero rows.
+            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            Assert.AreEqual(0, rows.Count, $"Expected 0 rows after delete all, got {rows.Count}.");
+        }
+
+        [TestMethod]
+        public async Task V3_Delete_ReturnsMetrics()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch batch = BuildIdNameBatch(
+                new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(batch), SaveMode.Overwrite);
+
+            ExecuteResult deleteResult = await _client!.DeleteAsync(
+                "DELETE FROM tbl WHERE id = 2", tablePath, "tbl");
+
+            Assert.IsTrue(deleteResult.Success);
+            // Verify metrics are returned in result.
+            Assert.IsTrue(deleteResult.Result.Count > 0,
+                "Expected delete metrics in result.");
+            Assert.IsTrue(deleteResult.Result[0].ContainsKey("num_deleted_rows"),
+                "Expected 'num_deleted_rows' in delete metrics.");
+        }
+
+        // ================================================================== //
+        //  Phase 3: MergeDataAsync (DoPut merge)
+        // ================================================================== //
+
+        [TestMethod]
+        public async Task V3_MergeData_Upsert_UpdatesAndInserts()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            // Create table and insert initial data: (1,a), (2,b), (3,c).
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
+
+            // Merge source: (2, "B_updated"), (4, "d_new").
+            RecordBatch sourceBatch = BuildIdNameBatch(
+                new[] { 2, 4 }, new[] { "B_updated", "d_new" });
+
+            var mergeOptions = new MergeOptions(
+                predicate: "target.id = source.id",
+                sourceAlias: "source",
+                targetAlias: "target")
+            {
+                WhenMatchedUpdateAll = true,
+                WhenNotMatchedInsertAll = true,
+            };
+
+            ExecuteResult mergeResult = await _client!.MergeDataAsync(
+                tablePath, arrowSchema, ToAsyncEnumerable(sourceBatch), mergeOptions);
+
+            Assert.IsTrue(mergeResult.Success, $"Merge failed: {mergeResult.Message}");
+
+            // Verify: 4 rows — (1,a), (2,B_updated), (3,c), (4,d_new).
+            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            Assert.AreEqual(4, rows.Count, $"Expected 4 rows after merge, got {rows.Count}.");
+            Assert.AreEqual((1, "a"), (rows[0].id, rows[0].name));
+            Assert.AreEqual((2, "B_updated"), (rows[1].id, rows[1].name));
+            Assert.AreEqual((3, "c"), (rows[2].id, rows[2].name));
+            Assert.AreEqual((4, "d_new"), (rows[3].id, rows[3].name));
+        }
+
+        [TestMethod]
+        public async Task V3_MergeData_ReturnsMetrics()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2 }, new[] { "a", "b" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
+
+            // Merge source: (2, "B"), (3, "c").
+            RecordBatch sourceBatch = BuildIdNameBatch(
+                new[] { 2, 3 }, new[] { "B", "c" });
+
+            var mergeOptions = new MergeOptions("target.id = source.id")
+            {
+                WhenMatchedUpdateAll = true,
+                WhenNotMatchedInsertAll = true,
+            };
+
+            ExecuteResult mergeResult = await _client!.MergeDataAsync(
+                tablePath, arrowSchema, ToAsyncEnumerable(sourceBatch), mergeOptions);
+
+            Assert.IsTrue(mergeResult.Success);
+            Assert.IsTrue(mergeResult.Result.Count > 0,
+                "Expected merge metrics in result.");
+            Assert.IsTrue(mergeResult.Result[0].ContainsKey("num_source_rows"),
+                "Expected 'num_source_rows' in merge metrics.");
+            Assert.IsTrue(mergeResult.Result[0].ContainsKey("num_target_rows_inserted"),
+                "Expected 'num_target_rows_inserted' in merge metrics.");
+            Assert.IsTrue(mergeResult.Result[0].ContainsKey("num_target_rows_updated"),
+                "Expected 'num_target_rows_updated' in merge metrics.");
+        }
+
+        [TestMethod]
+        public async Task V3_MergeData_MatchedDelete_RemovesMatchedRows()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await _client!.CreateTableAsync(tablePath, tableSchema);
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
+            await _client!.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
+
+            // Merge source: id=2 — should delete the matched row.
+            RecordBatch sourceBatch = BuildIdNameBatch(
+                new[] { 2 }, new[] { "ignored" });
+
+            var mergeOptions = new MergeOptions("target.id = source.id")
+            {
+                WhenMatchedDeletePredicate = "true",
+            };
+
+            ExecuteResult mergeResult = await _client!.MergeDataAsync(
+                tablePath, arrowSchema, ToAsyncEnumerable(sourceBatch), mergeOptions);
+
+            Assert.IsTrue(mergeResult.Success, $"Merge delete failed: {mergeResult.Message}");
+
+            // Verify: 2 rows remain — (1,a), (3,c).
+            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            Assert.AreEqual(2, rows.Count, $"Expected 2 rows after merge-delete, got {rows.Count}.");
+            Assert.AreEqual((1, "a"), (rows[0].id, rows[0].name));
+            Assert.AreEqual((3, "c"), (rows[1].id, rows[1].name));
+        }
+
+        // ================================================================== //
+        //  Phase 3: UpgradeTableProtocolAsync
+        // ================================================================== //
+
+        [TestMethod]
+        public async Task V3_UpgradeProtocol_BumpsVersions()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            // Create a basic table.
+            var schema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+            });
+            await _client!.CreateTableAsync(tablePath, schema);
+
+            // Upgrade protocol.
+            ExecuteResult result = await _client!.UpgradeTableProtocolAsync(
+                tablePath, readerVersion: 2, writerVersion: 5);
+
+            Assert.IsTrue(result.Success, $"UpgradeProtocol failed: {result.Message}");
+            Assert.IsTrue(result.Result.Count > 0, "Expected protocol result.");
+
+            var proto = result.Result[0];
+            Assert.IsTrue(proto.ContainsKey("minReaderVersion"),
+                "Expected 'minReaderVersion' in protocol result.");
+            Assert.IsTrue(proto.ContainsKey("minWriterVersion"),
+                "Expected 'minWriterVersion' in protocol result.");
+
+            long readerVersion = (long)proto["minReaderVersion"];
+            long writerVersion = (long)proto["minWriterVersion"];
+            Assert.IsTrue(readerVersion >= 2,
+                $"Expected reader version >= 2, got {readerVersion}.");
+            Assert.IsTrue(writerVersion >= 5,
+                $"Expected writer version >= 5, got {writerVersion}.");
+        }
+
+        [TestMethod]
+        public async Task V3_UpgradeProtocol_WithFeatures()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var schema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+            });
+            await _client!.CreateTableAsync(tablePath, schema);
+
+            // Upgrade with changeDataFeed feature.
+            ExecuteResult result = await _client!.UpgradeTableProtocolAsync(
+                tablePath,
+                readerVersion: 3,
+                writerVersion: 7,
+                writerFeatures: new[] { "changeDataFeed" });
+
+            Assert.IsTrue(result.Success, $"UpgradeProtocol with features failed: {result.Message}");
+
+            var proto = result.Result[0];
+            long writerVersion = (long)proto["minWriterVersion"];
+            Assert.IsTrue(writerVersion >= 7,
+                $"Expected writer version >= 7, got {writerVersion}.");
         }
     }
 }

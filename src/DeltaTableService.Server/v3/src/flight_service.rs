@@ -4,8 +4,8 @@
 //! Arrow Flight service implementation for Delta Table Service V3.
 //!
 //! This is the central dispatch layer: each Flight RPC method is routed to
-//! the appropriate handler module. Phase 1 implements health/shutdown and
-//! stubs all other endpoints as `Unimplemented`.
+//! the appropriate handler module. Read path (Phase 2) and write path
+//! (Phase 3) are fully wired up.
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -121,18 +121,20 @@ impl FlightService for DeltaFlightService {
         Ok(Response::new(stream))
     }
 
-    // ---- DoPut (Phase 3) -------------------------------------------------
+    // ---- DoPut (Phase 3: write + merge) ------------------------------------
 
     type DoPutStream = BoxStream<PutResult>;
 
     async fn do_put(
         &self,
-        _request: Request<Streaming<FlightData>>,
+        request: Request<Streaming<FlightData>>,
     ) -> Result<Response<Self::DoPutStream>, Status> {
-        // TODO(phase3): Parse descriptor, receive batches, write to Delta table.
-        Err(Status::unimplemented(
-            "DoPut will be implemented in Phase 3",
-        ))
+        let stream = request.into_inner();
+        let put_result = handlers::write::handle_do_put(stream)
+            .await
+            .map_err(tonic::Status::from)?;
+        let response_stream = futures::stream::once(async { Ok(put_result) });
+        Ok(Response::new(Box::pin(response_stream)))
     }
 
     // ---- DoExchange (not used) -------------------------------------------
@@ -174,23 +176,28 @@ impl FlightService for DeltaFlightService {
                 });
                 Ok(Response::new(Box::pin(stream)))
             }
-            "create_table" => {
-                // TODO(phase3): Implement create_table action.
-                Err(Status::unimplemented(
-                    "create_table will be implemented in Phase 3",
-                ))
-            }
-            "execute_dml" => {
-                // TODO(phase3): Implement execute_dml action (DELETE/UPDATE/MERGE via SQL).
-                Err(Status::unimplemented(
-                    "execute_dml will be implemented in Phase 3",
-                ))
-            }
-            "upgrade_protocol" => {
-                // TODO(phase3): Implement upgrade_protocol action.
-                Err(Status::unimplemented(
-                    "upgrade_protocol will be implemented in Phase 3",
-                ))
+            "create_table" | "execute_dml" | "upgrade_protocol" => {
+                let json_value = match action_type {
+                    "create_table" => {
+                        handlers::write::handle_create_table(&action.body).await
+                    }
+                    "execute_dml" => {
+                        handlers::write::handle_execute_dml(&action.body).await
+                    }
+                    "upgrade_protocol" => {
+                        handlers::write::handle_upgrade_protocol(&action.body).await
+                    }
+                    _ => unreachable!(),
+                }
+                .map_err(tonic::Status::from)?;
+
+                let json_bytes = serde_json::to_vec(&json_value)
+                    .map_err(|e| Status::internal(format!("JSON serialization error: {e}")))?;
+                let result = arrow_flight::Result {
+                    body: json_bytes.into(),
+                };
+                let stream = futures::stream::once(async { Ok(result) });
+                Ok(Response::new(Box::pin(stream)))
             }
             _ => {
                 warn!("Unknown action type: {}", action_type);

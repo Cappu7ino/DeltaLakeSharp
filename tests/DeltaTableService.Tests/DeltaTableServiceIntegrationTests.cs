@@ -2311,5 +2311,64 @@ WHEN NOT MATCHED THEN INSERT (id, value) VALUES (s.id, s.value)";
             Assert.IsTrue(cdfConfiguration.Contains("delta.enableChangeDataFeed"),
                 $"Expected metadata.configuration to contain 'delta.enableChangeDataFeed', got: {cdfConfiguration}");
         }
+
+        // ================================================================== //
+        //  Create table with CDF enabled, insert data, read back
+        // ================================================================== //
+
+        [TestMethod]
+        [TestCategory("Integration")]
+        public async Task CreateTableWithChangeDataFeed_InsertAndReadBack_Succeeds()
+        {
+            string tablePath = $"/tmp/delta_test_{Guid.NewGuid():N}";
+
+            var schema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            var config = new Dictionary<string, string>
+            {
+                ["delta.enableChangeDataFeed"] = "true",
+            };
+
+            // Create table with CDF enabled at creation time.
+            ExecuteResult createResult = await _client!.CreateTableAsync(tablePath, schema, config);
+            Assert.IsTrue(createResult.Success, $"CreateTable failed: {createResult.Message}");
+
+            // Insert data into the CDF-enabled table.
+            var rows = new[]
+            {
+                new object[] { 1, "Alice" },
+                new object[] { 2, "Bob" },
+                new object[] { 3, "Charlie" },
+            };
+            var batch = ArrowConverter.FromRows(rows, schema);
+            await _client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch),
+                mode: SaveMode.Append);
+
+            // Read back and verify — normal reads should not include CDF metadata columns.
+            DataTable dt = await _client.ReadTableAsync(tablePath).ToDataTableAsync();
+
+            Assert.AreEqual(3, dt.Rows.Count, "Expected 3 rows.");
+            Assert.AreEqual(2, dt.Columns.Count,
+                "Expected 2 columns (id, name) — CDF metadata columns should not appear in normal reads.");
+
+            // Verify data (order may vary in Spark, so key by name).
+            var rowsByName = new Dictionary<string, DataRow>();
+            for (int i = 0; i < dt.Rows.Count; i++)
+            {
+                string name = dt.Rows[i]["name"]?.ToString() ?? "";
+                rowsByName[name] = dt.Rows[i];
+            }
+
+            Assert.IsTrue(rowsByName.ContainsKey("Alice"), "Missing Alice");
+            Assert.IsTrue(rowsByName.ContainsKey("Bob"), "Missing Bob");
+            Assert.IsTrue(rowsByName.ContainsKey("Charlie"), "Missing Charlie");
+            Assert.AreEqual(1L, Convert.ToInt64(rowsByName["Alice"]["id"]), "Alice should have id=1");
+            Assert.AreEqual(2L, Convert.ToInt64(rowsByName["Bob"]["id"]), "Bob should have id=2");
+            Assert.AreEqual(3L, Convert.ToInt64(rowsByName["Charlie"]["id"]), "Charlie should have id=3");
+        }
     }
 }

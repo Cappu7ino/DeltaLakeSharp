@@ -22,9 +22,9 @@ use datafusion::execution::context::SessionContext;
 use futures::{Stream, TryStreamExt};
 use tonic::Status;
 use tracing::{debug, info};
-use url::Url;
 
 use super::commands::{Command, ReadCommand, SqlCommand};
+use super::helpers::{open_delta_table, register_delta_table};
 use crate::error::ServiceError;
 
 /// Boxed Flight data stream — the concrete return type for DoGet.
@@ -158,96 +158,6 @@ async fn get_delta_schema(cmd: &ReadCommand) -> Result<SchemaRef, ServiceError> 
     Ok(schema)
 }
 
-/// Parses a table path into a URL.  Local filesystem paths are converted to
-/// `file://` URLs; paths that already contain a scheme are parsed directly.
-fn path_to_url(path: &str) -> Result<Url, ServiceError> {
-    if path.contains("://") {
-        Url::parse(path).map_err(|e| {
-            ServiceError::InvalidRequest(format!("Invalid table URL '{path}': {e}"))
-        })
-    } else {
-        // Local filesystem path → file:// URL.
-        Url::from_file_path(std::path::Path::new(path)).map_err(|()| {
-            ServiceError::InvalidRequest(format!(
-                "Cannot convert path to file URL: '{path}'"
-            ))
-        })
-    }
-}
-
-/// Opens a Delta table at the given path with optional storage configuration.
-/// When `version` is `Some(v)`, opens the table at that specific historical version.
-async fn open_delta_table(
-    path: &str,
-    storage_account: Option<&str>,
-    sas_token: Option<&str>,
-    version: Option<i64>,
-) -> Result<deltalake::DeltaTable, ServiceError> {
-    let url = path_to_url(path)?;
-    let opts = storage_options(storage_account, sas_token);
-
-    debug!(path = %path, version = ?version, "Opening Delta table");
-    let table = match version {
-        Some(v) => {
-            deltalake::DeltaTableBuilder::from_url(url)
-                .map_err(ServiceError::Delta)?
-                .with_storage_options(opts)
-                .with_version(v)
-                .load()
-                .await
-                .map_err(ServiceError::Delta)?
-        }
-        None => {
-            deltalake::open_table_with_storage_options(url, opts)
-                .await
-                .map_err(ServiceError::Delta)?
-        }
-    };
-    debug!(path = %path, version = table.version(), "Delta table opened");
-    Ok(table)
-}
-
-/// Builds storage options HashMap for delta-rs from optional account/token.
-fn storage_options(
-    storage_account: Option<&str>,
-    sas_token: Option<&str>,
-) -> std::collections::HashMap<String, String> {
-    let mut opts = std::collections::HashMap::new();
-    if let Some(account) = storage_account {
-        opts.insert("account_name".to_string(), account.to_string());
-        if account == "onelake" {
-            opts.insert("use_fabric_endpoint".to_string(), "true".to_string());
-        }
-    }
-    if let Some(token) = sas_token {
-        opts.insert("sas_token".to_string(), token.to_string());
-    }
-    opts
-}
-
-/// Registers a Delta table in a DataFusion `SessionContext`.
-///
-/// Uses `DeltaTable::table_provider()` which returns `Arc<dyn TableProvider>`
-/// (via `DeltaScanNext`), since `DeltaTable` itself does not implement
-/// `TableProvider`.
-async fn register_delta_table(
-    ctx: &SessionContext,
-    table_name: &str,
-    path: &str,
-    storage_account: Option<&str>,
-    sas_token: Option<&str>,
-    version: Option<i64>,
-) -> Result<(), ServiceError> {
-    let table = open_delta_table(path, storage_account, sas_token, version).await?;
-    let provider = table
-        .table_provider()
-        .await
-        .map_err(ServiceError::DataFusion)?;
-    ctx.register_table(table_name, provider)
-        .map_err(ServiceError::DataFusion)?;
-    Ok(())
-}
-
 /// Executes a read-table DoGet: registers the table as `_tbl`, runs
 /// `SELECT * FROM _tbl [LIMIT n]`, and returns a boxed stream of FlightData.
 async fn do_get_read_table(cmd: ReadCommand) -> Result<BoxedFlightStream, ServiceError> {
@@ -336,6 +246,7 @@ mod tests {
     use arrow::record_batch::RecordBatch;
     use arrow_flight::utils::flight_data_to_batches;
     use futures::StreamExt;
+    use url::Url;
 
     /// Creates a temp directory containing a Delta table with 3 rows:
     ///   id: [1, 2, 3], name: ["a", "b", "c"]
