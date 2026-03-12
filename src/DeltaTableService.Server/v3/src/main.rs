@@ -1,22 +1,17 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-//! Delta Table Service V3 — Arrow Flight server backed by DataFusion + delta-rs.
+//! Delta Table Service V3 — legacy Arrow Flight server over the reusable V3 core.
 //!
 //! This binary is spawned as a child process by the C# `DeltaTableProcess` class.
 //! It binds to a TCP port (0 = OS-assigned), prints a sentinel line
 //! `LISTENING ON PORT {N}` to stdout so the parent can discover the port,
 //! then serves Arrow Flight RPCs until shutdown.
 
-mod delta;
-mod error;
-mod flight_service;
-mod handlers;
-
 use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use flight_service::DeltaFlightService;
+use delta_table_service_v3::flight_service::DeltaFlightService;
 use tonic::transport::Server;
 use tracing::info;
 use tracing_subscriber::EnvFilter;

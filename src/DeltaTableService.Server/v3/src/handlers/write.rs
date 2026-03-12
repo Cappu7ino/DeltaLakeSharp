@@ -121,10 +121,10 @@ pub async fn handle_create_table(body: &[u8]) -> Result<serde_json::Value, Servi
 
 /// Handles the `execute_dml` DoAction.
 ///
-/// Opens the Delta table and executes the DML statement.  DELETE uses
-/// delta-rs's native `DeleteBuilder` (which supports predicate strings).
-/// UPDATE and MERGE via SQL are not supported by delta-rs 0.31 and will
-/// return an error, matching V2 behavior.
+/// Opens the Delta table and executes the DML statement. DELETE uses
+/// delta-rs's native `DeleteBuilder` and UPDATE uses `UpdateBuilder`.
+/// MERGE via SQL is still not supported and returns an error, matching the
+/// current V3 behavior until the SQL merge path is implemented separately.
 pub async fn handle_execute_dml(body: &[u8]) -> Result<serde_json::Value, ServiceError> {
     let cmd: ExecuteDmlCommand = serde_json::from_slice(body)?;
     info!(sql = %cmd.sql, table = %cmd.table_name, "Executing DML");
@@ -133,9 +133,11 @@ pub async fn handle_execute_dml(body: &[u8]) -> Result<serde_json::Value, Servic
 
     if sql_upper.starts_with("DELETE") {
         execute_delete(&cmd).await
+    } else if sql_upper.starts_with("UPDATE") {
+        execute_update(&cmd).await
     } else {
         Err(ServiceError::InvalidRequest(format!(
-            "Unsupported DML statement. Only DELETE is supported. Got: {}",
+            "Unsupported DML statement. Only DELETE and UPDATE are supported. Got: {}",
             &cmd.sql[..cmd.sql.len().min(80)]
         )))
     }
@@ -209,6 +211,136 @@ fn extract_where_clause(sql: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone)]
+struct ParsedUpdate {
+    assignments: Vec<(String, String)>,
+    predicate: Option<String>,
+}
+
+/// Execute an UPDATE statement using delta-rs's native `UpdateBuilder`.
+async fn execute_update(cmd: &ExecuteDmlCommand) -> Result<serde_json::Value, ServiceError> {
+    let parsed = parse_update_statement(&cmd.sql)?;
+    let table = open_delta_table(
+        &cmd.table_path,
+        cmd.storage_account.as_deref(),
+        cmd.sas_token.as_deref(),
+        None,
+    )
+    .await?;
+
+    let mut builder = table.update();
+    if let Some(pred) = &parsed.predicate {
+        debug!(predicate = %pred, "UPDATE with predicate");
+        builder = builder.with_predicate(pred.as_str());
+    } else {
+        debug!("UPDATE all rows (no predicate)");
+    }
+
+    for (column, expression) in &parsed.assignments {
+        builder = builder.with_update(column.as_str(), expression.as_str());
+    }
+
+    let (_table, metrics) = builder.await?;
+
+    let metrics_row = serde_json::json!({
+        "num_added_files": metrics.num_added_files,
+        "num_removed_files": metrics.num_removed_files,
+        "num_updated_rows": metrics.num_updated_rows,
+        "num_copied_rows": metrics.num_copied_rows,
+        "execution_time_ms": metrics.execution_time_ms,
+        "scan_time_ms": metrics.scan_time_ms,
+    });
+
+    info!(updated_rows = metrics.num_updated_rows, "UPDATE executed successfully");
+    Ok(success_response_with_result(
+        "DML executed successfully.",
+        vec![metrics_row],
+    ))
+}
+
+/// Parses the subset of SQL UPDATE syntax supported by the current V3 service.
+fn parse_update_statement(sql: &str) -> Result<ParsedUpdate, ServiceError> {
+    let trimmed = sql.trim();
+    let upper = trimmed.to_uppercase();
+
+    let set_idx = upper.find(" SET ").ok_or_else(|| {
+        ServiceError::InvalidRequest("UPDATE statement must contain SET clause.".into())
+    })?;
+
+    let after_set = &trimmed[set_idx + " SET ".len()..];
+    let after_set_upper = after_set.to_uppercase();
+    let (assignments_part, predicate) = if let Some(where_idx) = after_set_upper.find(" WHERE ") {
+        (
+            &after_set[..where_idx],
+            Some(after_set[where_idx + " WHERE ".len()..].trim().to_string()),
+        )
+    } else {
+        (after_set, None)
+    };
+
+    let assignments = split_assignments(assignments_part)?;
+    if assignments.is_empty() {
+        return Err(ServiceError::InvalidRequest(
+            "UPDATE statement must contain at least one assignment.".into(),
+        ));
+    }
+
+    Ok(ParsedUpdate {
+        assignments,
+        predicate,
+    })
+}
+
+fn split_assignments(input: &str) -> Result<Vec<(String, String)>, ServiceError> {
+    let mut assignments = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+
+    for ch in input.chars() {
+        match ch {
+            '\'' => {
+                in_single_quote = !in_single_quote;
+                current.push(ch);
+            }
+            ',' if !in_single_quote => {
+                push_assignment(&mut assignments, &current)?;
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+
+    push_assignment(&mut assignments, &current)?;
+    Ok(assignments)
+}
+
+fn push_assignment(
+    assignments: &mut Vec<(String, String)>,
+    assignment: &str,
+) -> Result<(), ServiceError> {
+    let trimmed = assignment.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    let (column, expression) = trimmed.split_once('=').ok_or_else(|| {
+        ServiceError::InvalidRequest(format!(
+            "Invalid UPDATE assignment: '{trimmed}'. Expected 'column = expression'."
+        ))
+    })?;
+
+    let column = column.trim();
+    let expression = expression.trim();
+    if column.is_empty() || expression.is_empty() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "Invalid UPDATE assignment: '{trimmed}'. Expected non-empty column and expression."
+        )));
+    }
+
+    assignments.push((column.to_string(), expression.to_string()));
+    Ok(())
 }
 
 // ========================================================================== //
@@ -494,6 +626,25 @@ async fn do_put_write(
     let msg = format!("Wrote batches to {}.", cmd.path);
     info!("{}", msg);
     Ok(success_response(&msg))
+}
+
+/// Transport-neutral insert entrypoint used by the native in-process backend.
+///
+/// The current implementation reuses the same write logic as Flight `DoPut` so
+/// semantics stay identical while the transport changes underneath.
+pub async fn handle_native_insert(
+    cmd: DoPutCommand,
+    batches: Vec<RecordBatch>,
+) -> Result<serde_json::Value, ServiceError> {
+    do_put_write(cmd, batches).await
+}
+
+/// Transport-neutral merge entrypoint used by the native in-process backend.
+pub async fn handle_native_merge(
+    cmd: DoPutCommand,
+    batches: Vec<RecordBatch>,
+) -> Result<serde_json::Value, ServiceError> {
+    do_put_merge(cmd, batches).await
 }
 
 /// Handles a DoPut merge operation.
@@ -851,6 +1002,53 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn execute_dml_update_with_predicate() {
+        let (path, _tmp) = temp_table_path();
+        create_simple_test_table(&path).await;
+
+        let body = serde_json::json!({
+            "sql": "UPDATE test_table SET name = 'updated' WHERE id <= 2",
+            "table_path": path,
+            "table_name": "test_table",
+        });
+        let body_bytes = serde_json::to_vec(&body).unwrap();
+
+        let result = handle_execute_dml(&body_bytes).await.unwrap();
+        assert_eq!(result["success"], true);
+
+        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let ctx = SessionContext::new();
+        let provider = table.table_provider().await.unwrap();
+        ctx.register_table("t", provider).unwrap();
+        let df = ctx.sql("SELECT id, name FROM t ORDER BY id").await.unwrap();
+        let batches = df.collect().await.unwrap();
+
+        let ids = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .unwrap();
+        let values = batches[0]
+            .column(1)
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .map(|arr| vec![arr.value(0), arr.value(1), arr.value(2)])
+            .unwrap_or_else(|| {
+                let arr = batches[0]
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap();
+                vec![arr.value(0), arr.value(1), arr.value(2)]
+            });
+
+        assert_eq!(1, ids.value(0));
+        assert_eq!(2, ids.value(1));
+        assert_eq!(3, ids.value(2));
+        assert_eq!(vec!["updated", "updated", "c"], values);
     }
 
     // ------------------------------------------------------------------ //

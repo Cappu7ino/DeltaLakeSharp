@@ -75,6 +75,9 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         /// The base URI of the server.
         /// For V1: Arrow Flight server (e.g. <c>http://localhost:8815</c>).
         /// For V2: Arrow Flight server (e.g. <c>http://localhost:8815</c>).
+        /// For V3: Arrow Flight server unless the internal native migration
+        /// switch is enabled, in which case the URI is preserved for API
+        /// compatibility but the in-process native backend is used.
         /// </param>
         /// <param name="mode">The backend protocol to use.</param>
         public DeltaTableServiceClient(Uri serverUri, ServiceMode mode)
@@ -89,7 +92,9 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
             {
                 ServiceMode.V1_Spark => new FlightClientWrapper(serverUri),
                 ServiceMode.V2_DataFusion => new FlightClientWrapper(serverUri),
-                ServiceMode.V3_Rust => new FlightClientWrapper(serverUri),
+                ServiceMode.V3_Rust => V3BackendSelection.UseNativeBackend
+                    ? new NativeRustBackend()
+                    : new FlightClientWrapper(serverUri),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown service mode"),
             };
         }

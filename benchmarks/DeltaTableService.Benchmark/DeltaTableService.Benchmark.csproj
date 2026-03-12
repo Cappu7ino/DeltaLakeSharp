@@ -15,6 +15,9 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.7" />
+    <PackageReference Include="Apache.Arrow" Version="22.1.0" />
+    <PackageReference Include="Apache.Arrow.Flight" Version="22.1.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.34.0" />
   </ItemGroup>
 
   <ItemGroup>

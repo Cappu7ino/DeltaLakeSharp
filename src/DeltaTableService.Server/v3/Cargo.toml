@@ -2,8 +2,13 @@
 name = "delta-table-service-v3"
 version = "0.1.0"
 edition = "2024"
-description = "Delta Table Service V3 — Arrow Flight server backed by DataFusion + delta-rs (native Rust)"
+description = "Delta Table Service V3 — native Rust Delta/DataFusion core with legacy Arrow Flight compatibility"
 publish = false
+
+[lib]
+name = "delta_table_service_v3"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [[bin]]
 name = "delta-table-service-v3"
@@ -13,7 +18,7 @@ path = "src/main.rs"
 # Arrow Flight + gRPC
 # Pin to 57 to match datafusion 52's arrow dependency (avoids arrow-schema version split).
 arrow-flight = "57"
-arrow = { version = "57", features = ["ipc"] }
+arrow = { version = "57", features = ["ipc", "ffi"] }
 # URL parsing (required by delta-rs open_table APIs)
 url = "2"
 tonic = "0.14"

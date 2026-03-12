@@ -974,67 +974,28 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         /// <summary>
         /// Builds an Arrow schema with (id: Int32, name: Utf8).
         /// </summary>
-        private static Schema BuildIdNameSchema()
-        {
-            return new Schema.Builder()
-                .Field(new Field("id", Int32Type.Default, nullable: true))
-                .Field(new Field("name", StringType.Default, nullable: true))
-                .Build();
-        }
+        private static Schema BuildIdNameSchema() => V3TestHelpers.BuildIdNameSchema();
 
         /// <summary>
         /// Creates a RecordBatch with the given (id, name) rows.
         /// </summary>
-        private static RecordBatch BuildIdNameBatch(int[] ids, string[] names)
-        {
-            Schema schema = BuildIdNameSchema();
-            return new RecordBatch.Builder()
-                .Append("id", nullable: true, new Int32Array.Builder().AppendRange(ids).Build())
-                .Append("name", nullable: true, new StringArray.Builder().AppendRange(names).Build())
-                .Build();
-        }
+        private static RecordBatch BuildIdNameBatch(int[] ids, string[] names) =>
+            V3TestHelpers.BuildIdNameBatch(ids, names);
 
         /// <summary>
         /// Wraps a single RecordBatch as an IAsyncEnumerable for InsertAsync/MergeDataAsync.
         /// </summary>
-        private static async IAsyncEnumerable<RecordBatch> ToAsyncEnumerable(RecordBatch batch)
-        {
-            yield return batch;
-            await Task.CompletedTask; // satisfy async requirement
-        }
+        private static IAsyncEnumerable<RecordBatch> ToAsyncEnumerable(RecordBatch batch) =>
+            V3TestHelpers.ToAsyncEnumerable(batch);
 
         /// <summary>
         /// Reads all rows from a table and returns (ids, names) sorted by id.
         /// Handles both StringArray and StringViewArray from delta-rs.
         /// </summary>
-        private static async Task<List<(int id, string? name)>> ReadAllRowsSorted(
-            DeltaTableServiceClient client, string tablePath)
-        {
-            var ids = new List<int>();
-            var names = new List<string?>();
-
-            await foreach (RecordBatch batch in client.ReadTableAsync(tablePath))
-            {
-                var idArray = (Int32Array)batch.Column(0);
-                IArrowArray nameCol = batch.Column(1);
-
-                for (int i = 0; i < batch.Length; i++)
-                {
-                    ids.Add(idArray.GetValue(i)!.Value);
-                    names.Add(nameCol switch
-                    {
-                        StringArray sa => sa.GetString(i),
-                        StringViewArray sva => sva.GetString(i),
-                        _ => throw new InvalidOperationException(
-                            $"Unexpected array type: {nameCol.GetType().Name}")
-                    });
-                }
-            }
-
-            return ids.Zip(names, (id, name) => (id, name))
-                .OrderBy(x => x.id)
-                .ToList();
-        }
+        private static Task<List<(int id, string? name)>> ReadAllRowsSorted(
+            DeltaTableServiceClient client,
+            string tablePath) =>
+            V3TestHelpers.ReadAllRowsSorted(client, tablePath);
 
         // ================================================================== //
         //  Phase 3: CreateTableAsync

@@ -260,6 +260,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
             {
                 case StringArray sa:
                     return sa.GetString(index);
+                case StringViewArray sva:
+                    return sva.GetString(index);
                 case LargeStringArray lsa:
                     return lsa.GetString(index);
                 case Int8Array i8:

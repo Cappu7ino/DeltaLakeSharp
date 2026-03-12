@@ -12,20 +12,70 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
+use arrow::error::ArrowError;
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::ipc::writer::IpcWriteOptions;
+use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::{
     FlightData, FlightDescriptor, FlightEndpoint, FlightInfo, SchemaAsIpc, SchemaResult, Ticket,
 };
 use datafusion::execution::context::SessionContext;
-use futures::{Stream, TryStreamExt};
+use datafusion::physical_plan::SendableRecordBatchStream;
+use futures::{Stream, StreamExt, TryStreamExt};
 use tonic::Status;
 use tracing::{debug, info};
 
 use super::commands::{Command, ReadCommand, SqlCommand};
 use super::helpers::{open_delta_table, register_delta_table};
 use crate::error::ServiceError;
+
+/// Resolves the Arrow schema for a read/query command without committing to any
+/// particular transport representation.
+///
+/// This is the transport-neutral schema path used by both the legacy Flight
+/// adapter and the new native in-process ABI.
+pub async fn resolve_schema_from_command_bytes(
+    cmd_bytes: &[u8],
+) -> Result<SchemaRef, ServiceError> {
+    let command = Command::parse(cmd_bytes)?;
+
+    match command {
+        Command::Read(read_cmd) => {
+            info!(path = %read_cmd.path, "Resolving schema: read-table mode");
+            get_delta_schema(&read_cmd).await
+        }
+        Command::Sql(_) => {
+            // Match V2/V3 Flight behavior for SQL commands: schema is not known
+            // until execution, so the transport-neutral schema path returns an
+            // empty schema rather than forcing SQL execution.
+            Ok(Arc::new(Schema::empty()))
+        }
+    }
+}
+
+/// Resolves a command payload into a transport-neutral Arrow batch reader.
+///
+/// The returned reader yields batches lazily and can therefore be exported over
+/// the Arrow C Stream interface without materializing the full result set.
+pub async fn resolve_batch_reader_from_command_bytes(
+    cmd_bytes: &[u8],
+    runtime_handle: tokio::runtime::Handle,
+) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
+{
+    let command = Command::parse(cmd_bytes)?;
+
+    match command {
+        Command::Read(read_cmd) => {
+            info!(path = %read_cmd.path, "Resolving batch reader: read-table mode");
+            read_table_batch_reader(read_cmd, runtime_handle).await
+        }
+        Command::Sql(sql_cmd) => {
+            info!(sql = %sql_cmd.sql, "Resolving batch reader: SQL mode");
+            sql_batch_reader(sql_cmd, runtime_handle).await
+        }
+    }
+}
 
 /// Boxed Flight data stream — the concrete return type for DoGet.
 type BoxedFlightStream = Pin<Box<dyn Stream<Item = Result<FlightData, Status>> + Send + 'static>>;
@@ -46,19 +96,7 @@ pub async fn handle_get_flight_info(
     descriptor: FlightDescriptor,
 ) -> Result<FlightInfo, ServiceError> {
     let cmd_bytes = &descriptor.cmd;
-    let command = Command::parse(cmd_bytes)?;
-
-    let schema = match &command {
-        Command::Read(read_cmd) => {
-            info!(path = %read_cmd.path, "GetFlightInfo: read-table mode");
-            get_delta_schema(read_cmd).await?
-        }
-        Command::Sql(sql_cmd) => {
-            info!(sql = %sql_cmd.sql, "GetFlightInfo: SQL mode");
-            // V2 returns an empty schema for SQL queries — schema is discovered at DoGet time.
-            Arc::new(Schema::empty())
-        }
-    };
+    let schema = resolve_schema_from_command_bytes(cmd_bytes).await?;
 
     // Ticket = verbatim command JSON (matching V2 protocol).
     let ticket = Ticket::new(cmd_bytes.clone());
@@ -85,19 +123,7 @@ pub async fn handle_get_flight_info(
 /// meaningful schema until execution).
 pub async fn handle_get_schema(descriptor: FlightDescriptor) -> Result<SchemaResult, ServiceError> {
     let cmd_bytes = &descriptor.cmd;
-    let command = Command::parse(cmd_bytes)?;
-
-    let schema = match command {
-        Command::Read(read_cmd) => {
-            info!(path = %read_cmd.path, "GetSchema: reading Delta table schema");
-            get_delta_schema(&read_cmd).await?
-        }
-        Command::Sql(_) => {
-            // V2 does not support GetSchema for SQL queries, but we return
-            // an empty schema rather than erroring (defensive).
-            Arc::new(Schema::empty())
-        }
-    };
+    let schema = resolve_schema_from_command_bytes(cmd_bytes).await?;
 
     // Convert Schema -> SchemaResult via SchemaAsIpc.
     let options = IpcWriteOptions::default();
@@ -161,6 +187,74 @@ async fn get_delta_schema(cmd: &ReadCommand) -> Result<SchemaRef, ServiceError> 
 /// Executes a read-table DoGet: registers the table as `_tbl`, runs
 /// `SELECT * FROM _tbl [LIMIT n]`, and returns a boxed stream of FlightData.
 async fn do_get_read_table(cmd: ReadCommand) -> Result<BoxedFlightStream, ServiceError> {
+    let (schema, batch_stream) = execute_read_table_stream(cmd).await?;
+    Ok(build_flight_stream(schema, batch_stream))
+}
+
+/// Executes a SQL DoGet: optionally registers a table, runs the user SQL,
+/// and returns a boxed stream of FlightData.
+async fn do_get_sql(cmd: SqlCommand) -> Result<BoxedFlightStream, ServiceError> {
+    let (schema, batch_stream) = execute_sql_stream(cmd).await?;
+    Ok(build_flight_stream(schema, batch_stream))
+}
+
+/// Adapts a DataFusion async batch stream into a blocking `RecordBatchReader`.
+///
+/// The Arrow C Stream interface is pull-based and synchronous at the ABI
+/// boundary. DataFusion, on the other hand, yields batches asynchronously. This
+/// adapter bridges the two by blocking on exactly one batch at a time using the
+/// provided Tokio runtime handle, preserving the streaming-first memory profile.
+struct AsyncRecordBatchReader {
+    schema: SchemaRef,
+    runtime_handle: tokio::runtime::Handle,
+    stream: SendableRecordBatchStream,
+}
+
+impl Iterator for AsyncRecordBatchReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.runtime_handle.block_on(self.stream.next()).map(|result| {
+            result.map_err(|error| ArrowError::ExternalError(Box::new(error)))
+        })
+    }
+}
+
+impl RecordBatchReader for AsyncRecordBatchReader {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
+async fn read_table_batch_reader(
+    cmd: ReadCommand,
+    runtime_handle: tokio::runtime::Handle,
+) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
+{
+    let (schema, stream) = execute_read_table_stream(cmd).await?;
+    Ok(Box::new(AsyncRecordBatchReader {
+        schema,
+        runtime_handle,
+        stream,
+    }))
+}
+
+async fn sql_batch_reader(
+    cmd: SqlCommand,
+    runtime_handle: tokio::runtime::Handle,
+) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
+{
+    let (schema, stream) = execute_sql_stream(cmd).await?;
+    Ok(Box::new(AsyncRecordBatchReader {
+        schema,
+        runtime_handle,
+        stream,
+    }))
+}
+
+async fn execute_read_table_stream(
+    cmd: ReadCommand,
+) -> Result<(SchemaRef, SendableRecordBatchStream), ServiceError> {
     let ctx = SessionContext::new();
     register_delta_table(
         &ctx,
@@ -181,15 +275,14 @@ async fn do_get_read_table(cmd: ReadCommand) -> Result<BoxedFlightStream, Servic
     let df = ctx.sql(&sql).await.map_err(ServiceError::DataFusion)?;
     let schema: SchemaRef = Arc::clone(df.schema().inner());
     let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
-    Ok(build_flight_stream(schema, batch_stream))
+    Ok((schema, batch_stream))
 }
 
-/// Executes a SQL DoGet: optionally registers a table, runs the user SQL,
-/// and returns a boxed stream of FlightData.
-async fn do_get_sql(cmd: SqlCommand) -> Result<BoxedFlightStream, ServiceError> {
+async fn execute_sql_stream(
+    cmd: SqlCommand,
+) -> Result<(SchemaRef, SendableRecordBatchStream), ServiceError> {
     let ctx = SessionContext::new();
 
-    // Register the Delta table if both table_path and table_name are provided.
     if let (Some(table_path), Some(table_name)) = (&cmd.table_path, &cmd.table_name) {
         register_delta_table(
             &ctx,
@@ -206,7 +299,7 @@ async fn do_get_sql(cmd: SqlCommand) -> Result<BoxedFlightStream, ServiceError> 
     let df = ctx.sql(&cmd.sql).await.map_err(ServiceError::DataFusion)?;
     let schema: SchemaRef = Arc::clone(df.schema().inner());
     let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
-    Ok(build_flight_stream(schema, batch_stream))
+    Ok((schema, batch_stream))
 }
 
 /// Converts a DataFusion `SendableRecordBatchStream` into a boxed
