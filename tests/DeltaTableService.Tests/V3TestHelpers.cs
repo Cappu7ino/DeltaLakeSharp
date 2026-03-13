@@ -3,17 +3,202 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Microsoft.ADMS.Testing.DeltaTableService.Client;
+using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
 {
     internal static class V3TestHelpers
     {
+        internal sealed class IntegrationContext : IDisposable
+        {
+            private readonly List<string> _trackedTablePaths = new();
+            private readonly string _tempDir;
+
+            internal IntegrationContext(
+                DeltaTableServiceClient client,
+                string tempDir,
+                string testTablePath,
+                string partitionedTablePath,
+                string timeTravelTablePath,
+                string? fixtureDataDir)
+            {
+                Client = client;
+                _tempDir = tempDir;
+                TestTablePath = testTablePath;
+                PartitionedTablePath = partitionedTablePath;
+                TimeTravelTablePath = timeTravelTablePath;
+                FixtureDataDir = fixtureDataDir;
+            }
+
+            internal DeltaTableServiceClient Client { get; }
+
+            internal string TestTablePath { get; }
+
+            internal string PartitionedTablePath { get; }
+
+            internal string TimeTravelTablePath { get; }
+
+            internal string? FixtureDataDir { get; }
+
+            internal string CreateWriteTestTablePath()
+            {
+                string tablePath = Path.Combine(_tempDir, $"write_test_{Guid.NewGuid():N}");
+                _trackedTablePaths.Add(tablePath);
+                return tablePath;
+            }
+
+            public void Dispose()
+            {
+                Client.Dispose();
+
+                foreach (string tablePath in _trackedTablePaths)
+                {
+                    try { CleanupTablePath(tablePath); }
+                    catch { }
+                }
+
+                if (Directory.Exists(_tempDir))
+                {
+                    try { Directory.Delete(_tempDir, recursive: true); }
+                    catch { }
+                }
+            }
+        }
+
+        internal static readonly Uri DummyServerUri = new("http://localhost:1");
+
+        internal static async Task<IntegrationContext> CreateIntegrationContextAsync()
+        {
+            string? binaryPath = FindRustFixtureBinary();
+            if (binaryPath == null)
+            {
+                Assert.Inconclusive(
+                    "Rust binary not found. Build it first: " +
+                    "cd src/DeltaTableService.Server/v3 && cargo build");
+            }
+
+            string tempDir = Path.Combine(Path.GetTempPath(), $"v3_test_{Guid.NewGuid():N}");
+            string? fixtureDataDir = FindFixtureDataDir();
+
+            string testTablePath = Path.Combine(tempDir, "test_table");
+            CreateTestDeltaTable(binaryPath!, testTablePath);
+
+            string partitionedTablePath = Path.Combine(tempDir, "partitioned_table");
+            CreateTestDeltaTable(binaryPath!, partitionedTablePath, "partitioned");
+
+            string timeTravelTablePath = Path.Combine(tempDir, "time_travel_table");
+            CreateTestDeltaTable(binaryPath!, timeTravelTablePath, "time-travel");
+
+            var client = new DeltaTableServiceClient(DummyServerUri, ServiceMode.V3_Rust);
+            bool healthy = await client.HealthCheckAsync();
+            Assert.IsTrue(healthy, "Delta Table Service V3 did not become healthy.");
+
+            return new IntegrationContext(
+                client,
+                tempDir,
+                testTablePath,
+                partitionedTablePath,
+                timeTravelTablePath,
+                fixtureDataDir);
+        }
+
+        internal static string? FindRustFixtureBinary()
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null)
+            {
+                string solutionFile = Path.Combine(dir, "DeltaTableService.sln");
+                if (File.Exists(solutionFile))
+                {
+                    string binaryPath = Path.Combine(
+                        dir,
+                        "src",
+                        "DeltaTableService.Server",
+                        "v3",
+                        "target",
+                        "debug",
+                        "delta-table-service-v3-fixture.exe");
+                    return File.Exists(binaryPath) ? binaryPath : null;
+                }
+
+                dir = Path.GetDirectoryName(dir);
+            }
+
+            return null;
+        }
+
+        internal static string? FindFixtureDataDir()
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null)
+            {
+                string solutionFile = Path.Combine(dir, "DeltaTableService.sln");
+                if (File.Exists(solutionFile))
+                {
+                    string dataDir = Path.Combine(dir, "tests", "DeltaTableService.Tests", "data");
+                    return Directory.Exists(dataDir) ? dataDir : null;
+                }
+
+                dir = Path.GetDirectoryName(dir);
+            }
+
+            return null;
+        }
+
+        internal static string CreateTempTablePath(string prefix)
+        {
+            string tablePath = Path.Combine(Path.GetTempPath(), $"{prefix}_{Guid.NewGuid():N}");
+            Directory.CreateDirectory(tablePath);
+            return tablePath;
+        }
+
+        internal static void CleanupTablePath(string tablePath)
+        {
+            if (Directory.Exists(tablePath))
+            {
+                Directory.Delete(tablePath, recursive: true);
+            }
+        }
+
+        internal static void CreateTestDeltaTable(string binaryPath, string tablePath, string fixtureType = "basic")
+        {
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = binaryPath,
+                Arguments = $"create \"{tablePath}\" --fixture-type {fixtureType}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            using var proc = System.Diagnostics.Process.Start(psi)
+                ?? throw new InvalidOperationException("Failed to start create-test-fixture process.");
+
+            string stdout = proc.StandardOutput.ReadToEnd();
+            string stderr = proc.StandardError.ReadToEnd();
+            proc.WaitForExit(30_000);
+
+            if (proc.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"create-test-fixture failed (exit code {proc.ExitCode}).\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
+            if (!stdout.Contains("TEST_FIXTURE_CREATED", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"create-test-fixture did not print expected sentinel.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+        }
+
         internal static Schema BuildIdNameSchema()
         {
             return new Schema.Builder()
@@ -70,6 +255,27 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             return ids.Zip(names, (id, name) => (id, name))
                 .OrderBy(x => x.id)
                 .ToList();
+        }
+
+        internal static void AssertNativeFailure(Exception ex)
+        {
+            Assert.IsTrue(
+                ex.Message.Contains("Native V3 backend operation", StringComparison.Ordinal)
+                || ex.Message.Contains("Native error:", StringComparison.Ordinal),
+                $"Expected native backend failure details, got: {ex.Message}");
+        }
+
+        internal static void AssertExecuteResultContainsLong(
+            ExecuteResult result,
+            string key,
+            long minimumValue = long.MinValue)
+        {
+            Assert.IsTrue(result.Result.Count > 0, "Expected result payload.");
+            Assert.IsTrue(result.Result[0].ContainsKey(key), $"Expected '{key}' in result payload.");
+            object rawValue = result.Result[0][key];
+            Assert.IsTrue(rawValue is long, $"Expected '{key}' to be parsed as a long.");
+            long value = (long)rawValue;
+            Assert.IsTrue(value >= minimumValue, $"Expected '{key}' >= {minimumValue}, got {value}.");
         }
     }
 }

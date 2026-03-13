@@ -26,10 +26,10 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
     /// <b>V2:</b> Exposes the Arrow Flight port (8815). Use <see cref="GetFlightUri"/>.
     /// Lightweight DataFusion + delta-rs backend — no JVM or Spark dependency.
     /// </para>
-    /// <para>
-    /// <b>V3:</b> Use <see cref="DeltaTableProcess"/> instead — V3 runs as a native
-    /// Rust binary spawned as a child process (no Docker).
-    /// </para>
+        /// <para>
+        /// <b>V3:</b> Uses in-process native Rust interop and does not use this
+        /// container helper.
+        /// </para>
     /// </summary>
     public sealed class DeltaTableContainer : IAsyncDisposable
     {

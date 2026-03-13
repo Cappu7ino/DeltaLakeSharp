@@ -14,7 +14,7 @@ use std::sync::Mutex;
 use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 
-use crate::core::service::DeltaService;
+use crate::service::DeltaService;
 
 /// Opaque native engine handle owned by the consumer.
 pub struct DeltaServiceEngine {

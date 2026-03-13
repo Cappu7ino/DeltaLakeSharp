@@ -2,7 +2,7 @@
 name = "delta-table-service-v3"
 version = "0.1.0"
 edition = "2024"
-description = "Delta Table Service V3 — native Rust Delta/DataFusion core with legacy Arrow Flight compatibility"
+description = "Delta Table Service V3 — native Rust Delta/DataFusion core with in-process C ABI"
 publish = false
 
 [lib]
@@ -11,11 +11,11 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
 [[bin]]
-name = "delta-table-service-v3"
-path = "src/main.rs"
+name = "delta-table-service-v3-fixture"
+path = "src/fixture_cli.rs"
 
 [dependencies]
-# Arrow Flight + gRPC
+# Arrow / FFI
 # Pin to 57 to match datafusion 52's arrow dependency (avoids arrow-schema version split).
 arrow-flight = "57"
 arrow = { version = "57", features = ["ipc", "ffi"] }
@@ -26,7 +26,6 @@ prost = "0.13"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-stream = "0.1"
 futures = "0.3"
 
 # Delta Lake + query engine

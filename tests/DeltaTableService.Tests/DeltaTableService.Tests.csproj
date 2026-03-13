@@ -5,6 +5,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <RustV3ProjectDir>$(MSBuildThisFileDirectory)..\..\src\DeltaTableService.Server\v3</RustV3ProjectDir>
+    <SkipRustBuild Condition="'$(SkipRustBuild)' == ''">false</SkipRustBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,4 +23,12 @@
   <ItemGroup>
     <Content Include="..\..\src\DeltaTableService.Server\**\*" Exclude="..\..\src\DeltaTableService.Server\.vs\**;..\..\src\DeltaTableService.Server\__pycache__\**" Link="DeltaTableService.Server\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
   </ItemGroup>
+
+  <Target Name="BuildRustV3Artifacts"
+          BeforeTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(SkipRustBuild)' != 'true'">
+    <Message Importance="high" Text="Building Rust V3 artifacts via cargo build..." />
+    <Exec Command="cargo build"
+          WorkingDirectory="$(RustV3ProjectDir)" />
+  </Target>
 </Project>

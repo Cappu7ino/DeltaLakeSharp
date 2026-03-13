@@ -3,9 +3,8 @@
 
 //! Unified error type for the Delta Table Service V3.
 //!
-//! All internal errors are funnelled through [`ServiceError`], which implements
-//! conversion to [`tonic::Status`] so that Flight RPC handlers can use `?`
-//! ergonomically and the correct gRPC status code is returned to the client.
+//! All internal errors are funnelled through [`ServiceError`], which is shared
+//! by the transport-neutral Rust core and the native ABI layer.
 
 use std::fmt;
 
@@ -83,21 +82,5 @@ impl From<arrow::error::ArrowError> for ServiceError {
 impl From<serde_json::Error> for ServiceError {
     fn from(e: serde_json::Error) -> Self {
         Self::Json(e)
-    }
-}
-
-// ---- Conversion to tonic::Status --------------------------------------------
-
-impl From<ServiceError> for tonic::Status {
-    fn from(e: ServiceError) -> Self {
-        match &e {
-            ServiceError::InvalidRequest(_) => tonic::Status::invalid_argument(e.to_string()),
-            ServiceError::TableNotFound(_) => tonic::Status::not_found(e.to_string()),
-            ServiceError::Json(_) => tonic::Status::invalid_argument(e.to_string()),
-            ServiceError::Delta(_)
-            | ServiceError::DataFusion(_)
-            | ServiceError::Arrow(_)
-            | ServiceError::Internal(_) => tonic::Status::internal(e.to_string()),
-        }
     }
 }

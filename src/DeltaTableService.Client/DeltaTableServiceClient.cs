@@ -13,9 +13,9 @@ using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
 
 namespace Microsoft.ADMS.Testing.DeltaTableService.Client
 {
-    /// <summary>
-    /// Specifies the backend protocol to use for communicating with the Delta Table Service.
-    /// </summary>
+        /// <summary>
+        /// Specifies the backend protocol to use for communicating with the Delta Table Service.
+        /// </summary>
     public enum ServiceMode
     {
         /// <summary>
@@ -31,17 +31,16 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         V2_DataFusion,
 
         /// <summary>
-        /// V3 backend using a native Rust binary (arrow-flight + DataFusion + delta-rs).
-        /// Spawned as a child process instead of Docker container.
-        /// Uses the same Arrow Flight protocol as V1/V2.
+        /// V3 backend using in-process native Rust interop over the Arrow C Data
+        /// and C Stream interfaces.
         /// </summary>
         V3_Rust,
     }
 
     /// <summary>
     /// High-level client for the Delta Table Service.
-    /// Supports V1 (PySpark + Arrow Flight), V2 (DataFusion + Arrow Flight),
-    /// and V3 (native Rust + Arrow Flight) backends.
+        /// Supports V1 (PySpark + Arrow Flight), V2 (DataFusion + Arrow Flight),
+        /// and V3 (in-process native Rust) backends.
     /// All Arrow and gRPC types are kept internal — callers interact exclusively
     /// with standard .NET types (<see cref="DataTable"/>, dictionaries, etc.)
     /// and the models in <see cref="Models"/>.
@@ -75,9 +74,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         /// The base URI of the server.
         /// For V1: Arrow Flight server (e.g. <c>http://localhost:8815</c>).
         /// For V2: Arrow Flight server (e.g. <c>http://localhost:8815</c>).
-        /// For V3: Arrow Flight server unless the internal native migration
-        /// switch is enabled, in which case the URI is preserved for API
-        /// compatibility but the in-process native backend is used.
+        /// For V3: the URI is accepted for API compatibility, but the backend
+        /// runs in-process and does not connect to a Flight server.
         /// </param>
         /// <param name="mode">The backend protocol to use.</param>
         public DeltaTableServiceClient(Uri serverUri, ServiceMode mode)
@@ -92,9 +90,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
             {
                 ServiceMode.V1_Spark => new FlightClientWrapper(serverUri),
                 ServiceMode.V2_DataFusion => new FlightClientWrapper(serverUri),
-                ServiceMode.V3_Rust => V3BackendSelection.UseNativeBackend
-                    ? new NativeRustBackend()
-                    : new FlightClientWrapper(serverUri),
+                ServiceMode.V3_Rust => new NativeRustBackend(),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown service mode"),
             };
         }

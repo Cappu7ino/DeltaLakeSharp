@@ -1,38 +1,33 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-//! Write-path handlers: create_table, execute_dml, upgrade_protocol, DoPut (write + merge).
-//!
-//! Follows the V2 protocol exactly so the existing C# client works unchanged.
+//! Write-path handlers for transport-neutral V3 operations.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use arrow_flight::{FlightData, PutResult};
 use datafusion::datasource::MemTable;
 use datafusion::execution::context::SessionContext;
 use deltalake::kernel::engine::arrow_conversion::TryIntoKernel;
-use futures::StreamExt;
-use tonic::Streaming;
 use tracing::{debug, info};
 
-use super::commands::{
-    arrow_type_from_str, CreateTableCommand, DoPutCommand, ExecuteDmlCommand,
-    UpgradeProtocolCommand,
-};
 use super::helpers::{
     open_delta_table, path_to_url, storage_options, success_response,
     success_response_with_result,
 };
+use super::request::{
+    arrow_type_from_str, CreateTableCommand, ExecuteDmlCommand, WriteCommand,
+    UpgradeProtocolCommand,
+};
 use crate::error::ServiceError;
 
 // ========================================================================== //
-//  DoAction: create_table
+//  Create table
 // ========================================================================== //
 
-/// Handles the `create_table` DoAction.
+/// Handles table creation.
 ///
 /// Creates a new Delta table at the specified path with the given schema.
 /// Matches V2 behavior: writes an empty batch with the correct schema to
@@ -116,10 +111,10 @@ pub async fn handle_create_table(body: &[u8]) -> Result<serde_json::Value, Servi
 }
 
 // ========================================================================== //
-//  DoAction: execute_dml
+//  Execute DML
 // ========================================================================== //
 
-/// Handles the `execute_dml` DoAction.
+/// Handles DML execution.
 ///
 /// Opens the Delta table and executes the DML statement. DELETE uses
 /// delta-rs's native `DeleteBuilder` and UPDATE uses `UpdateBuilder`.
@@ -344,7 +339,7 @@ fn push_assignment(
 }
 
 // ========================================================================== //
-//  DoAction: upgrade_protocol
+//  Upgrade protocol
 // ========================================================================== //
 
 /// Maps a camelCase feature name (from the C# client) to a delta-rs `TableFeatures` variant.
@@ -394,9 +389,9 @@ fn feature_companion_properties(
     }
 }
 
-/// Handles the `upgrade_protocol` DoAction.
+/// Handles protocol upgrades.
 ///
-/// Enables table features and bumps protocol versions. Matches V2 behavior:
+/// Enables table features and bumps protocol versions:
 /// - If features are requested, uses `add_feature()` (which auto-bumps versions).
 /// - If no features, does a simple version bump via table properties.
 /// - Sets companion properties for features that need them.
@@ -505,83 +500,12 @@ pub async fn handle_upgrade_protocol(body: &[u8]) -> Result<serde_json::Value, S
 }
 
 // ========================================================================== //
-//  DoPut: write (insert / overwrite) + merge
+//  Write / merge batch operations
 // ========================================================================== //
 
-/// Handles a DoPut request — dispatches to write or merge based on the
-/// `operation` field in the command JSON.
-///
-/// The first FlightData message contains the FlightDescriptor with the command
-/// JSON. Subsequent messages contain the schema and RecordBatch data.
-pub async fn handle_do_put(
-    mut stream: Streaming<FlightData>,
-) -> Result<PutResult, ServiceError> {
-    // The first FlightData message contains the descriptor with command JSON.
-    let first = stream
-        .next()
-        .await
-        .ok_or_else(|| ServiceError::InvalidRequest("Empty DoPut stream".into()))?
-        .map_err(|e| ServiceError::Internal(format!("Stream error: {e}")))?;
-
-    // Extract command JSON from the descriptor.
-    let descriptor = first
-        .flight_descriptor
-        .as_ref()
-        .ok_or_else(|| ServiceError::InvalidRequest("Missing FlightDescriptor in DoPut".into()))?;
-    let cmd: DoPutCommand = serde_json::from_slice(&descriptor.cmd)?;
-
-    debug!(
-        path = %cmd.path,
-        operation = %cmd.operation,
-        mode = %cmd.mode,
-        "DoPut received"
-    );
-
-    // Decode IPC schema and record batches from the remaining stream messages.
-    // We collect all FlightData into a buffer first, then use Arrow's IPC
-    // StreamReader to decode them.
-    let mut all_flight_data = vec![first];
-    while let Some(data) = stream.next().await {
-        let data = data.map_err(|e| ServiceError::Internal(format!("Stream error: {e}")))?;
-        all_flight_data.push(data);
-    }
-
-    let batches = decode_flight_data_to_batches(&all_flight_data)?;
-
-    if batches.is_empty() {
-        return Err(ServiceError::InvalidRequest(
-            "DoPut received no record batches".into(),
-        ));
-    }
-
-    let result = if cmd.operation == "merge" {
-        do_put_merge(cmd, batches).await?
-    } else {
-        do_put_write(cmd, batches).await?
-    };
-
-    // Encode the result JSON as PutResult application metadata.
-    let result_bytes = serde_json::to_vec(&result)
-        .map_err(|e| ServiceError::Internal(format!("JSON serialization error: {e}")))?;
-    Ok(PutResult {
-        app_metadata: result_bytes.into(),
-    })
-}
-
-/// Decodes a series of FlightData messages into RecordBatches.
-///
-/// Uses `arrow_flight::utils::flight_data_to_batches` for the decoding.
-fn decode_flight_data_to_batches(
-    flight_data: &[FlightData],
-) -> Result<Vec<RecordBatch>, ServiceError> {
-    let batches = arrow_flight::utils::flight_data_to_batches(flight_data)
-        .map_err(|e| ServiceError::Arrow(arrow::error::ArrowError::IpcError(format!("{e}"))))?;
-    Ok(batches)
-}
-
-/// Handles a DoPut write (insert/overwrite) operation.
-async fn do_put_write(
-    cmd: DoPutCommand,
+/// Handles a write (insert/overwrite) operation.
+async fn write_batches(
+    cmd: WriteCommand,
     batches: Vec<RecordBatch>,
 ) -> Result<serde_json::Value, ServiceError> {
     info!(
@@ -629,31 +553,28 @@ async fn do_put_write(
 }
 
 /// Transport-neutral insert entrypoint used by the native in-process backend.
-///
-/// The current implementation reuses the same write logic as Flight `DoPut` so
-/// semantics stay identical while the transport changes underneath.
 pub async fn handle_native_insert(
-    cmd: DoPutCommand,
+    cmd: WriteCommand,
     batches: Vec<RecordBatch>,
 ) -> Result<serde_json::Value, ServiceError> {
-    do_put_write(cmd, batches).await
+    write_batches(cmd, batches).await
 }
 
 /// Transport-neutral merge entrypoint used by the native in-process backend.
 pub async fn handle_native_merge(
-    cmd: DoPutCommand,
+    cmd: WriteCommand,
     batches: Vec<RecordBatch>,
 ) -> Result<serde_json::Value, ServiceError> {
-    do_put_merge(cmd, batches).await
+    merge_batches(cmd, batches).await
 }
 
-/// Handles a DoPut merge operation.
+/// Handles a merge operation.
 ///
-/// The incoming record batches are the merge source data.  They are
+/// The incoming record batches are the merge source data. They are
 /// registered as a DataFrame in DataFusion, then merged into the target
 /// Delta table using the programmatic merge API.
-async fn do_put_merge(
-    cmd: DoPutCommand,
+async fn merge_batches(
+    cmd: WriteCommand,
     batches: Vec<RecordBatch>,
 ) -> Result<serde_json::Value, ServiceError> {
     let predicate = cmd.predicate.as_deref().ok_or_else(|| {
@@ -1135,7 +1056,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------ //
-    //  DoPut write tests (using the do_put_write function directly)
+    //  Write tests
     // ------------------------------------------------------------------ //
 
     #[tokio::test]
@@ -1156,7 +1077,7 @@ mod tests {
         )
         .unwrap();
 
-        let cmd = DoPutCommand {
+        let cmd = WriteCommand {
             path: path.clone(),
             mode: "overwrite".to_string(),
             operation: "write".to_string(),
@@ -1177,7 +1098,7 @@ mod tests {
             when_not_matched_by_source_update_predicate: None,
         };
 
-        let result = do_put_write(cmd, vec![batch]).await.unwrap();
+        let result = write_batches(cmd, vec![batch]).await.unwrap();
         assert_eq!(result["success"], true);
 
         // Verify overwrite: should have exactly 2 rows.
@@ -1214,7 +1135,7 @@ mod tests {
         )
         .unwrap();
 
-        let cmd = DoPutCommand {
+        let cmd = WriteCommand {
             path: path.clone(),
             mode: "append".to_string(),
             operation: "write".to_string(),
@@ -1235,7 +1156,7 @@ mod tests {
             when_not_matched_by_source_update_predicate: None,
         };
 
-        let result = do_put_write(cmd, vec![batch]).await.unwrap();
+        let result = write_batches(cmd, vec![batch]).await.unwrap();
         assert_eq!(result["success"], true);
 
         // Verify append: should have 3 + 2 = 5 rows.
@@ -1255,7 +1176,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------ //
-    //  DoPut merge tests (using do_put_merge function directly)
+    //  Merge tests
     // ------------------------------------------------------------------ //
 
     #[tokio::test]
@@ -1277,7 +1198,7 @@ mod tests {
         )
         .unwrap();
 
-        let cmd = DoPutCommand {
+        let cmd = WriteCommand {
             path: path.clone(),
             mode: "overwrite".to_string(),
             operation: "merge".to_string(),
@@ -1298,7 +1219,7 @@ mod tests {
             when_not_matched_by_source_update_predicate: None,
         };
 
-        let result = do_put_merge(cmd, vec![source_batch]).await.unwrap();
+        let result = merge_batches(cmd, vec![source_batch]).await.unwrap();
         assert_eq!(result["success"], true);
         assert_eq!(result["message"], "Merge completed.");
         assert!(result["result"][0]["num_source_rows"].as_i64().unwrap() > 0);
@@ -1341,7 +1262,7 @@ mod tests {
         )
         .unwrap();
 
-        let cmd = DoPutCommand {
+        let cmd = WriteCommand {
             path: path.clone(),
             mode: "overwrite".to_string(),
             operation: "merge".to_string(),
@@ -1362,7 +1283,7 @@ mod tests {
             when_not_matched_by_source_update_predicate: None,
         };
 
-        let result = do_put_merge(cmd, vec![source_batch]).await.unwrap();
+        let result = merge_batches(cmd, vec![source_batch]).await.unwrap();
         assert_eq!(result["success"], true);
 
         // Verify: 2 rows remain (1,a), (3,c)

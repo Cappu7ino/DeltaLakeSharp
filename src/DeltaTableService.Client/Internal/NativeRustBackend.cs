@@ -17,11 +17,10 @@ using System.Text.Json.Nodes;
 namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
 {
     /// <summary>
-    /// Native in-process backend for the future V3 architecture.
+    /// Native in-process backend for the V3 architecture.
     ///
-    /// This initial scaffold owns the native Rust engine lifecycle and wires up
-    /// health checks. Read/write/query operations will be migrated from the
-    /// legacy Flight transport incrementally as the Rust C ABI grows.
+    /// The backend bridges the existing C# client surface to the Rust V3 core
+    /// through the Arrow C Data / C Stream interfaces and JSON command payloads.
     /// </summary>
     internal sealed class NativeRustBackend : IDeltaTableServiceBackend
     {
@@ -72,7 +71,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
 
                     if (result != 1)
                     {
-                        throw CreateNotImplementedException(nameof(GetSchemaAsync));
+                        throw CreateNativeOperationFailedException(nameof(GetSchemaAsync));
                     }
 
                     Schema schema = CArrowSchemaImporter.ImportSchema(schemaPtr);
@@ -204,7 +203,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             IntPtr resultPtr = NativeMethods.CreateTable(_engine.DangerousGetHandle(), commandJson);
             if (resultPtr == IntPtr.Zero)
             {
-                throw CreateNotImplementedException(nameof(CreateEmptyTableAsync));
+                throw CreateNativeOperationFailedException(nameof(CreateEmptyTableAsync));
             }
 
             try
@@ -329,7 +328,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             IntPtr resultPtr = NativeMethods.UpgradeProtocol(_engine.DangerousGetHandle(), commandJson);
             if (resultPtr == IntPtr.Zero)
             {
-                throw CreateNotImplementedException(nameof(UpgradeTableProtocolAsync));
+                throw CreateNativeOperationFailedException(nameof(UpgradeTableProtocolAsync));
             }
 
             try
@@ -349,20 +348,23 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             _engine.Dispose();
         }
 
-        private NotSupportedException CreateNotImplementedException(string operation)
+        private InvalidOperationException CreateNativeOperationFailedException(string operation)
         {
-            string? lastError = NativeMethods.PtrToStringUtf8(
-                NativeMethods.GetLastError(_engine.DangerousGetHandle()));
-
-            string message =
-                $"Native V3 backend scaffold is active, but '{operation}' is not implemented yet.";
+            string? lastError = GetLastErrorMessage();
+            string message = $"Native V3 backend operation '{operation}' failed.";
 
             if (!string.IsNullOrWhiteSpace(lastError))
             {
                 message += $" Native error: {lastError}";
             }
 
-            return new NotSupportedException(message);
+            return new InvalidOperationException(message);
+        }
+
+        private string? GetLastErrorMessage()
+        {
+            return NativeMethods.PtrToStringUtf8(
+                NativeMethods.GetLastError(_engine.DangerousGetHandle()));
         }
 
         /// <summary>
@@ -381,7 +383,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
 
                 if (result != 1)
                 {
-                    throw CreateNotImplementedException(nameof(ReadTableAsync));
+                    throw CreateNativeOperationFailedException(nameof(ReadTableAsync));
                 }
 
                 IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
@@ -412,7 +414,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
 
                 if (result != 1)
                 {
-                    throw CreateNotImplementedException(nameof(ExecuteQueryAsync));
+                    throw CreateNativeOperationFailedException(nameof(ExecuteQueryAsync));
                 }
 
                 IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
@@ -448,7 +450,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
 
                 if (result != 1)
                 {
-                    throw CreateNotImplementedException(nameof(InsertAsync));
+                    throw CreateNativeOperationFailedException(nameof(InsertAsync));
                 }
 
                 return Task.CompletedTask;
@@ -483,7 +485,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
 
                 if (resultPtr == IntPtr.Zero)
                 {
-                    throw CreateNotImplementedException(nameof(MergeDataAsync));
+                    throw CreateNativeOperationFailedException(nameof(MergeDataAsync));
                 }
 
                 try
@@ -530,7 +532,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
                     var row = new Dictionary<string, object>();
                     foreach (var kvp in obj)
                     {
-                        row[kvp.Key] = kvp.Value?.ToJsonString() ?? string.Empty;
+                        row[kvp.Key] = ConvertJsonNodeToClrValue(kvp.Value);
                     }
 
                     rows.Add(row);
@@ -538,6 +540,44 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             }
 
             return new ExecuteResult(success, message, rows);
+        }
+
+        private static object ConvertJsonNodeToClrValue(JsonNode? node)
+        {
+            if (node == null)
+            {
+                return string.Empty;
+            }
+
+            if (node is JsonValue value)
+            {
+                if (value.TryGetValue(out string? stringValue))
+                {
+                    return stringValue ?? string.Empty;
+                }
+
+                if (value.TryGetValue(out bool boolValue))
+                {
+                    return boolValue;
+                }
+
+                if (value.TryGetValue(out long longValue))
+                {
+                    return longValue;
+                }
+
+                if (value.TryGetValue(out int intValue))
+                {
+                    return intValue;
+                }
+
+                if (value.TryGetValue(out double doubleValue))
+                {
+                    return doubleValue;
+                }
+            }
+
+            return node.ToJsonString();
         }
 
         /// <summary>
@@ -566,7 +606,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             IntPtr resultPtr = NativeMethods.ExecuteDml(_engine.DangerousGetHandle(), commandJson);
             if (resultPtr == IntPtr.Zero)
             {
-                throw CreateNotImplementedException(nameof(DeleteAsync));
+                throw CreateNativeOperationFailedException(nameof(DeleteAsync));
             }
 
             try

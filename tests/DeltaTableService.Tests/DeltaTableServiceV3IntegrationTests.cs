@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
@@ -16,179 +15,44 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
 {
     /// <summary>
-    /// Integration tests for the Delta Table Service V3 (native Rust binary).
-    /// Exercises the Flight server via <see cref="DeltaTableServiceClient"/>
-    /// using <see cref="DeltaTableProcess"/> to manage the server lifecycle.
+    /// Integration tests for the Delta Table Service V3 native backend.
     ///
-    /// Phase 1 tests cover health, list-actions, and basic client interactions.
-    /// Phase 2 tests cover the read path: ReadTable, GetSchema, ExecuteQuery.
+    /// The public client still exercises the full V3 surface, but the runtime is
+    /// now in-process native Rust instead of a spawned Flight server.
     ///
-    /// Run with: dotnet test --filter "TestCategory=Integration&amp;TestCategory=V3Flight"
+    /// Run with: dotnet test --filter "TestCategory=Integration&amp;TestCategory=V3Native"
     /// </summary>
     [TestClass]
     [TestCategory("Integration")]
     [TestCategory("V3")]
-    [TestCategory("V3Flight")]
+    [TestCategory("V3Native")]
     public class DeltaTableServiceV3IntegrationTests
     {
-        private static DeltaTableProcess? _process;
-        private static DeltaTableServiceClient? _client;
-        private static string? _testTablePath;
-        private static string? _partitionedTablePath;
-        private static string? _timeTravelTablePath;
-        private static string? _tempDir;
-        private static string? _fixtureDataDir;
+        private V3TestHelpers.IntegrationContext? _context;
 
-        /// <summary>
-        /// Resolves the path to the Rust binary by walking up from the test output
-        /// directory to the repo root.
-        /// </summary>
-        private static string? FindRustBinary()
+        [TestInitialize]
+        public async Task TestInitialize()
         {
-            string? dir = AppContext.BaseDirectory;
-            while (dir != null)
-            {
-                string solutionFile = Path.Combine(dir, "DeltaTableService.sln");
-                if (File.Exists(solutionFile))
-                {
-                    string binaryPath = Path.Combine(
-                        dir, "src", "DeltaTableService.Server", "v3",
-                        "target", "debug", "delta-table-service-v3.exe");
-                    return File.Exists(binaryPath) ? binaryPath : null;
-                }
-                dir = Path.GetDirectoryName(dir);
-            }
-
-            return null;
+            _context = await V3TestHelpers.CreateIntegrationContextAsync();
         }
 
-        /// <summary>
-        /// Resolves the path to the checked-in test fixture data directory by
-        /// walking up from the test output directory to the repo root.
-        /// Returns null if the directory is not found.
-        /// </summary>
-        private static string? FindFixtureDataDir()
+        [TestCleanup]
+        public void TestCleanup()
         {
-            string? dir = AppContext.BaseDirectory;
-            while (dir != null)
-            {
-                string solutionFile = Path.Combine(dir, "DeltaTableService.sln");
-                if (File.Exists(solutionFile))
-                {
-                    string dataDir = Path.Combine(
-                        dir, "tests", "DeltaTableService.Tests", "data");
-                    return Directory.Exists(dataDir) ? dataDir : null;
-                }
-                dir = Path.GetDirectoryName(dir);
-            }
-
-            return null;
+            _context?.Dispose();
         }
 
-        /// <summary>
-        /// Creates a test Delta table using the Rust binary's
-        /// <c>create-test-fixture</c> subcommand.
-        /// </summary>
-        /// <param name="binaryPath">Path to the Rust binary.</param>
-        /// <param name="tablePath">Directory where the fixture will be created.</param>
-        /// <param name="fixtureType">Fixture type: "basic", "partitioned", or "time-travel".</param>
-        private static void CreateTestDeltaTable(string binaryPath, string tablePath, string fixtureType = "basic")
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = binaryPath,
-                Arguments = $"create-test-fixture \"{tablePath}\" --fixture-type {fixtureType}",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+        private DeltaTableServiceClient Client => _context!.Client;
 
-            using var proc = Process.Start(psi)
-                ?? throw new InvalidOperationException("Failed to start create-test-fixture process.");
+        private string TestTablePath => _context!.TestTablePath;
 
-            string stdout = proc.StandardOutput.ReadToEnd();
-            string stderr = proc.StandardError.ReadToEnd();
-            proc.WaitForExit(30_000);
+        private string PartitionedTablePath => _context!.PartitionedTablePath;
 
-            if (proc.ExitCode != 0)
-            {
-                throw new InvalidOperationException(
-                    $"create-test-fixture failed (exit code {proc.ExitCode}).\n" +
-                    $"stdout: {stdout}\nstderr: {stderr}");
-            }
+        private string TimeTravelTablePath => _context!.TimeTravelTablePath;
 
-            if (!stdout.Contains("TEST_FIXTURE_CREATED"))
-            {
-                throw new InvalidOperationException(
-                    $"create-test-fixture did not print expected sentinel.\n" +
-                    $"stdout: {stdout}\nstderr: {stderr}");
-            }
-        }
+        private string? FixtureDataDir => _context!.FixtureDataDir;
 
-        /// <summary>
-        /// Creates a test Delta table fixture, then starts the V3 Rust server
-        /// once for all integration tests.
-        /// The Rust binary must be pre-built via <c>cargo build</c>.
-        /// </summary>
-        [ClassInitialize]
-        public static async Task ClassInitialize(TestContext context)
-        {
-            string? binaryPath = FindRustBinary();
-            if (binaryPath == null)
-            {
-                Assert.Inconclusive(
-                    "Rust binary not found. Build it first: " +
-                    "cd src/DeltaTableService.Server/v3 && cargo build");
-                return;
-            }
-
-            // Create test Delta table fixtures in a temp directory.
-            _tempDir = Path.Combine(Path.GetTempPath(), $"v3_test_{Guid.NewGuid():N}");
-
-            // Resolve checked-in fixture data directory.
-            _fixtureDataDir = FindFixtureDataDir();
-
-            _testTablePath = Path.Combine(_tempDir, "test_table");
-            CreateTestDeltaTable(binaryPath, _testTablePath);
-
-            _partitionedTablePath = Path.Combine(_tempDir, "partitioned_table");
-            CreateTestDeltaTable(binaryPath, _partitionedTablePath, "partitioned");
-
-            _timeTravelTablePath = Path.Combine(_tempDir, "time_travel_table");
-            CreateTestDeltaTable(binaryPath, _timeTravelTablePath, "time-travel");
-
-            // Start the Flight server.
-            _process = new DeltaTableProcess();
-            await _process.StartAsync(binaryPath);
-
-            _client = new DeltaTableServiceClient(
-                _process.GetFlightUri(), ServiceMode.V3_Rust);
-
-            // Verify health after startup.
-            bool healthy = await _client.HealthCheckAsync();
-            Assert.IsTrue(healthy, "Delta Table Service V3 did not become healthy.");
-        }
-
-        /// <summary>
-        /// Stops the Rust server and cleans up the test fixture.
-        /// </summary>
-        [ClassCleanup]
-        public static async Task ClassCleanup()
-        {
-            _client?.Dispose();
-            if (_process != null)
-            {
-                await _process.DisposeAsync();
-            }
-
-            // Clean up test fixture directory.
-            if (_tempDir != null && Directory.Exists(_tempDir))
-            {
-                try { Directory.Delete(_tempDir, recursive: true); }
-                catch { /* best-effort cleanup */ }
-            }
-        }
+        private string NewWriteTestTablePath() => _context!.CreateWriteTestTablePath();
 
         // ================================================================== //
         //  Phase 1: Health check
@@ -197,7 +61,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_HealthCheck_ReturnsTrue()
         {
-            bool healthy = await _client!.HealthCheckAsync();
+            bool healthy = await Client.HealthCheckAsync();
             Assert.IsTrue(healthy, "Expected the V3 server to report healthy.");
         }
 
@@ -208,82 +72,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public void V3_Client_ReportsCorrectServiceMode()
         {
-            Assert.AreEqual(ServiceMode.V3_Rust, _client!.Mode,
+            Assert.AreEqual(ServiceMode.V3_Rust, Client.Mode,
                 "Expected client to report V3_Rust service mode.");
-        }
-
-        // ================================================================== //
-        //  Phase 1: ListActions
-        // ================================================================== //
-
-        [TestMethod]
-        public async Task V3_ListActions_ReturnsExpectedActions()
-        {
-            // Use a raw Flight client to call ListActions, since
-            // DeltaTableServiceClient doesn't expose it directly.
-            var channel = Grpc.Net.Client.GrpcChannel.ForAddress(
-                _process!.GetFlightUri());
-            try
-            {
-                var flightClient = new Apache.Arrow.Flight.Client.FlightClient(channel);
-                var call = flightClient.ListActions();
-
-                var actions = new List<string>();
-                while (await call.ResponseStream.MoveNext(default))
-                {
-                    actions.Add(call.ResponseStream.Current.Type);
-                }
-
-                // Phase 1 actions: health, shutdown, create_table, execute_dml, upgrade_protocol
-                Assert.IsTrue(actions.Contains("health"),
-                    $"Missing 'health' action. Got: [{string.Join(", ", actions)}]");
-                Assert.IsTrue(actions.Contains("shutdown"),
-                    $"Missing 'shutdown' action. Got: [{string.Join(", ", actions)}]");
-                Assert.IsTrue(actions.Contains("create_table"),
-                    $"Missing 'create_table' action. Got: [{string.Join(", ", actions)}]");
-                Assert.IsTrue(actions.Contains("execute_dml"),
-                    $"Missing 'execute_dml' action. Got: [{string.Join(", ", actions)}]");
-                Assert.IsTrue(actions.Contains("upgrade_protocol"),
-                    $"Missing 'upgrade_protocol' action. Got: [{string.Join(", ", actions)}]");
-                Assert.AreEqual(5, actions.Count,
-                    $"Expected exactly 5 actions, got {actions.Count}: [{string.Join(", ", actions)}]");
-            }
-            finally
-            {
-                channel.Dispose();
-            }
-        }
-
-        // ================================================================== //
-        //  Phase 1: Unknown action returns error
-        // ================================================================== //
-
-        [TestMethod]
-        public async Task V3_DoAction_UnknownType_ReturnsInvalidArgument()
-        {
-            var channel = Grpc.Net.Client.GrpcChannel.ForAddress(
-                _process!.GetFlightUri());
-            try
-            {
-                var flightClient = new Apache.Arrow.Flight.Client.FlightClient(channel);
-                var action = new Apache.Arrow.Flight.FlightAction(
-                    "nonexistent_action",
-                    Google.Protobuf.ByteString.Empty);
-
-                var call = flightClient.DoAction(action);
-
-                var ex = await Assert.ThrowsExceptionAsync<Grpc.Core.RpcException>(async () =>
-                {
-                    while (await call.ResponseStream.MoveNext(default)) { }
-                });
-
-                Assert.AreEqual(Grpc.Core.StatusCode.InvalidArgument, ex.StatusCode,
-                    $"Expected InvalidArgument, got {ex.StatusCode}: {ex.Status.Detail}");
-            }
-            finally
-            {
-                channel.Dispose();
-            }
         }
 
         // ================================================================== //
@@ -293,7 +83,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_GetSchema_ReturnsCorrectSchema()
         {
-            TableSchema schema = await _client!.GetSchemaAsync(_testTablePath!);
+            TableSchema schema = await Client.GetSchemaAsync(TestTablePath);
 
             Assert.IsNotNull(schema, "Schema should not be null.");
             Assert.AreEqual(2, schema.Columns.Count,
@@ -318,7 +108,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_ReturnsAllRows()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(_testTablePath!))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(TestTablePath))
             {
                 batches.Add(batch);
             }
@@ -343,7 +133,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             var ids = new List<int>();
             var names = new List<string?>();
 
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(_testTablePath!))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(TestTablePath))
             {
                 var idArray = (Int32Array)batch.Column(0);
                 // delta-rs 0.31 writes Utf8View (Arrow 57), which the C# client
@@ -383,7 +173,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ExecuteQuery_SelectLiteral()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ExecuteQueryAsync(
+            await foreach (RecordBatch batch in Client.ExecuteQueryAsync(
                 "SELECT 42 AS answer"))
             {
                 batches.Add(batch);
@@ -408,9 +198,9 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         {
             var ids = new List<int>();
 
-            await foreach (RecordBatch batch in _client!.ExecuteQueryAsync(
+            await foreach (RecordBatch batch in Client.ExecuteQueryAsync(
                 sql: "SELECT id FROM tbl WHERE id > 1",
-                tablePath: _testTablePath!,
+                tablePath: TestTablePath,
                 tableName: "tbl"))
             {
                 var idArray = (Int32Array)batch.Column(0);
@@ -430,9 +220,9 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ExecuteQuery_SelectAllWithLimit()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ExecuteQueryAsync(
+            await foreach (RecordBatch batch in Client.ExecuteQueryAsync(
                 sql: "SELECT * FROM tbl LIMIT 2",
-                tablePath: _testTablePath!,
+                tablePath: TestTablePath,
                 tableName: "tbl"))
             {
                 batches.Add(batch);
@@ -450,56 +240,42 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ReadTable_InvalidPath_ReturnsError()
         {
-            var ex = await Assert.ThrowsExceptionAsync<Grpc.Core.RpcException>(async () =>
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
             {
-                await foreach (RecordBatch _ in _client!.ReadTableAsync(
+                await foreach (RecordBatch _ in Client.ReadTableAsync(
                     "/nonexistent/path/to/table"))
                 {
                     // Should not reach here.
                 }
             });
 
-            // The server returns InvalidArgument when the path cannot be
-            // converted to a file URL, Internal/NotFound for other failures.
-            Assert.IsTrue(
-                ex.StatusCode == Grpc.Core.StatusCode.Internal ||
-                ex.StatusCode == Grpc.Core.StatusCode.NotFound ||
-                ex.StatusCode == Grpc.Core.StatusCode.InvalidArgument,
-                $"Expected Internal, NotFound, or InvalidArgument, got {ex.StatusCode}: {ex.Status.Detail}");
+            V3TestHelpers.AssertNativeFailure(ex);
         }
 
         [TestMethod]
         public async Task V3_GetSchema_InvalidPath_ReturnsError()
         {
-            var ex = await Assert.ThrowsExceptionAsync<Grpc.Core.RpcException>(async () =>
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
             {
-                await _client!.GetSchemaAsync("/nonexistent/path/to/table");
+                await Client.GetSchemaAsync("/nonexistent/path/to/table");
             });
 
-            Assert.IsTrue(
-                ex.StatusCode == Grpc.Core.StatusCode.Internal ||
-                ex.StatusCode == Grpc.Core.StatusCode.NotFound ||
-                ex.StatusCode == Grpc.Core.StatusCode.InvalidArgument,
-                $"Expected Internal, NotFound, or InvalidArgument, got {ex.StatusCode}: {ex.Status.Detail}");
+            V3TestHelpers.AssertNativeFailure(ex);
         }
 
         [TestMethod]
         public async Task V3_ExecuteQuery_InvalidSql_ReturnsError()
         {
-            var ex = await Assert.ThrowsExceptionAsync<Grpc.Core.RpcException>(async () =>
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
             {
-                await foreach (RecordBatch _ in _client!.ExecuteQueryAsync(
+                await foreach (RecordBatch _ in Client.ExecuteQueryAsync(
                     "SELECT * FROM nonexistent_table_xyz"))
                 {
                     // Should not reach here.
                 }
             });
 
-            // The server should return an error for the unknown table.
-            Assert.IsTrue(
-                ex.StatusCode == Grpc.Core.StatusCode.Internal ||
-                ex.StatusCode == Grpc.Core.StatusCode.InvalidArgument,
-                $"Expected Internal or InvalidArgument, got {ex.StatusCode}: {ex.Status.Detail}");
+            V3TestHelpers.AssertNativeFailure(ex);
         }
 
         // ================================================================== //
@@ -510,7 +286,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_Partitioned_ReturnsAllRows()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(_partitionedTablePath!))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(PartitionedTablePath))
             {
                 batches.Add(batch);
             }
@@ -524,7 +300,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_Partitioned_HasPartitionColumn()
         {
             RecordBatch? firstBatch = null;
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(_partitionedTablePath!))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(PartitionedTablePath))
             {
                 firstBatch ??= batch;
             }
@@ -542,7 +318,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_GetSchema_Partitioned_IncludesPartitionColumn()
         {
-            TableSchema schema = await _client!.GetSchemaAsync(_partitionedTablePath!);
+            TableSchema schema = await Client.GetSchemaAsync(PartitionedTablePath);
 
             Assert.IsNotNull(schema, "Schema should not be null.");
             Assert.AreEqual(3, schema.Columns.Count,
@@ -559,9 +335,9 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         {
             var ids = new List<int>();
 
-            await foreach (RecordBatch batch in _client!.ExecuteQueryAsync(
+            await foreach (RecordBatch batch in Client.ExecuteQueryAsync(
                 sql: "SELECT id FROM tbl WHERE region = 'us' ORDER BY id",
-                tablePath: _partitionedTablePath!,
+                tablePath: PartitionedTablePath,
                 tableName: "tbl"))
             {
                 var idArray = (Int32Array)batch.Column(0);
@@ -586,8 +362,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_TimeTravel_Version0_Returns2Rows()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(
-                _timeTravelTablePath!, version: 0))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(
+                TimeTravelTablePath, version: 0))
             {
                 batches.Add(batch);
             }
@@ -601,7 +377,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_TimeTravel_Latest_Returns4Rows()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(_timeTravelTablePath!))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(TimeTravelTablePath))
             {
                 batches.Add(batch);
             }
@@ -616,8 +392,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         {
             var names = new List<string?>();
 
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(
-                _timeTravelTablePath!, version: 0))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(
+                TimeTravelTablePath, version: 0))
             {
                 IArrowArray nameCol = batch.Column(1);
                 for (int i = 0; i < batch.Length; i++)
@@ -641,8 +417,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_GetSchema_TimeTravel_Version0()
         {
-            TableSchema schema = await _client!.GetSchemaAsync(
-                _timeTravelTablePath!, version: 0);
+            TableSchema schema = await Client.GetSchemaAsync(
+                TimeTravelTablePath, version: 0);
 
             Assert.IsNotNull(schema, "Schema should not be null.");
             Assert.AreEqual(2, schema.Columns.Count,
@@ -659,8 +435,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_NumRows_LimitsResults()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(
-                _testTablePath!, numRows: 1))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(
+                TestTablePath, numRows: 1))
             {
                 batches.Add(batch);
             }
@@ -674,8 +450,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_NumRows_Zero_ReturnsEmpty()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(
-                _testTablePath!, numRows: 0))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(
+                TestTablePath, numRows: 0))
             {
                 batches.Add(batch);
             }
@@ -689,8 +465,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_NumRows_LargerThanTable_ReturnsAll()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(
-                _testTablePath!, numRows: 100))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(
+                TestTablePath, numRows: 100))
             {
                 batches.Add(batch);
             }
@@ -704,8 +480,8 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         public async Task V3_ReadTable_Partitioned_NumRows_LimitsResults()
         {
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(
-                _partitionedTablePath!, numRows: 2))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(
+                PartitionedTablePath, numRows: 2))
             {
                 batches.Add(batch);
             }
@@ -722,14 +498,14 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ReadTable_ColumnMapping_ReturnsLogicalSchema()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_column_mapping_name");
-            TableSchema schema = await _client!.GetSchemaAsync(tablePath);
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_column_mapping_name");
+            TableSchema schema = await Client.GetSchemaAsync(tablePath);
 
             Assert.IsNotNull(schema, "Schema should not be null.");
             Assert.AreEqual(2, schema.Columns.Count,
@@ -747,15 +523,15 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ReadTable_ColumnMapping_Returns3Rows()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_column_mapping_name");
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_column_mapping_name");
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(tablePath))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
             {
                 batches.Add(batch);
             }
@@ -768,17 +544,17 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ReadTable_ColumnMapping_ReturnsCorrectData()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_column_mapping_name");
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_column_mapping_name");
             var ids = new List<int>();
             var cities = new List<string?>();
 
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(tablePath))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
             {
                 var idArray = (Int32Array)batch.Column(0);
                 IArrowArray cityCol = batch.Column(1);
@@ -809,16 +585,16 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ExecuteQuery_ColumnMapping_SqlFilterWorks()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_column_mapping_name");
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_column_mapping_name");
             var ids = new List<int>();
 
-            await foreach (RecordBatch batch in _client!.ExecuteQueryAsync(
+            await foreach (RecordBatch batch in Client.ExecuteQueryAsync(
                 sql: "SELECT id FROM tbl WHERE id >= 2 ORDER BY id",
                 tablePath: tablePath,
                 tableName: "tbl"))
@@ -842,14 +618,14 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ReadTable_DeletionVector_ReturnsSchema()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_deletion_vector");
-            TableSchema schema = await _client!.GetSchemaAsync(tablePath);
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_deletion_vector");
+            TableSchema schema = await Client.GetSchemaAsync(tablePath);
 
             Assert.IsNotNull(schema, "Schema should not be null.");
             Assert.AreEqual(2, schema.Columns.Count,
@@ -863,15 +639,15 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ReadTable_DeletionVector_Returns4Rows()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_deletion_vector");
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_deletion_vector");
             var batches = new List<RecordBatch>();
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(tablePath))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
             {
                 batches.Add(batch);
             }
@@ -884,17 +660,17 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ReadTable_DeletionVector_ExcludesDeletedRow()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_deletion_vector");
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_deletion_vector");
             var ids = new List<int>();
             var values = new List<string?>();
 
-            await foreach (RecordBatch batch in _client!.ReadTableAsync(tablePath))
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
             {
                 var idArray = (Int32Array)batch.Column(0);
                 IArrowArray valueCol = batch.Column(1);
@@ -930,16 +706,16 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         [TestMethod]
         public async Task V3_ExecuteQuery_DeletionVector_SqlFilterWorks()
         {
-            if (_fixtureDataDir == null)
+            if (FixtureDataDir == null)
             {
                 Assert.Inconclusive("Fixture data directory not found.");
                 return;
             }
 
-            string tablePath = Path.Combine(_fixtureDataDir, "delta_test_deletion_vector");
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_deletion_vector");
             var ids = new List<int>();
 
-            await foreach (RecordBatch batch in _client!.ExecuteQueryAsync(
+            await foreach (RecordBatch batch in Client.ExecuteQueryAsync(
                 sql: "SELECT id FROM tbl WHERE id > 2 ORDER BY id",
                 tablePath: tablePath,
                 tableName: "tbl"))
@@ -961,15 +737,6 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         // ================================================================== //
         //  Phase 3: Write path — helpers
         // ================================================================== //
-
-        /// <summary>
-        /// Creates a fresh temp directory path for a write test table.
-        /// The caller is responsible for cleaning up.
-        /// </summary>
-        private static string NewWriteTestTablePath()
-        {
-            return Path.Combine(_tempDir!, $"write_test_{Guid.NewGuid():N}");
-        }
 
         /// <summary>
         /// Builds an Arrow schema with (id: Int32, name: Utf8).
@@ -1011,14 +778,14 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("name", "string"),
             });
 
-            ExecuteResult result = await _client!.CreateTableAsync(tablePath, schema);
+            ExecuteResult result = await Client.CreateTableAsync(tablePath, schema);
 
             Assert.IsTrue(result.Success, $"CreateTable failed: {result.Message}");
             Assert.IsTrue(result.Message.Contains("created"),
                 $"Expected 'created' in message, got: {result.Message}");
 
             // Verify schema via GetSchema.
-            TableSchema readBackSchema = await _client!.GetSchemaAsync(tablePath);
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
             Assert.AreEqual(2, readBackSchema.Columns.Count);
             Assert.AreEqual("id", readBackSchema.Columns[0].Name);
             Assert.AreEqual("int32", readBackSchema.Columns[0].DataType);
@@ -1040,12 +807,12 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 ["delta.appendOnly"] = "true",
             };
 
-            ExecuteResult result = await _client!.CreateTableAsync(tablePath, schema, configuration: config);
+            ExecuteResult result = await Client.CreateTableAsync(tablePath, schema, configuration: config);
 
             Assert.IsTrue(result.Success, $"CreateTable with config failed: {result.Message}");
 
             // Verify table is readable.
-            TableSchema readBackSchema = await _client!.GetSchemaAsync(tablePath);
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
             Assert.AreEqual(2, readBackSchema.Columns.Count);
         }
 
@@ -1064,7 +831,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             // Insert data via overwrite.
             Schema arrowSchema = BuildIdNameSchema();
@@ -1072,11 +839,11 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new[] { 10, 20, 30 },
                 new[] { "ten", "twenty", "thirty" });
 
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch), SaveMode.Overwrite);
 
             // Read back and verify.
-            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            var rows = await ReadAllRowsSorted(Client, tablePath);
             Assert.AreEqual(3, rows.Count, $"Expected 3 rows, got {rows.Count}.");
             Assert.AreEqual((10, "ten"), (rows[0].id, rows[0].name));
             Assert.AreEqual((20, "twenty"), (rows[1].id, rows[1].name));
@@ -1094,22 +861,22 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
             RecordBatch batch1 = BuildIdNameBatch(
                 new[] { 1, 2 }, new[] { "a", "b" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch1), SaveMode.Overwrite);
 
             // Append more rows.
             RecordBatch batch2 = BuildIdNameBatch(
                 new[] { 3, 4 }, new[] { "c", "d" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch2), SaveMode.Append);
 
             // Verify total: 2 + 2 = 4 rows.
-            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            var rows = await ReadAllRowsSorted(Client, tablePath);
             Assert.AreEqual(4, rows.Count, $"Expected 4 rows after append, got {rows.Count}.");
             Assert.AreEqual(1, rows[0].id);
             Assert.AreEqual(4, rows[3].id);
@@ -1125,24 +892,24 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
 
             // Write initial data.
             RecordBatch batch1 = BuildIdNameBatch(
                 new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch1), SaveMode.Overwrite);
 
             // Overwrite with different data.
             RecordBatch batch2 = BuildIdNameBatch(
                 new[] { 100, 200 }, new[] { "x", "y" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch2), SaveMode.Overwrite);
 
             // Verify only the overwrite data remains.
-            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            var rows = await ReadAllRowsSorted(Client, tablePath);
             Assert.AreEqual(2, rows.Count, $"Expected 2 rows after overwrite, got {rows.Count}.");
             Assert.AreEqual((100, "x"), (rows[0].id, rows[0].name));
             Assert.AreEqual((200, "y"), (rows[1].id, rows[1].name));
@@ -1163,22 +930,22 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
             RecordBatch batch = BuildIdNameBatch(
                 new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch), SaveMode.Overwrite);
 
             // Delete rows where id > 1.
-            ExecuteResult deleteResult = await _client!.DeleteAsync(
+            ExecuteResult deleteResult = await Client.DeleteAsync(
                 "DELETE FROM tbl WHERE id > 1", tablePath, "tbl");
 
             Assert.IsTrue(deleteResult.Success, $"Delete failed: {deleteResult.Message}");
 
             // Verify only id=1 remains.
-            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            var rows = await ReadAllRowsSorted(Client, tablePath);
             Assert.AreEqual(1, rows.Count, $"Expected 1 row after delete, got {rows.Count}.");
             Assert.AreEqual((1, "a"), (rows[0].id, rows[0].name));
         }
@@ -1193,22 +960,22 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
             RecordBatch batch = BuildIdNameBatch(
                 new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch), SaveMode.Overwrite);
 
             // Delete all rows.
-            ExecuteResult deleteResult = await _client!.DeleteAsync(
+            ExecuteResult deleteResult = await Client.DeleteAsync(
                 "DELETE FROM tbl WHERE true", tablePath, "tbl");
 
             Assert.IsTrue(deleteResult.Success, $"Delete all failed: {deleteResult.Message}");
 
             // Verify zero rows.
-            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            var rows = await ReadAllRowsSorted(Client, tablePath);
             Assert.AreEqual(0, rows.Count, $"Expected 0 rows after delete all, got {rows.Count}.");
         }
 
@@ -1222,15 +989,15 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
             RecordBatch batch = BuildIdNameBatch(
                 new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(batch), SaveMode.Overwrite);
 
-            ExecuteResult deleteResult = await _client!.DeleteAsync(
+            ExecuteResult deleteResult = await Client.DeleteAsync(
                 "DELETE FROM tbl WHERE id = 2", tablePath, "tbl");
 
             Assert.IsTrue(deleteResult.Success);
@@ -1256,12 +1023,12 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
             RecordBatch initialBatch = BuildIdNameBatch(
                 new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
 
             // Merge source: (2, "B_updated"), (4, "d_new").
@@ -1277,13 +1044,13 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 WhenNotMatchedInsertAll = true,
             };
 
-            ExecuteResult mergeResult = await _client!.MergeDataAsync(
+            ExecuteResult mergeResult = await Client.MergeDataAsync(
                 tablePath, arrowSchema, ToAsyncEnumerable(sourceBatch), mergeOptions);
 
             Assert.IsTrue(mergeResult.Success, $"Merge failed: {mergeResult.Message}");
 
             // Verify: 4 rows — (1,a), (2,B_updated), (3,c), (4,d_new).
-            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            var rows = await ReadAllRowsSorted(Client, tablePath);
             Assert.AreEqual(4, rows.Count, $"Expected 4 rows after merge, got {rows.Count}.");
             Assert.AreEqual((1, "a"), (rows[0].id, rows[0].name));
             Assert.AreEqual((2, "B_updated"), (rows[1].id, rows[1].name));
@@ -1301,12 +1068,12 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
             RecordBatch initialBatch = BuildIdNameBatch(
                 new[] { 1, 2 }, new[] { "a", "b" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
 
             // Merge source: (2, "B"), (3, "c").
@@ -1319,7 +1086,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 WhenNotMatchedInsertAll = true,
             };
 
-            ExecuteResult mergeResult = await _client!.MergeDataAsync(
+            ExecuteResult mergeResult = await Client.MergeDataAsync(
                 tablePath, arrowSchema, ToAsyncEnumerable(sourceBatch), mergeOptions);
 
             Assert.IsTrue(mergeResult.Success);
@@ -1343,12 +1110,12 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 new ColumnDefinition("id", "int32"),
                 new ColumnDefinition("name", "string"),
             });
-            await _client!.CreateTableAsync(tablePath, tableSchema);
+            await Client.CreateTableAsync(tablePath, tableSchema);
 
             Schema arrowSchema = BuildIdNameSchema();
             RecordBatch initialBatch = BuildIdNameBatch(
                 new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
-            await _client!.InsertAsync(tablePath, arrowSchema,
+            await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
 
             // Merge source: id=2 — should delete the matched row.
@@ -1360,13 +1127,13 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 WhenMatchedDeletePredicate = "true",
             };
 
-            ExecuteResult mergeResult = await _client!.MergeDataAsync(
+            ExecuteResult mergeResult = await Client.MergeDataAsync(
                 tablePath, arrowSchema, ToAsyncEnumerable(sourceBatch), mergeOptions);
 
             Assert.IsTrue(mergeResult.Success, $"Merge delete failed: {mergeResult.Message}");
 
             // Verify: 2 rows remain — (1,a), (3,c).
-            var rows = await ReadAllRowsSorted(_client!, tablePath);
+            var rows = await ReadAllRowsSorted(Client, tablePath);
             Assert.AreEqual(2, rows.Count, $"Expected 2 rows after merge-delete, got {rows.Count}.");
             Assert.AreEqual((1, "a"), (rows[0].id, rows[0].name));
             Assert.AreEqual((3, "c"), (rows[1].id, rows[1].name));
@@ -1386,27 +1153,15 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             {
                 new ColumnDefinition("id", "int32"),
             });
-            await _client!.CreateTableAsync(tablePath, schema);
+            await Client.CreateTableAsync(tablePath, schema);
 
             // Upgrade protocol.
-            ExecuteResult result = await _client!.UpgradeTableProtocolAsync(
+            ExecuteResult result = await Client.UpgradeTableProtocolAsync(
                 tablePath, readerVersion: 2, writerVersion: 5);
 
             Assert.IsTrue(result.Success, $"UpgradeProtocol failed: {result.Message}");
-            Assert.IsTrue(result.Result.Count > 0, "Expected protocol result.");
-
-            var proto = result.Result[0];
-            Assert.IsTrue(proto.ContainsKey("minReaderVersion"),
-                "Expected 'minReaderVersion' in protocol result.");
-            Assert.IsTrue(proto.ContainsKey("minWriterVersion"),
-                "Expected 'minWriterVersion' in protocol result.");
-
-            long readerVersion = (long)proto["minReaderVersion"];
-            long writerVersion = (long)proto["minWriterVersion"];
-            Assert.IsTrue(readerVersion >= 2,
-                $"Expected reader version >= 2, got {readerVersion}.");
-            Assert.IsTrue(writerVersion >= 5,
-                $"Expected writer version >= 5, got {writerVersion}.");
+            V3TestHelpers.AssertExecuteResultContainsLong(result, "minReaderVersion", 2);
+            V3TestHelpers.AssertExecuteResultContainsLong(result, "minWriterVersion", 5);
         }
 
         [TestMethod]
@@ -1418,10 +1173,10 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             {
                 new ColumnDefinition("id", "int32"),
             });
-            await _client!.CreateTableAsync(tablePath, schema);
+            await Client.CreateTableAsync(tablePath, schema);
 
             // Upgrade with changeDataFeed feature.
-            ExecuteResult result = await _client!.UpgradeTableProtocolAsync(
+            ExecuteResult result = await Client.UpgradeTableProtocolAsync(
                 tablePath,
                 readerVersion: 3,
                 writerVersion: 7,
@@ -1429,10 +1184,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
 
             Assert.IsTrue(result.Success, $"UpgradeProtocol with features failed: {result.Message}");
 
-            var proto = result.Result[0];
-            long writerVersion = (long)proto["minWriterVersion"];
-            Assert.IsTrue(writerVersion >= 7,
-                $"Expected writer version >= 7, got {writerVersion}.");
+            V3TestHelpers.AssertExecuteResultContainsLong(result, "minWriterVersion", 7);
         }
     }
 }

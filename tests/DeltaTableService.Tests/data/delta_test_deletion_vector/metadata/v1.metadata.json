@@ -1,0 +1,35 @@
+{
+  "format-version" : 2,
+  "table-uuid" : "820da202-b0bd-44de-82b5-0496da4b594c",
+  "location" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector",
+  "last-sequence-number" : 0,
+  "last-updated-ms" : 1773376098841,
+  "last-column-id" : 0,
+  "current-schema-id" : 0,
+  "schemas" : [ {
+    "type" : "struct",
+    "schema-id" : 0,
+    "fields" : [ ]
+  } ],
+  "default-spec-id" : 0,
+  "partition-specs" : [ {
+    "spec-id" : 0,
+    "fields" : [ ]
+  } ],
+  "last-partition-id" : 999,
+  "default-sort-order-id" : 0,
+  "sort-orders" : [ {
+    "order-id" : 0,
+    "fields" : [ ]
+  } ],
+  "properties" : {
+    "schema.name-mapping.default" : "[ {\n  \"field-id\" : 1,\n  \"names\" : [ \"id\" ]\n}, {\n  \"field-id\" : 2,\n  \"names\" : [ \"value\" ]\n} ]",
+    "write.parquet.compression-codec" : "zstd"
+  },
+  "current-snapshot-id" : -1,
+  "refs" : { },
+  "snapshots" : [ ],
+  "statistics" : [ ],
+  "snapshot-log" : [ ],
+  "metadata-log" : [ ]
+}

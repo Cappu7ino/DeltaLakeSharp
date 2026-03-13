@@ -1,0 +1,119 @@
+{
+  "format-version" : 2,
+  "table-uuid" : "820da202-b0bd-44de-82b5-0496da4b594c",
+  "location" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector",
+  "last-sequence-number" : 2,
+  "last-updated-ms" : 1773377530828,
+  "last-column-id" : 2,
+  "current-schema-id" : 1,
+  "schemas" : [ {
+    "type" : "struct",
+    "schema-id" : 0,
+    "fields" : [ ]
+  }, {
+    "type" : "struct",
+    "schema-id" : 1,
+    "fields" : [ {
+      "id" : 1,
+      "name" : "id",
+      "required" : false,
+      "type" : "int"
+    }, {
+      "id" : 2,
+      "name" : "value",
+      "required" : false,
+      "type" : "string"
+    } ]
+  } ],
+  "default-spec-id" : 0,
+  "partition-specs" : [ {
+    "spec-id" : 0,
+    "fields" : [ ]
+  } ],
+  "last-partition-id" : 999,
+  "default-sort-order-id" : 0,
+  "sort-orders" : [ {
+    "order-id" : 0,
+    "fields" : [ ]
+  } ],
+  "properties" : {
+    "schema.name-mapping.default" : "[ {\n  \"field-id\" : 1,\n  \"names\" : [ \"id\" ]\n}, {\n  \"field-id\" : 2,\n  \"names\" : [ \"value\" ]\n} ]",
+    "write.metadata.delete-after-commit.enabled" : "true",
+    "write.data.path" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector",
+    "XTABLE_METADATA" : "{\"lastInstantSynced\":\"2026-03-13T04:32:54Z\",\"instantsToConsiderForNextSync\":[],\"version\":0,\"sourceTableFormat\":\"DELTA\",\"sourceIdentifier\":\"3\"}",
+    "write.parquet.compression-codec" : "zstd"
+  },
+  "current-snapshot-id" : 3979283933857452267,
+  "refs" : {
+    "main" : {
+      "snapshot-id" : 3979283933857452267,
+      "type" : "branch"
+    }
+  },
+  "snapshots" : [ {
+    "sequence-number" : 1,
+    "snapshot-id" : 7707046033270638530,
+    "timestamp-ms" : 1773377529436,
+    "summary" : {
+      "operation" : "overwrite",
+      "XTABLE_METADATA" : "{\"lastInstantSynced\":\"2026-03-13T04:31:28Z\",\"instantsToConsiderForNextSync\":[],\"version\":0,\"sourceTableFormat\":\"DELTA\",\"sourceIdentifier\":\"2\"}",
+      "added-data-files" : "1",
+      "added-records" : "5",
+      "added-files-size" : "1241",
+      "changed-partition-count" : "1",
+      "total-records" : "5",
+      "total-files-size" : "1241",
+      "total-data-files" : "1",
+      "total-delete-files" : "0",
+      "total-position-deletes" : "0",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector/metadata/snap-7707046033270638530-1-f8364bcc-d6f9-4f36-a489-7d31f786072c.avro",
+    "schema-id" : 1
+  }, {
+    "sequence-number" : 2,
+    "snapshot-id" : 3979283933857452267,
+    "parent-snapshot-id" : 7707046033270638530,
+    "timestamp-ms" : 1773377530828,
+    "summary" : {
+      "operation" : "overwrite",
+      "added-position-delete-files" : "1",
+      "added-delete-files" : "1",
+      "added-files-size" : "2043",
+      "added-position-deletes" : "1",
+      "changed-partition-count" : "1",
+      "total-records" : "5",
+      "total-files-size" : "3284",
+      "total-data-files" : "1",
+      "total-delete-files" : "1",
+      "total-position-deletes" : "1",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector/metadata/snap-3979283933857452267-1-f50b5199-b6f5-42bf-a31e-e7c74ead0ff1.avro",
+    "schema-id" : 1
+  } ],
+  "statistics" : [ ],
+  "snapshot-log" : [ {
+    "timestamp-ms" : 1773377529436,
+    "snapshot-id" : 7707046033270638530
+  }, {
+    "timestamp-ms" : 1773377530828,
+    "snapshot-id" : 3979283933857452267
+  } ],
+  "metadata-log" : [ {
+    "timestamp-ms" : 1773376098841,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector/metadata/v1.metadata.json"
+  }, {
+    "timestamp-ms" : 1773376099815,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector/metadata/v2.metadata.json"
+  }, {
+    "timestamp-ms" : 1773376101006,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector/metadata/v3.metadata.json"
+  }, {
+    "timestamp-ms" : 1773377528024,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector/metadata/v4.metadata.json"
+  }, {
+    "timestamp-ms" : 1773377529436,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_deletion_vector/metadata/v5.metadata.json"
+  } ]
+}
