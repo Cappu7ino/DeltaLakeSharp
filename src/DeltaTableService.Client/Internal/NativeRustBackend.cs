@@ -125,6 +125,44 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             }
         }
 
+        public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = path,
+                ["starting_version"] = startingVersion,
+            };
+
+            AddStorageConfig(command, storageConfig);
+            if (endingVersion.HasValue)
+            {
+                command["ending_version"] = endingVersion.Value;
+            }
+
+            string commandJson = JsonSerializer.Serialize(command);
+
+            using IArrowArrayStream stream = OpenChangeDataStream(commandJson);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RecordBatch? batch = await stream.ReadNextRecordBatchAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (batch == null)
+                {
+                    yield break;
+                }
+
+                yield return batch;
+            }
+        }
+
         public async IAsyncEnumerable<RecordBatch> ExecuteQueryAsync(
             string sql,
             string? tablePath = null,
@@ -223,6 +261,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             string mode = "overwrite",
+            WriteSchemaMode? schemaMode = null,
             StorageConfig? storageConfig = null,
             IReadOnlyList<string>? partitionBy = null,
             CancellationToken cancellationToken = default)
@@ -234,6 +273,11 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
                 ["path"] = path,
                 ["mode"] = mode,
             };
+
+            if (schemaMode.HasValue)
+            {
+                command["schema_mode"] = schemaMode.Value.ToString().ToLowerInvariant();
+            }
 
             AddStorageConfig(command, storageConfig);
             if (partitionBy != null && partitionBy.Count > 0)
@@ -415,6 +459,32 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
                 if (result != 1)
                 {
                     throw CreateNativeOperationFailedException(nameof(ExecuteQueryAsync));
+                }
+
+                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
+                CArrowArrayStream.Free(streamPtr);
+                return stream;
+            }
+            catch
+            {
+                CArrowArrayStream.Free(streamPtr);
+                throw;
+            }
+        }
+
+        private unsafe IArrowArrayStream OpenChangeDataStream(string commandJson)
+        {
+            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            try
+            {
+                int result = NativeMethods.ReadChangeData(
+                    _engine.DangerousGetHandle(),
+                    commandJson,
+                    streamPtr);
+
+                if (result != 1)
+                {
+                    throw CreateNativeOperationFailedException(nameof(ReadChangeDataAsync));
                 }
 
                 IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);

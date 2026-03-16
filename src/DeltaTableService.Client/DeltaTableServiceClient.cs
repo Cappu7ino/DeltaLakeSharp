@@ -138,6 +138,43 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
             }
         }
 
+        /// <summary>
+        /// Reads Change Data Feed rows from a Delta table and streams them as
+        /// Arrow <see cref="RecordBatch"/> objects.
+        /// </summary>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="startingVersion">Inclusive starting Delta version.</param>
+        /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig storageConfig = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (startingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startingVersion), startingVersion, "Starting version must be >= 0.");
+            }
+
+            if (endingVersion.HasValue && endingVersion.Value < startingVersion)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
+            }
+
+            await foreach (RecordBatch batch in _backend.ReadChangeDataAsync(path, startingVersion, endingVersion, storageConfig, cancellationToken).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+        }
+
         // ------------------------------------------------------------------ //
         //  Get schema
         // ------------------------------------------------------------------ //
@@ -253,19 +290,20 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         /// <param name="batches">An async stream of RecordBatches to write.</param>
         /// <param name="mode">Write mode (default <see cref="SaveMode.Overwrite"/>).</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
-        /// <param name="partitionBy">Optional list of column names to partition the table by. Only applied on the first write (overwrite mode); ignored for appends to existing partitioned tables.</param>
+        /// <param name="partitionBy">Optional list of column names to partition the table by. Applied when the write creates the table, and otherwise validated against the existing table metadata.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public Task InsertAsync(
             string path,
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             SaveMode mode = SaveMode.Overwrite,
+            WriteSchemaMode? schemaMode = null,
             StorageConfig storageConfig = null,
             IReadOnlyList<string> partitionBy = null,
             CancellationToken cancellationToken = default)
         {
             string modeString = mode == SaveMode.Append ? "append" : "overwrite";
-            return _backend.InsertAsync(path, schema, batches, modeString, storageConfig, partitionBy, cancellationToken);
+            return _backend.InsertAsync(path, schema, batches, modeString, schemaMode, storageConfig, partitionBy, cancellationToken);
         }
 
         // ------------------------------------------------------------------ //

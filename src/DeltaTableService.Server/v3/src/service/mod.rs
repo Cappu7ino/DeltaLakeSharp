@@ -72,6 +72,16 @@ impl DeltaService {
         self::read::resolve_batch_reader_from_command_bytes(body, runtime_handle).await
     }
 
+    /// Resolves a change-data-feed command and returns a streaming reader.
+    pub async fn read_change_data_batches(
+        &self,
+        body: &[u8],
+        runtime_handle: tokio::runtime::Handle,
+    ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
+    {
+        self::read::resolve_change_data_reader_from_command_bytes(body, runtime_handle).await
+    }
+
     /// Delegates table creation to the write module.
     pub async fn create_table(&self, body: &[u8]) -> Result<serde_json::Value, ServiceError> {
         self::write::handle_create_table(body).await

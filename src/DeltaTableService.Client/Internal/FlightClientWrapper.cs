@@ -95,6 +95,22 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         }
 
         /// <inheritdoc />
+        public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "ReadChangeDataAsync is supported only by the V3 native Rust backend.");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+
+        /// <inheritdoc />
         public async IAsyncEnumerable<RecordBatch> ExecuteQueryAsync(
             string sql,
             string? tablePath = null,
@@ -172,10 +188,17 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             string mode = "overwrite",
+            WriteSchemaMode? schemaMode = null,
             StorageConfig? storageConfig = null,
             IReadOnlyList<string>? partitionBy = null,
             CancellationToken cancellationToken = default)
         {
+            if (schemaMode.HasValue)
+            {
+                throw new NotSupportedException(
+                    "Schema-aware overwrite is currently supported only by the native V3 backend.");
+            }
+
             var cmd = new Dictionary<string, object>
             {
                 ["path"] = path,

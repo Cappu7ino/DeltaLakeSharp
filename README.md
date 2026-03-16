@@ -1,17 +1,20 @@
 # Delta Table Service
 
-Test infrastructure for running Delta Lake operations inside Docker containers and exercising them from C# integration tests.
+A batteries-included Delta Lake client library for .NET with streaming Arrow reads and writes, SQL operations, merge support, protocol upgrades, and interchangeable Spark, Flight, and native Rust backends.
+
+The library is designed for application code, data tooling, automation, and integration scenarios. The container-based harnesses and test projects in this repository are supporting assets, not the primary purpose of the library.
 
 ## Architecture
 
-The service ships with **two interchangeable backends**, each exposing the same C# client API:
+The service ships with **three interchangeable backends**, each exposing the same C# client API:
 
 | Backend | Engine | Protocol | Dockerfile | Base Image |
 |---------|--------|----------|------------|------------|
 | **V1** | Apache Spark (PySpark) | Arrow Flight (port 8815) | `v1/Dockerfile` | `apache/spark:3.5.5` |
 | **V2** | DataFusion + delta-rs | Arrow Flight (port 8815) | `v2/Dockerfile` | `python:3.11-slim` |
+| **V3** | Native Rust + delta-rs | In-process native interop | N/A | N/A |
 
-Both backends are accessed through the same `DeltaTableServiceClient` class.
+All backends are accessed through the same `DeltaTableServiceClient` class.
 The backend is selected at construction time via the `ServiceMode` enum and is
 transparent to the caller.
 
@@ -20,35 +23,32 @@ transparent to the caller.
 ### Quick Start
 
 ```csharp
-// 1. Start a Docker container (picks the backend automatically).
-await using var container = await new DeltaTableContainer()
-    .BuildAndStartAsync(dockerfilePath, ServiceMode.V2_DataFusion);
-
-// 2. Create a client pointing at the running container.
+// 1. Create a client. For V3 native mode, the URI is accepted for API
+// compatibility but the backend runs in-process.
 using var client = new DeltaTableServiceClient(
-    container.GetServiceUri(), container.Mode);
+    new Uri("http://localhost"), ServiceMode.V3_Rust);
 
-// 3. Write a Delta table from a CSV string.
+// 2. Write a Delta table from a CSV string.
 var batch = ArrowConverter.FromCsv("name,age\nAlice,30\nBob,25");
 await client.InsertAsync("/data/people", batch.Schema, ArrowConverter.ToAsyncEnumerable(batch));
 
-// 4. Read it back as a DataTable.
+// 3. Read it back as a DataTable.
 DataTable dt = await client.ReadTableAsync("/data/people").ToDataTableAsync();
 
-// 5. Run SQL against the table.
+// 4. Run SQL against the table.
 DataTable result = await client.ExecuteQueryAsync(
     "SELECT * FROM people WHERE age > 28",
     tablePath: "/data/people",
     tableName: "people")
     .ToDataTableAsync();
 
-// 6. Delete rows using the DML API.
+// 5. Delete rows using the DML API.
 ExecuteResult deleteResult = await client.DeleteAsync(
     "DELETE FROM people WHERE age < 28",
     tablePath: "/data/people",
     tableName: "people");
 
-// 7. Stream source data and merge it into an existing table.
+// 6. Stream source data and merge it into an existing table.
 var arrowSchema = new Apache.Arrow.Schema.Builder()
     .Field(f => f.Name("name").DataType(StringType.Default).Nullable(false))
     .Field(f => f.Name("age").DataType(Int32Type.Default).Nullable(true))
@@ -70,6 +70,8 @@ ExecuteResult mergeResult = await client.MergeDataAsync(
     mergeOptions);
 ```
 
+For V1 and V2 containerized backends, `DeltaTableContainer` remains available as a convenience for local development, compatibility testing, and integration scenarios.
+
 ### DeltaTableServiceClient
 
 The public entry point. Wraps all Arrow/gRPC protocol details behind standard
@@ -79,25 +81,27 @@ The public entry point. Wraps all Arrow/gRPC protocol details behind standard
 |--------|---------|-------------|
 | `HealthCheckAsync()` | `Task<bool>` | Checks if the server is healthy and responsive. |
 | `ReadTableAsync(path, storageConfig?)` | `IAsyncEnumerable<RecordBatch>` | Streams raw Arrow `RecordBatch` objects for the entire table. Zero-copy columnar access with true streaming semantics. Use `.ToDataTableAsync()` to materialize as a `DataTable`, or `.ToListAsync()` to buffer all batches. |
+| `ReadChangeDataAsync(path, startingVersion, endingVersion?, storageConfig?)` | `IAsyncEnumerable<RecordBatch>` | Streams Delta Change Data Feed rows as Arrow batches. Currently supported only by the native V3 backend. |
 | `GetSchemaAsync(path, storageConfig?)` | `Task<TableSchema>` | Returns the schema of a Delta table. |
 | `ExecuteQueryAsync(sql, tablePath?, tableName?, storageConfig?)` | `IAsyncEnumerable<RecordBatch>` | Executes a read-oriented SQL query (SELECT, SHOW, DESCRIBE, etc.) and streams results as Arrow batches. When `tablePath`/`tableName` are provided, the table is registered first (required for stateless engines like V2). Use `.ToDataTableAsync()` to materialize as a `DataTable`. |
 | `CreateTableAsync(path, schema, configuration?, storageConfig?)` | `Task<ExecuteResult>` | Creates an empty Delta table with the given schema and optional Delta configuration (DDL). |
-| `InsertAsync(path, schema, batches, mode?, storageConfig?)` | `Task` | Streams `IAsyncEnumerable<RecordBatch>` to a Delta table (creates it if needed). Use `ArrowConverter.FromRows()`, `ArrowConverter.FromDataTable()`, `ArrowConverter.FromCsv()` to convert .NET data to `RecordBatch`, and `ArrowConverter.ToAsyncEnumerable()` to wrap it for streaming. |
+| `InsertAsync(path, schema, batches, mode?, schemaMode?, storageConfig?, partitionBy?)` | `Task` | Streams `IAsyncEnumerable<RecordBatch>` to a Delta table. V3 creates the table implicitly on first write; `partitionBy` applies on create and is validated on later writes. `schemaMode` currently supports schema overwrite on the native V3 backend. |
 | `DeleteAsync(sql, tablePath, tableName, storageConfig?)` | `Task<ExecuteResult>` | Executes a DELETE statement. SQL must start with "DELETE". Backend auto-registers the table. |
 | `UpdateAsync(sql, tablePath, tableName, storageConfig?)` | `Task<ExecuteResult>` | Executes an UPDATE statement. SQL must start with "UPDATE". Backend auto-registers the table. |
 | `MergeAsync(sql, tablePath, tableName, storageConfig?)` | `Task<ExecuteResult>` | Executes a MERGE statement. SQL must start with "MERGE". Backend auto-registers the table. |
 | `MergeDataAsync(path, schema, batches, mergeOptions, storageConfig?)` | `Task<ExecuteResult>` | Streams source data via Arrow Flight DoPut and performs a MERGE INTO operation on the target Delta table. Unlike `MergeAsync` (which takes a SQL string), this method sends actual data from the client. Returns merge metrics (rows inserted, updated, deleted). |
+| `UpgradeTableProtocolAsync(tablePath, readerVersion, writerVersion, readerFeatures?, writerFeatures?, storageConfig?)` | `Task<ExecuteResult>` | Upgrades a Delta table protocol version and optionally enables reader/writer features such as Change Data Feed support. |
 
 ### DeltaTableContainer
 
-Manages the lifecycle of the Docker container running the Delta Table Service.
+Optional helper that manages the lifecycle of Dockerized V1/V2 service backends for local development, compatibility validation, and integration testing.
 
 | Method / Property | Description |
 |-------------------|-------------|
 | `BuildAndStartAsync(dockerfilePath, mode?, ...)` | Builds a Docker image from the local Dockerfile and starts the container. Returns `this` for fluent chaining. |
 | `PullAndStartAsync(imageName, mode?, ...)` | Pulls a pre-built image from a registry and starts the container. |
 | `GetServiceUri()` | Returns the URI for the active backend (Arrow Flight). |
-| `GetFlightUri()` | Returns the Arrow Flight URI. |
+| `GetFlightUri()` | Returns the Arrow Flight URI for containerized backends. |
 | `Mode` | The `ServiceMode` this container was started with. |
 | `MappedPort` | The host-mapped port for the active service. |
 | `DisposeAsync()` | Stops the container and cleans up the Docker image. |
@@ -109,6 +113,7 @@ public enum ServiceMode
 {
     V1_Spark,      // PySpark + Arrow Flight
     V2_DataFusion,  // DataFusion + delta-rs + Arrow Flight (no JVM)
+    V3_Rust,        // Native Rust + delta-rs (in-process)
 }
 ```
 
@@ -123,6 +128,19 @@ public enum SaveMode
     Append,     // Add new data without removing existing rows
 }
 ```
+
+### WriteSchemaMode Enum
+
+Used by `InsertAsync` to control how schema differences are handled during write operations.
+
+```csharp
+public enum WriteSchemaMode
+{
+    Overwrite,  // Replace existing table schema during overwrite writes
+}
+```
+
+Currently this is supported only by the native V3 backend.
 
 ### Model Types
 
@@ -227,13 +245,16 @@ DeltaLakeExperimental/
       v2/                            # V2 entrypoint + Dockerfile
         run.py
         Dockerfile
+      v3/                            # Native Rust backend
+        Cargo.toml
+        src/
       requirements.txt               # V1 Python deps
       requirements_v2.txt            # V2 Python deps
-    DeltaTableService.Client/        # C# client library
+    DeltaTableService.Client/        # Primary .NET Delta Lake client library
   tests/
-    DeltaTableService.Tests/         # MSTest unit + integration tests
+    DeltaTableService.Tests/         # MSTest unit + integration coverage
   benchmarks/
-    DeltaTableService.Benchmark/     # BenchmarkDotNet performance tests
+    DeltaTableService.Benchmark/     # BenchmarkDotNet performance coverage
 ```
 
 ## Building
@@ -254,15 +275,18 @@ dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filte
 dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filter "TestCategory=V1"
 dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filter "TestCategory=V2"
 
+# Focused V3/native test suites
+dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filter "FullyQualifiedName~DeltaTableServiceV3IntegrationTests|FullyQualifiedName~NativeRustBackendTests"
+
 # All tests
 dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj
 ```
 
-Integration tests require Docker Desktop to be running. Each backend's Docker image is built automatically by `DeltaTableContainer.BuildAndStartAsync`.
+Container-based integration tests require Docker Desktop to be running. The focused native V3 test suites run in-process without Docker. Each containerized backend image is built automatically by `DeltaTableContainer.BuildAndStartAsync` when those compatibility/integration paths are used.
 
 ## Docker Images
 
-Each Dockerfile uses `DeltaTableService.Server/` as the build context. The C# test infrastructure resolves this automatically. To build manually:
+Each Dockerfile uses `DeltaTableService.Server/` as the build context. These images are optional and primarily used for the containerized compatibility/integration backends. To build manually:
 
 ```bash
 cd src/DeltaTableService.Server
@@ -276,9 +300,11 @@ docker build -f v2/Dockerfile -t delta-table-service-v2:test .
 
 ## V1 vs V2 -- Architecture & Performance Comparison
 
+The comparison below covers the two containerized Flight backends. The native V3 backend uses in-process Rust interop instead of Docker + Arrow Flight and is the most direct option when you want a native .NET + Rust client experience.
+
 The two backends expose an identical Arrow Flight RPC protocol but differ
-significantly in how they process data internally.  This section explains
-the trade-offs to help test authors choose the right backend.
+significantly in how they process data internally. This section explains
+the trade-offs to help library consumers choose the right backend.
 
 ### Data Flow Overview
 
@@ -406,7 +432,7 @@ command JSON, then `.execute()` runs the merge and returns metrics.
 
 ### V2 Backend (DataFusion + delta-rs)
 
-The V2 backend uses [delta-rs](https://delta-io.github.io/delta-rs/) (version 1.4.x) which does not support all Delta Lake features. These limitations are documented here to help test authors choose the appropriate backend.
+The V2 backend uses [delta-rs](https://delta-io.github.io/delta-rs/) (version 1.4.x) which does not support all Delta Lake features. These limitations are documented here to help consumers choose the appropriate backend.
 
 #### Column Mapping
 
@@ -427,6 +453,6 @@ The V2 backend uses [delta-rs](https://delta-io.github.io/delta-rs/) (version 1.
 #### Recommendations
 
 - Use **V1 (PySpark)** for tests requiring full Delta Lake feature support (column mapping, deletion vectors, etc.)
-- Use **V2 (DataFusion)** for fast, lightweight testing of basic Delta operations only
+- Use **V2 (DataFusion)** for fast, lightweight execution of basic Delta operations when the containerized Flight backend is preferred
 - **Do NOT** use `delta.enableDeletionVectors=true` with V2 -- it will make tables unreadable
 - The `CreateTableAsync()` API accepts an optional `configuration` parameter on all backends, but feature support varies significantly (see above)

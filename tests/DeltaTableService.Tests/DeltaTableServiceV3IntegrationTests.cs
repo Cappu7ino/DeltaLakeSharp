@@ -749,6 +749,24 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         private static RecordBatch BuildIdNameBatch(int[] ids, string[] names) =>
             V3TestHelpers.BuildIdNameBatch(ids, names);
 
+        private static Schema BuildIdCityActiveSchema() =>
+            V3TestHelpers.BuildIdCityActiveSchema();
+
+        private static RecordBatch BuildIdCityActiveBatch(
+            int[] ids,
+            string[] cities,
+            bool[] active) =>
+            V3TestHelpers.BuildIdCityActiveBatch(ids, cities, active);
+
+        private static Schema BuildIdRegionNameSchema() =>
+            V3TestHelpers.BuildIdRegionNameSchema();
+
+        private static RecordBatch BuildIdRegionNameBatch(
+            int[] ids,
+            string[] regions,
+            string[] names) =>
+            V3TestHelpers.BuildIdRegionNameBatch(ids, regions, names);
+
         /// <summary>
         /// Wraps a single RecordBatch as an IAsyncEnumerable for InsertAsync/MergeDataAsync.
         /// </summary>
@@ -851,6 +869,102 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         }
 
         [TestMethod]
+        public async Task V3_Insert_Overwrite_ToMissingTable_CreatesTableAndWritesData()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch batch = BuildIdNameBatch(
+                new[] { 10, 20, 30 },
+                new[] { "ten", "twenty", "thirty" });
+
+            await Client.InsertAsync(
+                tablePath,
+                arrowSchema,
+                ToAsyncEnumerable(batch),
+                SaveMode.Overwrite);
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            CollectionAssert.AreEqual(
+                new[] { "id", "name" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+
+            var rows = await ReadAllRowsSorted(Client, tablePath);
+            Assert.AreEqual(3, rows.Count, $"Expected 3 rows, got {rows.Count}.");
+            Assert.AreEqual((10, "ten"), (rows[0].id, rows[0].name));
+            Assert.AreEqual((20, "twenty"), (rows[1].id, rows[1].name));
+            Assert.AreEqual((30, "thirty"), (rows[2].id, rows[2].name));
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Append_ToMissingTable_CreatesTableAndWritesData()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch batch = BuildIdNameBatch(
+                new[] { 1, 2 },
+                new[] { "a", "b" });
+
+            await Client.InsertAsync(
+                tablePath,
+                arrowSchema,
+                ToAsyncEnumerable(batch),
+                SaveMode.Append);
+
+            var rows = await ReadAllRowsSorted(Client, tablePath);
+            Assert.AreEqual(2, rows.Count, $"Expected 2 rows, got {rows.Count}.");
+            Assert.AreEqual((1, "a"), (rows[0].id, rows[0].name));
+            Assert.AreEqual((2, "b"), (rows[1].id, rows[1].name));
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Overwrite_ToMissingPartitionedTable_CreatesPartitionedTableAndWritesData()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            Schema arrowSchema = BuildIdRegionNameSchema();
+            RecordBatch batch = BuildIdRegionNameBatch(
+                new[] { 1, 2, 3 },
+                new[] { "US", "EU", "US" },
+                new[] { "Alice", "Bob", "Charlie" });
+
+            await Client.InsertAsync(
+                tablePath,
+                arrowSchema,
+                ToAsyncEnumerable(batch),
+                SaveMode.Overwrite,
+                partitionBy: new[] { "region" });
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            CollectionAssert.AreEqual(
+                new[] { "id", "region", "name" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+
+            var rows = new List<(int id, string region, string name)>();
+            await foreach (RecordBatch readBatch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int32Array)readBatch.Column(0);
+                IArrowArray regionArray = readBatch.Column(1);
+                IArrowArray nameArray = readBatch.Column(2);
+
+                for (int i = 0; i < readBatch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(regionArray, i),
+                        V3TestHelpers.ReadStringValue(nameArray, i)));
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(3, rows.Count, $"Expected 3 rows, got {rows.Count}.");
+            Assert.AreEqual((1, "US", "Alice"), rows[0]);
+            Assert.AreEqual((2, "EU", "Bob"), rows[1]);
+            Assert.AreEqual((3, "US", "Charlie"), rows[2]);
+        }
+
+        [TestMethod]
         public async Task V3_Insert_Append_AddsRows()
         {
             string tablePath = NewWriteTestTablePath();
@@ -883,6 +997,74 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         }
 
         [TestMethod]
+        public async Task V3_Insert_Append_PartitionedTable_AddsRowsAcrossPartitions()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("region", "string"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult createResult = await Client.CreateTableAsync(
+                tablePath,
+                tableSchema,
+                partitionBy: new[] { "region" });
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema arrowSchema = BuildIdRegionNameSchema();
+            RecordBatch batch1 = BuildIdRegionNameBatch(
+                new[] { 1, 2 },
+                new[] { "US", "EU" },
+                new[] { "Alice", "Bob" });
+            await Client.InsertAsync(
+                tablePath,
+                arrowSchema,
+                ToAsyncEnumerable(batch1),
+                SaveMode.Overwrite);
+
+            RecordBatch batch2 = BuildIdRegionNameBatch(
+                new[] { 3, 4 },
+                new[] { "US", "APAC" },
+                new[] { "Charlie", "Diana" });
+            await Client.InsertAsync(
+                tablePath,
+                arrowSchema,
+                ToAsyncEnumerable(batch2),
+                SaveMode.Append);
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            CollectionAssert.AreEqual(
+                new[] { "id", "region", "name" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+
+            var rows = new List<(int id, string region, string name)>();
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int32Array)batch.Column(0);
+                IArrowArray regionArray = batch.Column(1);
+                IArrowArray nameArray = batch.Column(2);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(regionArray, i),
+                        V3TestHelpers.ReadStringValue(nameArray, i)));
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(4, rows.Count, $"Expected 4 rows after append, got {rows.Count}.");
+            Assert.AreEqual((1, "US", "Alice"), rows[0]);
+            Assert.AreEqual((2, "EU", "Bob"), rows[1]);
+            Assert.AreEqual((3, "US", "Charlie"), rows[2]);
+            Assert.AreEqual((4, "APAC", "Diana"), rows[3]);
+        }
+
+        [TestMethod]
         public async Task V3_Insert_Overwrite_ReplacesExistingData()
         {
             string tablePath = NewWriteTestTablePath();
@@ -900,7 +1082,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             RecordBatch batch1 = BuildIdNameBatch(
                 new[] { 1, 2, 3 }, new[] { "a", "b", "c" });
             await Client.InsertAsync(tablePath, arrowSchema,
-                ToAsyncEnumerable(batch1), SaveMode.Overwrite);
+                ToAsyncEnumerable(batch1), SaveMode.Append);
 
             // Overwrite with different data.
             RecordBatch batch2 = BuildIdNameBatch(
@@ -913,6 +1095,116 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             Assert.AreEqual(2, rows.Count, $"Expected 2 rows after overwrite, got {rows.Count}.");
             Assert.AreEqual((100, "x"), (rows[0].id, rows[0].name));
             Assert.AreEqual((200, "y"), (rows[1].id, rows[1].name));
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Overwrite_WithSchemaModeOverwrite_ReplacesSchemaAndData()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var initialSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await Client.CreateTableAsync(tablePath, initialSchema);
+
+            Schema initialArrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2 },
+                new[] { "alice", "bob" });
+            await Client.InsertAsync(tablePath, initialArrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
+
+            Schema replacementSchema = BuildIdCityActiveSchema();
+            RecordBatch replacementBatch = BuildIdCityActiveBatch(
+                new[] { 10, 20 },
+                new[] { "Seattle", "Portland" },
+                new[] { true, false });
+            await Client.InsertAsync(
+                tablePath,
+                replacementSchema,
+                ToAsyncEnumerable(replacementBatch),
+                SaveMode.Overwrite,
+                schemaMode: WriteSchemaMode.Overwrite);
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            Assert.AreEqual(3, readBackSchema.Columns.Count,
+                $"Expected 3 columns after schema overwrite, got {readBackSchema.Columns.Count}.");
+            CollectionAssert.AreEqual(
+                new[] { "id", "city", "active" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+            CollectionAssert.AreEqual(
+                new[] { "int32", "string", "boolean" },
+                readBackSchema.Columns.Select(c => c.DataType).ToArray());
+
+            var rows = new List<(int id, string city, bool active)>();
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int32Array)batch.Column(0);
+                IArrowArray cityArray = batch.Column(1);
+                var activeArray = (BooleanArray)batch.Column(2);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(cityArray, i),
+                        activeArray.GetValue(i)!.Value));
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(2, rows.Count, $"Expected 2 rows after schema overwrite, got {rows.Count}.");
+            Assert.AreEqual((10, "Seattle", true), rows[0]);
+            Assert.AreEqual((20, "Portland", false), rows[1]);
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Overwrite_WithNewSchemaWithoutSchemaMode_FailsAndPreservesExistingTable()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var initialSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await Client.CreateTableAsync(tablePath, initialSchema);
+
+            Schema initialArrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2 },
+                new[] { "alice", "bob" });
+            await Client.InsertAsync(tablePath, initialArrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Overwrite);
+
+            Schema replacementSchema = BuildIdCityActiveSchema();
+            RecordBatch replacementBatch = BuildIdCityActiveBatch(
+                new[] { 10, 20 },
+                new[] { "Seattle", "Portland" },
+                new[] { true, false });
+
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            {
+                await Client.InsertAsync(
+                    tablePath,
+                    replacementSchema,
+                    ToAsyncEnumerable(replacementBatch),
+                    SaveMode.Overwrite);
+            });
+
+            V3TestHelpers.AssertNativeFailure(ex);
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            CollectionAssert.AreEqual(
+                new[] { "id", "name" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+
+            var rows = await ReadAllRowsSorted(Client, tablePath);
+            Assert.AreEqual(2, rows.Count, $"Expected original 2 rows to remain, got {rows.Count}.");
+            Assert.AreEqual((1, "alice"), (rows[0].id, rows[0].name));
+            Assert.AreEqual((2, "bob"), (rows[1].id, rows[1].name));
         }
 
         // ================================================================== //
@@ -1139,6 +1431,78 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             Assert.AreEqual((3, "c"), (rows[1].id, rows[1].name));
         }
 
+        [TestMethod]
+        public async Task V3_MergeData_PartitionedTable_UpdatesAndInsertsRows()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("region", "string"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult createResult = await Client.CreateTableAsync(
+                tablePath,
+                tableSchema,
+                partitionBy: new[] { "region" });
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema arrowSchema = BuildIdRegionNameSchema();
+            RecordBatch initialBatch = BuildIdRegionNameBatch(
+                new[] { 1, 2, 3 },
+                new[] { "US", "EU", "US" },
+                new[] { "Alice", "Bob", "Charlie" });
+            await Client.InsertAsync(
+                tablePath,
+                arrowSchema,
+                ToAsyncEnumerable(initialBatch),
+                SaveMode.Overwrite);
+
+            RecordBatch sourceBatch = BuildIdRegionNameBatch(
+                new[] { 2, 4 },
+                new[] { "EU", "APAC" },
+                new[] { "Bobby", "Diana" });
+
+            var mergeOptions = new MergeOptions("target.id = source.id")
+            {
+                WhenMatchedUpdateAll = true,
+                WhenNotMatchedInsertAll = true,
+            };
+
+            ExecuteResult mergeResult = await Client.MergeDataAsync(
+                tablePath,
+                arrowSchema,
+                ToAsyncEnumerable(sourceBatch),
+                mergeOptions);
+
+            Assert.IsTrue(mergeResult.Success, $"Merge failed: {mergeResult.Message}");
+
+            var rows = new List<(int id, string region, string name)>();
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int32Array)batch.Column(0);
+                IArrowArray regionArray = batch.Column(1);
+                IArrowArray nameArray = batch.Column(2);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(regionArray, i),
+                        V3TestHelpers.ReadStringValue(nameArray, i)));
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(4, rows.Count, $"Expected 4 rows after merge, got {rows.Count}.");
+            Assert.AreEqual((1, "US", "Alice"), rows[0]);
+            Assert.AreEqual((2, "EU", "Bobby"), rows[1]);
+            Assert.AreEqual((3, "US", "Charlie"), rows[2]);
+            Assert.AreEqual((4, "APAC", "Diana"), rows[3]);
+        }
+
         // ================================================================== //
         //  Phase 3: UpgradeTableProtocolAsync
         // ================================================================== //
@@ -1185,6 +1549,80 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             Assert.IsTrue(result.Success, $"UpgradeProtocol with features failed: {result.Message}");
 
             V3TestHelpers.AssertExecuteResultContainsLong(result, "minWriterVersion", 7);
+        }
+
+        [TestMethod]
+        public async Task V3_ReadChangeData_ReturnsExpectedChanges()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult createResult = await Client.CreateTableAsync(
+                tablePath,
+                tableSchema,
+                configuration: new Dictionary<string, string>
+                {
+                    ["delta.enableChangeDataFeed"] = "true",
+                });
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2 },
+                new[] { "a", "b" });
+            await Client.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Append);
+
+            ExecuteResult updateResult = await Client.UpdateAsync(
+                "UPDATE tbl SET name = 'b2' WHERE id = 2",
+                tablePath,
+                "tbl");
+            Assert.IsTrue(updateResult.Success, $"UpdateAsync failed: {updateResult.Message}");
+
+            ExecuteResult deleteResult = await Client.DeleteAsync(
+                "DELETE FROM tbl WHERE id = 1",
+                tablePath,
+                "tbl");
+            Assert.IsTrue(deleteResult.Success, $"DeleteAsync failed: {deleteResult.Message}");
+
+            RecordBatch appendBatch = BuildIdNameBatch(
+                new[] { 3 },
+                new[] { "c" });
+            await Client.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(appendBatch), SaveMode.Append);
+
+            List<Dictionary<string, object?>> cdfRows = await V3TestHelpers.ReadAllChangeDataRowsAsync(
+                Client,
+                tablePath,
+                startingVersion: 1);
+
+            Assert.IsTrue(cdfRows.Count >= 5, $"Expected multiple CDF rows, got {cdfRows.Count}.");
+            Assert.IsTrue(cdfRows.All(r => r.ContainsKey("_change_type")), "Expected _change_type column in all CDF rows.");
+            Assert.IsTrue(cdfRows.All(r => r.ContainsKey("_commit_version")), "Expected _commit_version column in all CDF rows.");
+            Assert.IsTrue(cdfRows.All(r => r.ContainsKey("_commit_timestamp")), "Expected _commit_timestamp column in all CDF rows.");
+
+            CollectionAssert.Contains(cdfRows.Select(r => r["_change_type"]?.ToString()).ToList(), "insert");
+            CollectionAssert.Contains(cdfRows.Select(r => r["_change_type"]?.ToString()).ToList(), "delete");
+            CollectionAssert.Contains(cdfRows.Select(r => r["_change_type"]?.ToString()).ToList(), "update_preimage");
+            CollectionAssert.Contains(cdfRows.Select(r => r["_change_type"]?.ToString()).ToList(), "update_postimage");
+
+            Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 1) && Equals(r["name"], "a") && Equals(r["_change_type"], "insert")),
+                "Expected insert CDF row for id=1.");
+            Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 2) && Equals(r["name"], "b") && Equals(r["_change_type"], "insert")),
+                "Expected insert CDF row for id=2.");
+            Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 1) && Equals(r["_change_type"], "delete")),
+                "Expected delete CDF row for id=1.");
+            Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 2) && Equals(r["name"], "b") && Equals(r["_change_type"], "update_preimage")),
+                "Expected update_preimage CDF row for id=2.");
+            Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 2) && Equals(r["name"], "b2") && Equals(r["_change_type"], "update_postimage")),
+                "Expected update_postimage CDF row for id=2.");
+            Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 3) && Equals(r["name"], "c") && Equals(r["_change_type"], "insert")),
+                "Expected insert CDF row for id=3.");
         }
     }
 }

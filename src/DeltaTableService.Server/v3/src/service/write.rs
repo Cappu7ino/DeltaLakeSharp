@@ -11,10 +11,11 @@ use arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
 use datafusion::execution::context::SessionContext;
 use deltalake::kernel::engine::arrow_conversion::TryIntoKernel;
+use deltalake::operations::write::SchemaMode;
 use tracing::{debug, info};
 
 use super::helpers::{
-    open_delta_table, path_to_url, storage_options, success_response,
+    open_delta_table, open_or_initialize_delta_table, path_to_url, storage_options, success_response,
     success_response_with_result,
 };
 use super::request::{
@@ -504,6 +505,11 @@ pub async fn handle_upgrade_protocol(body: &[u8]) -> Result<serde_json::Value, S
 // ========================================================================== //
 
 /// Handles a write (insert/overwrite) operation.
+///
+/// Writes create the table implicitly when the target path does not already
+/// contain a Delta log. In that case, the incoming Arrow schema defines the
+/// initial table schema and any partition/configuration options are applied as
+/// part of the first commit.
 async fn write_batches(
     cmd: WriteCommand,
     batches: Vec<RecordBatch>,
@@ -515,11 +521,10 @@ async fn write_batches(
         "Writing batches to Delta table"
     );
 
-    let table = open_delta_table(
+    let table = open_or_initialize_delta_table(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
-        None,
     )
     .await?;
 
@@ -529,6 +534,20 @@ async fn write_batches(
     };
 
     let mut write_builder = table.write(batches).with_save_mode(save_mode);
+
+    if let Some(schema_mode) = cmd.schema_mode.as_deref() {
+        let schema_mode = match schema_mode {
+            "overwrite" => SchemaMode::Overwrite,
+            "merge" => SchemaMode::Merge,
+            other => {
+                return Err(ServiceError::InvalidRequest(format!(
+                    "Unsupported schema_mode '{other}'. Expected 'overwrite' or 'merge'."
+                )))
+            }
+        };
+
+        write_builder = write_builder.with_schema_mode(schema_mode);
+    }
 
     if let Some(partition_cols) = &cmd.partition_by {
         if !partition_cols.is_empty() {
@@ -1080,6 +1099,7 @@ mod tests {
         let cmd = WriteCommand {
             path: path.clone(),
             mode: "overwrite".to_string(),
+            schema_mode: None,
             operation: "write".to_string(),
             storage_account: None,
             sas_token: None,
@@ -1138,6 +1158,7 @@ mod tests {
         let cmd = WriteCommand {
             path: path.clone(),
             mode: "append".to_string(),
+            schema_mode: None,
             operation: "write".to_string(),
             storage_account: None,
             sas_token: None,
@@ -1201,6 +1222,7 @@ mod tests {
         let cmd = WriteCommand {
             path: path.clone(),
             mode: "overwrite".to_string(),
+            schema_mode: None,
             operation: "merge".to_string(),
             storage_account: None,
             sas_token: None,
@@ -1265,6 +1287,7 @@ mod tests {
         let cmd = WriteCommand {
             path: path.clone(),
             mode: "overwrite".to_string(),
+            schema_mode: None,
             operation: "merge".to_string(),
             storage_account: None,
             sas_token: None,

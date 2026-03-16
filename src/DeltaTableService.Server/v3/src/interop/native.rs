@@ -281,6 +281,51 @@ pub extern "C" fn dts_execute_query(
     .unwrap_or(0)
 }
 
+/// Resolves a change-data-feed command and exports the resulting batch stream
+/// via the Arrow C Stream interface.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_change_data(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> i32 {
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return 0;
+        }
+
+        if out_stream.is_null() {
+            engine_ref.set_last_error_message("out_stream must not be null.".to_string());
+            return 0;
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
+        let reader = match engine_ref.block_on(
+            engine_ref
+                .service
+                .read_change_data_batches(command, engine_ref.runtime_handle()),
+        ) {
+            Ok(reader) => reader,
+            Err(error) => {
+                engine_ref.set_last_error_message(error.to_string());
+                return 0;
+            }
+        };
+
+        let ffi_stream = FFI_ArrowArrayStream::new(reader);
+
+        unsafe {
+            ptr::write(out_stream, ffi_stream);
+        }
+
+        1
+    })
+    .unwrap_or(0)
+}
+
 /// Imports a source Arrow C Stream from the caller and writes it into a Delta
 /// table using the existing V3 insert semantics.
 #[unsafe(no_mangle)]

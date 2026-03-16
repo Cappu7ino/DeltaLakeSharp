@@ -42,6 +42,10 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int ReadTable(IntPtr engine, string commandJson, CArrowArrayStream* stream);
 
+        [LibraryImport(LibraryName, EntryPoint = "dts_read_change_data", StringMarshalling = StringMarshalling.Utf8)]
+        [return: MarshalAs(UnmanagedType.I4)]
+        internal static unsafe partial int ReadChangeData(IntPtr engine, string commandJson, CArrowArrayStream* stream);
+
         [LibraryImport(LibraryName, EntryPoint = "dts_execute_query", StringMarshalling = StringMarshalling.Utf8)]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int ExecuteQuery(IntPtr engine, string commandJson, CArrowArrayStream* stream);

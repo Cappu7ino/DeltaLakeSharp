@@ -134,6 +134,131 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_InsertAsync_ToMissingTable_CreatesTableAndWritesData()
+        {
+            string tablePath = CreateTempTablePath("native_v3_implicit_create");
+            CleanupTablePath(tablePath);
+
+            var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                    new object[] { 3, "Charlie" },
+                }, tableSchema);
+
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "overwrite");
+
+                TableSchema readSchema = await backend.GetSchemaAsync(tablePath);
+                CollectionAssert.AreEqual(
+                    new[] { "id", "name" },
+                    readSchema.Columns.Select(c => c.Name).ToArray());
+
+                var rows = new List<(int id, string name)>();
+                await foreach (RecordBatch readBatch in backend.ReadTableAsync(tablePath))
+                {
+                    var idArray = (Int32Array)readBatch.Column(0);
+                    for (int i = 0; i < readBatch.Length; i++)
+                    {
+                        string name = readBatch.Column(1) switch
+                        {
+                            StringArray sa => sa.GetString(i),
+                            StringViewArray sva => sva.GetString(i),
+                            LargeStringArray lsa => lsa.GetString(i),
+                            _ => throw new AssertFailedException(
+                                $"Unexpected string column type: {readBatch.Column(1).GetType().FullName}")
+                        } ?? string.Empty;
+
+                        rows.Add((idArray.GetValue(i) ?? -1, name));
+                    }
+                }
+
+                rows = rows.OrderBy(r => r.id).ToList();
+                Assert.AreEqual(3, rows.Count);
+                Assert.AreEqual((1, "Alice"), rows[0]);
+                Assert.AreEqual((2, "Bob"), rows[1]);
+                Assert.AreEqual((3, "Charlie"), rows[2]);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_ToMissingPartitionedTable_CreatesPartitionedTableAndWritesData()
+        {
+            string tablePath = CreateTempTablePath("native_v3_implicit_partitioned");
+            CleanupTablePath(tablePath);
+
+            var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("region", "string"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "US", "Alice" },
+                    new object[] { 2, "EU", "Bob" },
+                    new object[] { 3, "US", "Charlie" },
+                }, tableSchema);
+
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "overwrite",
+                    partitionBy: new[] { "region" });
+
+                TableSchema readSchema = await backend.GetSchemaAsync(tablePath);
+                CollectionAssert.AreEqual(
+                    new[] { "id", "region", "name" },
+                    readSchema.Columns.Select(c => c.Name).ToArray());
+
+                var rows = new List<(int id, string region, string name)>();
+                await foreach (RecordBatch readBatch in backend.ReadTableAsync(tablePath))
+                {
+                    var idArray = (Int32Array)readBatch.Column(0);
+                    for (int i = 0; i < readBatch.Length; i++)
+                    {
+                        string region = V3TestHelpers.ReadStringValue(readBatch.Column(1), i);
+                        string name = V3TestHelpers.ReadStringValue(readBatch.Column(2), i);
+                        rows.Add((idArray.GetValue(i) ?? -1, region, name));
+                    }
+                }
+
+                rows = rows.OrderBy(r => r.id).ToList();
+                Assert.AreEqual(3, rows.Count);
+                Assert.AreEqual((1, "US", "Alice"), rows[0]);
+                Assert.AreEqual((2, "EU", "Bob"), rows[1]);
+                Assert.AreEqual((3, "US", "Charlie"), rows[2]);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_ExecuteQuery_ReturnsProjectedRows()
         {
             string tablePath = CreateTempTablePath("native_v3_query");
@@ -227,6 +352,267 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 Assert.IsTrue(
                     resultText.Contains("changeDataFeed", StringComparison.OrdinalIgnoreCase),
                     $"Expected protocol result to mention changeDataFeed. Actual: {resultText}");
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadChangeDataAsync_ReturnsExpectedChanges()
+        {
+            string tablePath = CreateTempTablePath("native_v3_cdf");
+            var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(
+                    tablePath,
+                    tableSchema,
+                    configuration: new Dictionary<string, string>
+                    {
+                        ["delta.enableChangeDataFeed"] = "true",
+                    });
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                ExecuteResult upgradeResult = await backend.UpgradeTableProtocolAsync(
+                    tablePath,
+                    readerVersion: 3,
+                    writerVersion: 7,
+                    writerFeatures: new[] { "changeDataFeed" });
+                Assert.IsTrue(upgradeResult.Success, $"UpgradeTableProtocolAsync failed: {upgradeResult.Message}");
+
+                RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "a" },
+                    new object[] { 2, "b" },
+                }, tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    initialBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(initialBatch),
+                    mode: "append");
+
+                ExecuteResult updateResult = await backend.UpdateAsync(
+                    "UPDATE native_tbl SET name = 'b2' WHERE id = 2",
+                    tablePath,
+                    "native_tbl");
+                Assert.IsTrue(updateResult.Success, $"UpdateAsync failed: {updateResult.Message}");
+
+                ExecuteResult deleteResult = await backend.DeleteAsync(
+                    "DELETE FROM native_tbl WHERE id = 1",
+                    tablePath,
+                    "native_tbl");
+                Assert.IsTrue(deleteResult.Success, $"DeleteAsync failed: {deleteResult.Message}");
+
+                RecordBatch appendBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 3, "c" },
+                }, tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    appendBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(appendBatch),
+                    mode: "append");
+
+                using var client = new DeltaTableServiceClient(V3TestHelpers.DummyServerUri, ServiceMode.V3_Rust);
+                List<Dictionary<string, object?>> cdfRows = await V3TestHelpers.ReadAllChangeDataRowsAsync(
+                    client,
+                    tablePath,
+                    startingVersion: 2);
+
+                Assert.IsTrue(cdfRows.Count >= 5, $"Expected multiple CDF rows, got {cdfRows.Count}.");
+                Assert.IsTrue(cdfRows.All(r => r.ContainsKey("_change_type")), "Expected _change_type column in all CDF rows.");
+                Assert.IsTrue(cdfRows.All(r => r.ContainsKey("_commit_version")), "Expected _commit_version column in all CDF rows.");
+                Assert.IsTrue(cdfRows.All(r => r.ContainsKey("_commit_timestamp")), "Expected _commit_timestamp column in all CDF rows.");
+
+                CollectionAssert.Contains(cdfRows.Select(r => r["_change_type"]?.ToString()).ToList(), "insert");
+                CollectionAssert.Contains(cdfRows.Select(r => r["_change_type"]?.ToString()).ToList(), "delete");
+                CollectionAssert.Contains(cdfRows.Select(r => r["_change_type"]?.ToString()).ToList(), "update_postimage");
+
+                Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 1) && Equals(r["_change_type"], "delete")),
+                    "Expected delete CDF row for id=1.");
+                Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 2) && Equals(r["name"], "b2") && Equals(r["_change_type"], "update_postimage")),
+                    "Expected update_postimage CDF row for id=2.");
+                Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 3) && Equals(r["name"], "c") && Equals(r["_change_type"], "insert")),
+                    "Expected insert CDF row for id=3.");
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_WithSchemaModeOverwrite_ReplacesSchemaAndData()
+        {
+            string tablePath = CreateTempTablePath("native_v3_schema_overwrite");
+            var backend = new NativeRustBackend();
+            try
+            {
+                var initialSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, initialSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                }, initialSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    initialBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(initialBatch),
+                    mode: "overwrite");
+
+                var replacementSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("city", "string"),
+                    new ColumnDefinition("active", "boolean"),
+                });
+                RecordBatch replacementBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 10, "Seattle", true },
+                    new object[] { 20, "Portland", false },
+                }, replacementSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    replacementBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(replacementBatch),
+                    mode: "overwrite",
+                    schemaMode: WriteSchemaMode.Overwrite);
+
+                TableSchema readSchema = await backend.GetSchemaAsync(tablePath);
+                CollectionAssert.AreEqual(
+                    new[] { "id", "city", "active" },
+                    readSchema.Columns.Select(c => c.Name).ToArray());
+
+                var rows = new List<(int id, string city, bool active)>();
+                await foreach (RecordBatch readBatch in backend.ReadTableAsync(tablePath))
+                {
+                    var idArray = (Int32Array)readBatch.Column(0);
+                    for (int i = 0; i < readBatch.Length; i++)
+                    {
+                        string city = readBatch.Column(1) switch
+                        {
+                            StringArray sa => sa.GetString(i),
+                            StringViewArray sva => sva.GetString(i),
+                            LargeStringArray lsa => lsa.GetString(i),
+                            _ => throw new AssertFailedException(
+                                $"Unexpected string column type: {readBatch.Column(1).GetType().FullName}")
+                        } ?? string.Empty;
+
+                        rows.Add((
+                            idArray.GetValue(i) ?? -1,
+                            city,
+                            ((BooleanArray)readBatch.Column(2)).GetValue(i)!.Value));
+                    }
+                }
+
+                rows = rows.OrderBy(r => r.id).ToList();
+                Assert.AreEqual(2, rows.Count);
+                Assert.AreEqual((10, "Seattle", true), rows[0]);
+                Assert.AreEqual((20, "Portland", false), rows[1]);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_WithNewSchemaWithoutSchemaMode_FailsAndPreservesExistingTable()
+        {
+            string tablePath = CreateTempTablePath("native_v3_schema_overwrite_fail");
+            var backend = new NativeRustBackend();
+            try
+            {
+                var initialSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, initialSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                }, initialSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    initialBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(initialBatch),
+                    mode: "overwrite");
+
+                var replacementSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("city", "string"),
+                    new ColumnDefinition("active", "boolean"),
+                });
+                RecordBatch replacementBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 10, "Seattle", true },
+                    new object[] { 20, "Portland", false },
+                }, replacementSchema);
+
+                var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+                {
+                    await backend.InsertAsync(
+                        tablePath,
+                        replacementBatch.Schema,
+                        ArrowConverter.ToAsyncEnumerable(replacementBatch),
+                        mode: "overwrite");
+                });
+
+                StringAssert.Contains(ex.Message.ToLowerInvariant(), "schema");
+
+                TableSchema readSchema = await backend.GetSchemaAsync(tablePath);
+                CollectionAssert.AreEqual(
+                    new[] { "id", "name" },
+                    readSchema.Columns.Select(c => c.Name).ToArray());
+
+                var rows = new List<(int id, string name)>();
+                await foreach (RecordBatch readBatch in backend.ReadTableAsync(tablePath))
+                {
+                    var idArray = (Int32Array)readBatch.Column(0);
+                    for (int i = 0; i < readBatch.Length; i++)
+                    {
+                        string name = readBatch.Column(1) switch
+                        {
+                            StringArray sa => sa.GetString(i),
+                            StringViewArray sva => sva.GetString(i),
+                            LargeStringArray lsa => lsa.GetString(i),
+                            _ => throw new AssertFailedException(
+                                $"Unexpected string column type: {readBatch.Column(1).GetType().FullName}")
+                        } ?? string.Empty;
+
+                        rows.Add((idArray.GetValue(i) ?? -1, name));
+                    }
+                }
+
+                rows = rows.OrderBy(r => r.id).ToList();
+                Assert.AreEqual(2, rows.Count);
+                Assert.AreEqual((1, "Alice"), rows[0]);
+                Assert.AreEqual((2, "Bob"), rows[1]);
             }
             finally
             {

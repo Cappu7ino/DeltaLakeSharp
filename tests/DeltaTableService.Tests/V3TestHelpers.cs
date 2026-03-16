@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using Apache.Arrow.Arrays;
 using Microsoft.ADMS.Testing.DeltaTableService.Client;
 using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -215,6 +216,42 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 .Build();
         }
 
+        internal static Schema BuildIdCityActiveSchema()
+        {
+            return new Schema.Builder()
+                .Field(new Field("id", Int32Type.Default, nullable: true))
+                .Field(new Field("city", StringType.Default, nullable: true))
+                .Field(new Field("active", BooleanType.Default, nullable: true))
+                .Build();
+        }
+
+        internal static RecordBatch BuildIdCityActiveBatch(int[] ids, string[] cities, bool[] active)
+        {
+            return new RecordBatch.Builder()
+                .Append("id", nullable: true, new Int32Array.Builder().AppendRange(ids).Build())
+                .Append("city", nullable: true, new StringArray.Builder().AppendRange(cities).Build())
+                .Append("active", nullable: true, new BooleanArray.Builder().AppendRange(active).Build())
+                .Build();
+        }
+
+        internal static Schema BuildIdRegionNameSchema()
+        {
+            return new Schema.Builder()
+                .Field(new Field("id", Int32Type.Default, nullable: true))
+                .Field(new Field("region", StringType.Default, nullable: true))
+                .Field(new Field("name", StringType.Default, nullable: true))
+                .Build();
+        }
+
+        internal static RecordBatch BuildIdRegionNameBatch(int[] ids, string[] regions, string[] names)
+        {
+            return new RecordBatch.Builder()
+                .Append("id", nullable: true, new Int32Array.Builder().AppendRange(ids).Build())
+                .Append("region", nullable: true, new StringArray.Builder().AppendRange(regions).Build())
+                .Append("name", nullable: true, new StringArray.Builder().AppendRange(names).Build())
+                .Build();
+        }
+
         internal static async IAsyncEnumerable<RecordBatch> ToAsyncEnumerable(RecordBatch batch)
         {
             yield return batch;
@@ -228,9 +265,24 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
                 StringArray sa => sa.GetString(index),
                 StringViewArray sva => sva.GetString(index),
                 LargeStringArray lsa => lsa.GetString(index),
+                DictionaryArray da => ReadDictionaryStringValue(da, index),
                 _ => throw new AssertFailedException(
                     $"Unexpected string column type: {array.GetType().FullName}")
             } ?? string.Empty;
+        }
+
+        private static string? ReadDictionaryStringValue(DictionaryArray array, int index)
+        {
+            IArrowArray dictionary = array.Dictionary;
+            int dictionaryIndex = Convert.ToInt32(ReadValue(array.Indices, index));
+            return dictionary switch
+            {
+                StringArray sa => sa.GetString(dictionaryIndex),
+                StringViewArray sva => sva.GetString(dictionaryIndex),
+                LargeStringArray lsa => lsa.GetString(dictionaryIndex),
+                _ => throw new AssertFailedException(
+                    $"Unexpected dictionary value type: {dictionary.GetType().FullName}")
+            };
         }
 
         internal static async Task<List<(int id, string? name)>> ReadAllRowsSorted(
@@ -276,6 +328,52 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             Assert.IsTrue(rawValue is long, $"Expected '{key}' to be parsed as a long.");
             long value = (long)rawValue;
             Assert.IsTrue(value >= minimumValue, $"Expected '{key}' >= {minimumValue}, got {value}.");
+        }
+
+        internal static async Task<List<Dictionary<string, object?>>> ReadAllChangeDataRowsAsync(
+            DeltaTableServiceClient client,
+            string tablePath,
+            long startingVersion,
+            long? endingVersion = null)
+        {
+            var rows = new List<Dictionary<string, object?>>();
+
+            await foreach (RecordBatch batch in client.ReadChangeDataAsync(tablePath, startingVersion, endingVersion))
+            {
+                for (int rowIndex = 0; rowIndex < batch.Length; rowIndex++)
+                {
+                    var row = new Dictionary<string, object?>();
+                    for (int colIndex = 0; colIndex < batch.ColumnCount; colIndex++)
+                    {
+                        string columnName = batch.Schema.GetFieldByIndex(colIndex).Name;
+                        row[columnName] = ReadValue(batch.Column(colIndex), rowIndex);
+                    }
+
+                    rows.Add(row);
+                }
+            }
+
+            return rows;
+        }
+
+        internal static object? ReadValue(IArrowArray array, int index)
+        {
+            return array switch
+            {
+                UInt8Array a => a.GetValue(index),
+                UInt16Array a => a.GetValue(index),
+                UInt32Array a => a.GetValue(index),
+                UInt64Array a => a.GetValue(index),
+                Int32Array a => a.GetValue(index),
+                Int64Array a => a.GetValue(index),
+                BooleanArray a => a.GetValue(index),
+                StringArray a => a.GetString(index),
+                StringViewArray a => a.GetString(index),
+                LargeStringArray a => a.GetString(index),
+                TimestampArray a => a.GetTimestamp(index),
+                _ => throw new AssertFailedException(
+                    $"Unexpected array type: {array.GetType().FullName}")
+            };
         }
     }
 }

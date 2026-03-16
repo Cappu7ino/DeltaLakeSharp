@@ -43,6 +43,17 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Reads Change Data Feed rows from a Delta table, streaming Arrow
+        /// RecordBatches for the requested version range.
+        /// </summary>
+        IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
         /// Executes a read-oriented SQL query (SELECT, SHOW, DESCRIBE, etc.)
         /// via GetFlightInfo + DoGet, returning the result as a stream of Arrow
         /// RecordBatches. When <paramref name="tablePath"/> and
@@ -88,14 +99,15 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         /// <param name="mode">Write mode ('overwrite' or 'append').</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
         /// <param name="partitionBy">Optional list of column names to partition the table by.
-        /// Only applied on the first write (overwrite mode); ignored for appends to
-        /// existing partitioned tables.</param>
+        /// Applied when the write creates the table, and otherwise validated
+        /// against the existing table metadata.</param>
         /// <param name="cancellationToken">Cancellation token.</param>
         Task InsertAsync(
             string path,
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             string mode = "overwrite",
+            WriteSchemaMode? schemaMode = null,
             StorageConfig? storageConfig = null,
             IReadOnlyList<string>? partitionBy = null,
             CancellationToken cancellationToken = default);

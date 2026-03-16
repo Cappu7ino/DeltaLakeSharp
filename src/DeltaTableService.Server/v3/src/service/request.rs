@@ -22,6 +22,18 @@ pub struct ReadCommand {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ReadChangeDataCommand {
+    pub path: String,
+    pub starting_version: i64,
+    #[serde(default)]
+    pub ending_version: Option<i64>,
+    #[serde(default)]
+    pub storage_account: Option<String>,
+    #[serde(default)]
+    pub sas_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SqlCommand {
     pub sql: String,
     #[serde(default)]
@@ -105,6 +117,8 @@ pub struct WriteCommand {
     pub path: String,
     #[serde(default = "default_write_mode")]
     pub mode: String,
+    #[serde(default)]
+    pub schema_mode: Option<String>,
     #[serde(default = "default_operation")]
     pub operation: String,
     #[serde(default)]
@@ -394,6 +408,14 @@ mod tests {
         let cmd: WriteCommand = serde_json::from_slice(json).unwrap();
         assert_eq!(cmd.mode, "append");
         assert_eq!(cmd.operation, "write");
+    }
+
+    #[test]
+    fn parse_do_put_write_with_schema_mode() {
+        let json = br#"{"path":"/data/t","mode":"overwrite","schema_mode":"overwrite"}"#;
+        let cmd: WriteCommand = serde_json::from_slice(json).unwrap();
+        assert_eq!(cmd.mode, "overwrite");
+        assert_eq!(cmd.schema_mode.as_deref(), Some("overwrite"));
     }
 
     #[test]

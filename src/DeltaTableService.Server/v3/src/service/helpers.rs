@@ -6,6 +6,8 @@
 //! These utilities are used by both the read and write handler modules.
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
 
 use datafusion::execution::context::SessionContext;
 use tracing::debug;
@@ -78,6 +80,51 @@ pub async fn open_delta_table(
     };
     debug!(path = %path, version = table.version(), "Delta table opened");
     Ok(table)
+}
+
+/// Builds a Delta table handle that may point to an uninitialized location.
+///
+/// Intended for write paths that should create a Delta table on the first
+/// successful commit when `_delta_log` is not present yet.
+///
+/// For local paths, the target directory must exist before delta-rs can infer
+/// the file-backed log store, so this helper creates the directory eagerly.
+pub async fn open_or_initialize_delta_table(
+    path: &str,
+    storage_account: Option<&str>,
+    sas_token: Option<&str>,
+) -> Result<deltalake::DeltaTable, ServiceError> {
+    ensure_local_table_directory_exists(path)?;
+
+    let url = path_to_url(path)?;
+    let opts = storage_options(storage_account, sas_token);
+
+    debug!(path = %path, "Opening Delta table handle for create-on-write");
+    deltalake::DeltaTable::try_from_url_with_storage_options(url, opts)
+        .await
+        .map_err(ServiceError::Delta)
+}
+
+fn ensure_local_table_directory_exists(path: &str) -> Result<(), ServiceError> {
+    if path.contains("://") {
+        let url = Url::parse(path)
+            .map_err(|e| ServiceError::InvalidRequest(format!("Invalid table URL '{path}': {e}")))?;
+        if url.scheme() != "file" {
+            return Ok(());
+        }
+
+        let file_path = url.to_file_path().map_err(|_| {
+            ServiceError::InvalidRequest(format!("Cannot convert file URL to path: '{path}'"))
+        })?;
+        fs::create_dir_all(file_path).map_err(|e| {
+            ServiceError::Internal(format!("Failed to create local table directory '{path}': {e}"))
+        })?;
+        return Ok(());
+    }
+
+    fs::create_dir_all(Path::new(path)).map_err(|e| {
+        ServiceError::Internal(format!("Failed to create local table directory '{path}': {e}"))
+    })
 }
 
 /// Registers a Delta table in a DataFusion `SessionContext`.

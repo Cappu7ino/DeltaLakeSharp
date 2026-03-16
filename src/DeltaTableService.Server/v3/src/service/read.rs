@@ -10,11 +10,12 @@ use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use deltalake::delta_datafusion::DeltaCdfTableProvider;
 use futures::StreamExt;
 use tracing::{debug, info};
 
 use super::helpers::{open_delta_table, register_delta_table};
-use super::request::{Command, ReadCommand, SqlCommand};
+use super::request::{Command, ReadChangeDataCommand, ReadCommand, SqlCommand};
 use crate::error::ServiceError;
 
 /// Resolves the Arrow schema for a read/query command without committing to any
@@ -51,6 +52,21 @@ pub async fn resolve_batch_reader_from_command_bytes(
             sql_batch_reader(sql_cmd, runtime_handle).await
         }
     }
+}
+
+pub async fn resolve_change_data_reader_from_command_bytes(
+    cmd_bytes: &[u8],
+    runtime_handle: tokio::runtime::Handle,
+) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
+{
+    let cmd: ReadChangeDataCommand = serde_json::from_slice(cmd_bytes).map_err(ServiceError::Json)?;
+    info!(
+        path = %cmd.path,
+        starting_version = cmd.starting_version,
+        ending_version = ?cmd.ending_version,
+        "Resolving batch reader: change-data-feed mode"
+    );
+    change_data_batch_reader(cmd, runtime_handle).await
 }
 
 async fn get_delta_schema(cmd: &ReadCommand) -> Result<SchemaRef, ServiceError> {
@@ -118,6 +134,19 @@ async fn sql_batch_reader(
     }))
 }
 
+async fn change_data_batch_reader(
+    cmd: ReadChangeDataCommand,
+    runtime_handle: tokio::runtime::Handle,
+) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
+{
+    let (schema, stream) = execute_change_data_stream(cmd).await?;
+    Ok(Box::new(AsyncRecordBatchReader {
+        schema,
+        runtime_handle,
+        stream,
+    }))
+}
+
 async fn execute_read_table_stream(
     cmd: ReadCommand,
 ) -> Result<(SchemaRef, SendableRecordBatchStream), ServiceError> {
@@ -163,6 +192,33 @@ async fn execute_sql_stream(
 
     debug!(sql = %cmd.sql, "Executing SQL query");
     let df = ctx.sql(&cmd.sql).await.map_err(ServiceError::DataFusion)?;
+    let schema: SchemaRef = Arc::clone(df.schema().inner());
+    let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
+    Ok((schema, batch_stream))
+}
+
+async fn execute_change_data_stream(
+    cmd: ReadChangeDataCommand,
+) -> Result<(SchemaRef, SendableRecordBatchStream), ServiceError> {
+    let ctx = SessionContext::new();
+    let table = open_delta_table(
+        &cmd.path,
+        cmd.storage_account.as_deref(),
+        cmd.sas_token.as_deref(),
+        None,
+    )
+    .await?;
+
+    let mut builder = table
+        .scan_cdf()
+        .with_session_state(Arc::new(ctx.state()))
+        .with_starting_version(cmd.starting_version);
+    if let Some(ending_version) = cmd.ending_version {
+        builder = builder.with_ending_version(ending_version);
+    }
+
+    let provider = Arc::new(DeltaCdfTableProvider::try_new(builder).map_err(ServiceError::Delta)?);
+    let df = ctx.read_table(provider).map_err(ServiceError::DataFusion)?;
     let schema: SchemaRef = Arc::clone(df.schema().inner());
     let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
     Ok((schema, batch_stream))
