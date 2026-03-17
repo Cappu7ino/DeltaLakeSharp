@@ -54,6 +54,18 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Executes a SQL query against Change Data Feed rows exposed as the
+        /// fixed `_cdf` relation for the requested version range.
+        /// </summary>
+        IAsyncEnumerable<RecordBatch> ExecuteChangeDataQueryAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
         /// Executes a read-oriented SQL query (SELECT, SHOW, DESCRIBE, etc.)
         /// via GetFlightInfo + DoGet, returning the result as a stream of Arrow
         /// RecordBatches. When <paramref name="tablePath"/> and

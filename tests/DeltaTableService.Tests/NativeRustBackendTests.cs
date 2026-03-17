@@ -452,6 +452,89 @@ namespace Microsoft.DI.DeltaTableService.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_ExecuteChangeDataQueryAsync_FiltersAndProjectsRows()
+        {
+            string tablePath = CreateTempTablePath("native_v3_cdf_query");
+            var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(
+                    tablePath,
+                    tableSchema,
+                    configuration: new Dictionary<string, string>
+                    {
+                        ["delta.enableChangeDataFeed"] = "true",
+                    });
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "a" },
+                    new object[] { 2, "b" },
+                }, tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    initialBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(initialBatch),
+                    mode: "append");
+
+                ExecuteResult updateResult = await backend.UpdateAsync(
+                    "UPDATE native_tbl SET name = 'b2' WHERE id = 2",
+                    tablePath,
+                    "native_tbl");
+                Assert.IsTrue(updateResult.Success, $"UpdateAsync failed: {updateResult.Message}");
+
+                var resultBatches = new List<RecordBatch>();
+                await foreach (RecordBatch batch in backend.ExecuteChangeDataQueryAsync(
+                    "SELECT id, name, _change_type FROM _cdf WHERE _change_type <> 'update_preimage' ORDER BY id, _change_type",
+                    tablePath,
+                    startingVersion: 1))
+                {
+                    resultBatches.Add(batch);
+                }
+
+                List<Dictionary<string, object?>> rows = FlattenRows(resultBatches);
+                Assert.IsTrue(rows.Count >= 3, $"Expected at least 3 projected CDF rows, got {rows.Count}.");
+                Assert.IsFalse(rows.Any(r => r.ContainsKey("_commit_version")), "Expected projection to exclude _commit_version.");
+                Assert.IsFalse(rows.Any(r => Equals(r["_change_type"], "update_preimage")), "Expected filter to exclude update_preimage rows.");
+                Assert.IsTrue(rows.Any(r => Equals(r["id"], 1) && Equals(r["name"], "a") && Equals(r["_change_type"], "insert")));
+                Assert.IsTrue(rows.Any(r => Equals(r["id"], 2) && Equals(r["name"], "b2") && Equals(r["_change_type"], "update_postimage")));
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        private static List<Dictionary<string, object?>> FlattenRows(IEnumerable<RecordBatch> batches)
+        {
+            var rows = new List<Dictionary<string, object?>>();
+            foreach (RecordBatch batch in batches)
+            {
+                for (int rowIndex = 0; rowIndex < batch.Length; rowIndex++)
+                {
+                    var row = new Dictionary<string, object?>();
+                    for (int colIndex = 0; colIndex < batch.ColumnCount; colIndex++)
+                    {
+                        string columnName = batch.Schema.GetFieldByIndex(colIndex).Name;
+                        row[columnName] = V3TestHelpers.ReadValue(batch.Column(colIndex), rowIndex);
+                    }
+
+                    rows.Add(row);
+                }
+            }
+
+            return rows;
+        }
+
+        [TestMethod]
         public async Task NativeBackend_InsertAsync_WithSchemaModeOverwrite_ReplacesSchemaAndData()
         {
             string tablePath = CreateTempTablePath("native_v3_schema_overwrite");

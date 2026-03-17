@@ -111,6 +111,23 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         }
 
         /// <inheritdoc />
+        public async IAsyncEnumerable<RecordBatch> ExecuteChangeDataQueryAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "ExecuteChangeDataQueryAsync is supported only by the V3 native Rust backend.");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+
+        /// <inheritdoc />
         public async IAsyncEnumerable<RecordBatch> ExecuteQueryAsync(
             string sql,
             string? tablePath = null,

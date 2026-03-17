@@ -64,6 +64,7 @@ pub async fn resolve_change_data_reader_from_command_bytes(
         path = %cmd.path,
         starting_version = cmd.starting_version,
         ending_version = ?cmd.ending_version,
+        sql = ?cmd.sql,
         "Resolving batch reader: change-data-feed mode"
     );
     change_data_batch_reader(cmd, runtime_handle).await
@@ -218,7 +219,14 @@ async fn execute_change_data_stream(
     }
 
     let provider = Arc::new(DeltaCdfTableProvider::try_new(builder).map_err(ServiceError::Delta)?);
-    let df = ctx.read_table(provider).map_err(ServiceError::DataFusion)?;
+    let df = if let Some(sql) = cmd.sql {
+        ctx.register_table("_cdf", provider)
+            .map_err(ServiceError::DataFusion)?;
+        debug!(sql = %sql, "Executing change-data SQL query");
+        ctx.sql(&sql).await.map_err(ServiceError::DataFusion)?
+    } else {
+        ctx.read_table(provider).map_err(ServiceError::DataFusion)?
+    };
     let schema: SchemaRef = Arc::clone(df.schema().inner());
     let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
     Ok((schema, batch_stream))

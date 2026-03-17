@@ -132,6 +132,46 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             StorageConfig? storageConfig = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            await foreach (RecordBatch batch in ExecuteChangeDataCoreAsync(
+                path,
+                startingVersion,
+                endingVersion,
+                storageConfig,
+                sql: null,
+                cancellationToken).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+        }
+
+        public async IAsyncEnumerable<RecordBatch> ExecuteChangeDataQueryAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await foreach (RecordBatch batch in ExecuteChangeDataCoreAsync(
+                path,
+                startingVersion,
+                endingVersion,
+                storageConfig,
+                sql,
+                cancellationToken).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+        }
+
+        private async IAsyncEnumerable<RecordBatch> ExecuteChangeDataCoreAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion,
+            StorageConfig? storageConfig,
+            string? sql,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
             cancellationToken.ThrowIfCancellationRequested();
 
             var command = new Dictionary<string, object>
@@ -144,6 +184,10 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             if (endingVersion.HasValue)
             {
                 command["ending_version"] = endingVersion.Value;
+            }
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                command["sql"] = sql!;
             }
 
             string commandJson = JsonSerializer.Serialize(command);

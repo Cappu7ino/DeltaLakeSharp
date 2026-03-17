@@ -193,6 +193,50 @@ namespace Microsoft.DI.DeltaTableService.Client
             }
         }
 
+        /// <summary>
+        /// Executes a SQL query against Change Data Feed rows from a Delta table
+        /// using the fixed `_cdf` relation.
+        /// </summary>
+        /// <param name="sql">The SQL query to execute against `_cdf`.</param>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="startingVersion">Inclusive starting Delta version.</param>
+        /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        public async IAsyncEnumerable<RecordBatch> ExecuteChangeDataQueryAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig storageConfig = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(sql))
+            {
+                throw new ArgumentException("SQL query must be provided.", nameof(sql));
+            }
+
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (startingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startingVersion), startingVersion, "Starting version must be >= 0.");
+            }
+
+            if (endingVersion.HasValue && endingVersion.Value < startingVersion)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
+            }
+
+            await foreach (RecordBatch batch in _backend.ExecuteChangeDataQueryAsync(sql, path, startingVersion, endingVersion, storageConfig, cancellationToken).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+        }
+
         // ------------------------------------------------------------------ //
         //  Get schema
         // ------------------------------------------------------------------ //

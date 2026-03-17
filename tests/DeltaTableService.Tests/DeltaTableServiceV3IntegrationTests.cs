@@ -767,6 +767,15 @@ namespace Microsoft.DI.DeltaTableService.Tests
             string[] names) =>
             V3TestHelpers.BuildIdRegionNameBatch(ids, regions, names);
 
+        private static Schema BuildIdAmountNameSchema() =>
+            V3TestHelpers.BuildIdAmountNameSchema();
+
+        private static RecordBatch BuildIdAmountNameBatch(
+            int[] ids,
+            int[] amounts,
+            string[] names) =>
+            V3TestHelpers.BuildIdAmountNameBatch(ids, amounts, names);
+
         /// <summary>
         /// Wraps a single RecordBatch as an IAsyncEnumerable for InsertAsync/MergeDataAsync.
         /// </summary>
@@ -1623,6 +1632,160 @@ namespace Microsoft.DI.DeltaTableService.Tests
                 "Expected update_postimage CDF row for id=2.");
             Assert.IsTrue(cdfRows.Any(r => Equals(r["id"], 3) && Equals(r["name"], "c") && Equals(r["_change_type"], "insert")),
                 "Expected insert CDF row for id=3.");
+        }
+
+        [TestMethod]
+        public async Task V3_ExecuteChangeDataQuery_ReturnsProjectedFilteredRows()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult createResult = await Client.CreateTableAsync(
+                tablePath,
+                tableSchema,
+                configuration: new Dictionary<string, string>
+                {
+                    ["delta.enableChangeDataFeed"] = "true",
+                });
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2 },
+                new[] { "a", "b" });
+            await Client.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Append);
+
+            ExecuteResult updateResult = await Client.UpdateAsync(
+                "UPDATE tbl SET name = 'b2' WHERE id = 2",
+                tablePath,
+                "tbl");
+            Assert.IsTrue(updateResult.Success, $"UpdateAsync failed: {updateResult.Message}");
+
+            ExecuteResult deleteResult = await Client.DeleteAsync(
+                "DELETE FROM tbl WHERE id = 1",
+                tablePath,
+                "tbl");
+            Assert.IsTrue(deleteResult.Success, $"DeleteAsync failed: {deleteResult.Message}");
+
+            List<Dictionary<string, object?>> rows = await V3TestHelpers.ExecuteChangeDataQueryRowsAsync(
+                Client,
+                "SELECT id, name, _change_type, _commit_version FROM _cdf WHERE _change_type <> 'update_preimage' ORDER BY _commit_version, id, _change_type",
+                tablePath,
+                startingVersion: 1);
+
+            Assert.IsTrue(rows.Count >= 4, $"Expected at least 4 filtered CDF rows, got {rows.Count}.");
+            Assert.IsTrue(rows.All(r => !r.ContainsKey("_commit_timestamp")), "Expected projected query to omit unselected columns.");
+            Assert.IsTrue(rows.All(r => r.ContainsKey("id") && r.ContainsKey("name") && r.ContainsKey("_change_type") && r.ContainsKey("_commit_version")),
+                "Expected projected columns in every row.");
+            Assert.IsFalse(rows.Any(r => Equals(r["_change_type"], "update_preimage")), "Expected query filter to exclude update_preimage rows.");
+
+            Assert.IsTrue(rows.Any(r => Equals(r["id"], 1) && Equals(r["name"], "a") && Equals(r["_change_type"], "insert")),
+                "Expected initial insert row for id=1.");
+            Assert.IsTrue(rows.Any(r => Equals(r["id"], 2) && Equals(r["name"], "b2") && Equals(r["_change_type"], "update_postimage")),
+                "Expected update_postimage row for id=2.");
+            Assert.IsTrue(rows.Any(r => Equals(r["id"], 1) && Equals(r["_change_type"], "delete")),
+                "Expected delete row for id=1.");
+        }
+
+        [TestMethod]
+        public async Task V3_ExecuteChangeDataQuery_RangeFiltersCustomColumn()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("amount", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult createResult = await Client.CreateTableAsync(
+                tablePath,
+                tableSchema,
+                configuration: new Dictionary<string, string>
+                {
+                    ["delta.enableChangeDataFeed"] = "true",
+                });
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema arrowSchema = BuildIdAmountNameSchema();
+            RecordBatch initialBatch = BuildIdAmountNameBatch(
+                new[] { 1, 2, 3 },
+                new[] { 10, 40, 90 },
+                new[] { "low", "mid", "high" });
+            await Client.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Append);
+
+            ExecuteResult updateResult = await Client.UpdateAsync(
+                "UPDATE tbl SET amount = 55 WHERE id = 2",
+                tablePath,
+                "tbl");
+            Assert.IsTrue(updateResult.Success, $"UpdateAsync failed: {updateResult.Message}");
+
+            RecordBatch appendBatch = BuildIdAmountNameBatch(
+                new[] { 4 },
+                new[] { 65 },
+                new[] { "upper-mid" });
+            await Client.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(appendBatch), SaveMode.Append);
+
+            List<Dictionary<string, object?>> rows = await V3TestHelpers.ExecuteChangeDataQueryRowsAsync(
+                Client,
+                "SELECT id, amount, name, _change_type FROM _cdf WHERE amount BETWEEN 20 AND 80 AND _change_type <> 'update_preimage' ORDER BY amount, id",
+                tablePath,
+                startingVersion: 1);
+
+            Assert.AreEqual(3, rows.Count, $"Expected 3 CDF rows in the amount range, got {rows.Count}.");
+            CollectionAssert.AreEqual(new[] { 40, 55, 65 }, rows.Select(r => Convert.ToInt32(r["amount"])).ToArray());
+            Assert.IsTrue(rows.Any(r => Equals(r["id"], 2) && Equals(r["amount"], 40) && Equals(r["_change_type"], "insert")),
+                "Expected initial insert row for id=2 in range.");
+            Assert.IsTrue(rows.Any(r => Equals(r["id"], 2) && Equals(r["amount"], 55) && Equals(r["_change_type"], "update_postimage")),
+                "Expected update_postimage row for id=2 in range.");
+            Assert.IsTrue(rows.Any(r => Equals(r["id"], 4) && Equals(r["amount"], 65) && Equals(r["_change_type"], "insert")),
+                "Expected appended insert row for id=4 in range.");
+        }
+
+        [TestMethod]
+        public async Task V3_ExecuteChangeDataQuery_InvalidSql_Throws()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult createResult = await Client.CreateTableAsync(
+                tablePath,
+                tableSchema,
+                configuration: new Dictionary<string, string>
+                {
+                    ["delta.enableChangeDataFeed"] = "true",
+                });
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema arrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1 },
+                new[] { "a" });
+            await Client.InsertAsync(tablePath, arrowSchema,
+                ToAsyncEnumerable(initialBatch), SaveMode.Append);
+
+            await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            {
+                await Client.ExecuteChangeDataQueryAsync(
+                        "SELECT definitely_missing FROM _cdf",
+                        tablePath,
+                        startingVersion: 1)
+                    .ToListAsync();
+            });
         }
     }
 }

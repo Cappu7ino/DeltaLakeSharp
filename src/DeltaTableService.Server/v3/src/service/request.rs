@@ -28,6 +28,8 @@ pub struct ReadChangeDataCommand {
     #[serde(default)]
     pub ending_version: Option<i64>,
     #[serde(default)]
+    pub sql: Option<String>,
+    #[serde(default)]
     pub storage_account: Option<String>,
     #[serde(default)]
     pub sas_token: Option<String>,

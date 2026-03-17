@@ -252,6 +252,24 @@ namespace Microsoft.DI.DeltaTableService.Tests
                 .Build();
         }
 
+        internal static Schema BuildIdAmountNameSchema()
+        {
+            return new Schema.Builder()
+                .Field(new Field("id", Int32Type.Default, nullable: true))
+                .Field(new Field("amount", Int32Type.Default, nullable: true))
+                .Field(new Field("name", StringType.Default, nullable: true))
+                .Build();
+        }
+
+        internal static RecordBatch BuildIdAmountNameBatch(int[] ids, int[] amounts, string[] names)
+        {
+            return new RecordBatch.Builder()
+                .Append("id", nullable: true, new Int32Array.Builder().AppendRange(ids).Build())
+                .Append("amount", nullable: true, new Int32Array.Builder().AppendRange(amounts).Build())
+                .Append("name", nullable: true, new StringArray.Builder().AppendRange(names).Build())
+                .Build();
+        }
+
         internal static async IAsyncEnumerable<RecordBatch> ToAsyncEnumerable(RecordBatch batch)
         {
             yield return batch;
@@ -339,6 +357,33 @@ namespace Microsoft.DI.DeltaTableService.Tests
             var rows = new List<Dictionary<string, object?>>();
 
             await foreach (RecordBatch batch in client.ReadChangeDataAsync(tablePath, startingVersion, endingVersion))
+            {
+                for (int rowIndex = 0; rowIndex < batch.Length; rowIndex++)
+                {
+                    var row = new Dictionary<string, object?>();
+                    for (int colIndex = 0; colIndex < batch.ColumnCount; colIndex++)
+                    {
+                        string columnName = batch.Schema.GetFieldByIndex(colIndex).Name;
+                        row[columnName] = ReadValue(batch.Column(colIndex), rowIndex);
+                    }
+
+                    rows.Add(row);
+                }
+            }
+
+            return rows;
+        }
+
+        internal static async Task<List<Dictionary<string, object?>>> ExecuteChangeDataQueryRowsAsync(
+            DeltaTableServiceClient client,
+            string sql,
+            string tablePath,
+            long startingVersion,
+            long? endingVersion = null)
+        {
+            var rows = new List<Dictionary<string, object?>>();
+
+            await foreach (RecordBatch batch in client.ExecuteChangeDataQueryAsync(sql, tablePath, startingVersion, endingVersion))
             {
                 for (int rowIndex = 0; rowIndex < batch.Length; rowIndex++)
                 {

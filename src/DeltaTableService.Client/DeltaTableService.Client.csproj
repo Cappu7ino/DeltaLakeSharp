@@ -11,7 +11,7 @@
     <SignAssembly>true</SignAssembly>
     <AssemblyOriginatorKeyFile>DeltaTableService.Client.snk</AssemblyOriginatorKeyFile>
     <PackageId>Microsoft.DI.DeltaTableService.Client</PackageId>
-    <Version>0.1.2-local</Version>
+    <Version>0.1.3-local</Version>
     <Authors>Microsoft</Authors>
     <Company>Microsoft</Company>
     <Description>Batteries-included Delta Lake client library for .NET with Arrow streaming, SQL operations, merge support, and native Rust-backed execution.</Description>
