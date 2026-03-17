@@ -13,9 +13,9 @@ using Apache.Arrow.Flight;
 using Apache.Arrow.Flight.Client;
 using Google.Protobuf;
 using Grpc.Net.Client;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client.Models;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
+namespace Microsoft.DI.DeltaTableService.Client.Internal
 {
     /// <summary>
     /// Thin wrapper around <see cref="FlightClient"/> that encapsulates all

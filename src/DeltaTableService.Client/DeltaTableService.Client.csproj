@@ -1,11 +1,38 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <RootNamespace>Microsoft.ADMS.Testing.DeltaTableService.Client</RootNamespace>
-    <AssemblyName>DeltaTableService.Client</AssemblyName>
+    <RootNamespace>Microsoft.DI.DeltaTableService.Client</RootNamespace>
+    <AssemblyName>Microsoft.DI.DeltaTableService.Client</AssemblyName>
     <TargetFrameworks>net8.0;net472</TargetFrameworks>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DebugType>portable</DebugType>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <SignAssembly>true</SignAssembly>
+    <AssemblyOriginatorKeyFile>DeltaTableService.Client.snk</AssemblyOriginatorKeyFile>
+    <PackageId>Microsoft.DI.DeltaTableService.Client</PackageId>
+    <Version>0.1.2-local</Version>
+    <Authors>Microsoft</Authors>
+    <Company>Microsoft</Company>
+    <Description>Batteries-included Delta Lake client library for .NET with Arrow streaming, SQL operations, merge support, and native Rust-backed execution.</Description>
+    <PackageTags>delta lake;delta;arrow;datafusion;dotnet</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://msdata.visualstudio.com/Azure%20Data%20Movement/_git/DeltaLakeExperimental</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <AllowedOutputExtensionsInPackageBuildOutputFolder>$(AllowedOutputExtensionsInPackageBuildOutputFolder);.pdb</AllowedOutputExtensionsInPackageBuildOutputFolder>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\packages</PackageOutputPath>
+    <RustV3ProjectDir>$(MSBuildThisFileDirectory)..\DeltaTableService.Server\v3</RustV3ProjectDir>
+    <RustCargoProfile Condition="'$(Configuration)' == 'Release'">release</RustCargoProfile>
+    <RustCargoProfile Condition="'$(RustCargoProfile)' == ''">debug</RustCargoProfile>
+    <RustCargoBuildArg Condition="'$(Configuration)' == 'Release'">--release</RustCargoBuildArg>
+    <RustNativeStampDir>$(BaseIntermediateOutputPath)rust-native</RustNativeStampDir>
+    <RustNativeStampFile>$(RustNativeStampDir)\$(Configuration).stamp</RustNativeStampFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,7 +43,7 @@
     <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.11.0" />
     <PackageReference Include="Google.Protobuf" Version="3.34.0" />
     <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
-    <PackageReference Include="Testcontainers" Version="4.3.0" />
+    <PackageReference Include="Microsoft.SourceLink.AzureRepos.Git" Version="8.0.0" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
@@ -24,4 +51,43 @@
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
     <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.0" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="" Link="README.md" />
+    <None Include="$(RustV3ProjectDir)\target\$(RustCargoProfile)\delta_table_service_native.dll"
+          Pack="true"
+          PackagePath="runtimes\win-x64\native\"
+          Visible="false"
+          Link="runtimes\win-x64\native\delta_table_service_native.dll" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <RustNativeInputs Include="$(RustV3ProjectDir)\Cargo.toml" />
+    <RustNativeInputs Include="$(RustV3ProjectDir)\Cargo.lock" Condition="Exists('$(RustV3ProjectDir)\Cargo.lock')" />
+    <RustNativeInputs Include="$(RustV3ProjectDir)\src\**\*.rs" />
+  </ItemGroup>
+
+  <Target Name="BuildRustNativeForSingleTargetBuild"
+          BeforeTargets="Build"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'"
+          Inputs="@(RustNativeInputs)"
+          Outputs="$(RustNativeStampFile)">
+    <Message Importance="high" Text="Building Rust native library for $(Configuration) via cargo build $(RustCargoBuildArg)..." />
+    <MakeDir Directories="$(RustNativeStampDir)" />
+    <Exec Command="cargo build $(RustCargoBuildArg)"
+          WorkingDirectory="$(RustV3ProjectDir)" />
+    <Touch Files="$(RustNativeStampFile)" AlwaysCreate="true" />
+  </Target>
+
+  <Target Name="BuildRustNativeForCrossTargetBuild"
+          BeforeTargets="DispatchToInnerBuilds"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' == 'true'"
+          Inputs="@(RustNativeInputs)"
+          Outputs="$(RustNativeStampFile)">
+    <Message Importance="high" Text="Building Rust native library for $(Configuration) package via cargo build $(RustCargoBuildArg)..." />
+    <MakeDir Directories="$(RustNativeStampDir)" />
+    <Exec Command="cargo build $(RustCargoBuildArg)"
+          WorkingDirectory="$(RustV3ProjectDir)" />
+    <Touch Files="$(RustNativeStampFile)" AlwaysCreate="true" />
+  </Target>
 </Project>

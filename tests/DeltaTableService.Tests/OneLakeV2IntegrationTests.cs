@@ -2,10 +2,10 @@
 // Licensed under the MIT License.
 
 using System.Threading.Tasks;
-using Microsoft.ADMS.Testing.DeltaTableService.Client;
+using Microsoft.DI.DeltaTableService.Client;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
+namespace Microsoft.DI.DeltaTableService.Tests
 {
     /// <summary>
     /// OneLake end-to-end integration tests using the V2 (DataFusion + delta-rs) backend.

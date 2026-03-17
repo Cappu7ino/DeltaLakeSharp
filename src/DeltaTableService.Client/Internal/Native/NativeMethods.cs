@@ -5,17 +5,22 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native
+namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
 {
     internal static partial class NativeMethods
     {
-        internal const string LibraryName = "delta_table_service_v3";
+        internal const string LibraryName = "delta_table_service_native";
         private static IntPtr _loadedHandle;
 
         private static string[] GetCandidateLibraryPaths()
         {
             string fileName = GetPlatformLibraryFileName();
-            string dir = AppContext.BaseDirectory;
+            string baseDir = AppContext.BaseDirectory;
+            string dir = baseDir;
+
+            string packageLocal = Path.Combine(baseDir, fileName);
+            string runtimeLocal = Path.Combine(baseDir, "runtimes", "win-x64", "native", fileName);
+            string runtimeCurrent = Path.Combine(baseDir, "native", fileName);
 
             while (dir != null)
             {
@@ -24,6 +29,9 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native
                 {
                     return new[]
                     {
+                        packageLocal,
+                        runtimeLocal,
+                        runtimeCurrent,
                         Path.Combine(dir, "src", "DeltaTableService.Server", "v3", "target", "debug", fileName),
                         Path.Combine(dir, "src", "DeltaTableService.Server", "v3", "target", "debug", "deps", fileName),
                     };
@@ -32,7 +40,12 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native
                 dir = Path.GetDirectoryName(dir);
             }
 
-            return Array.Empty<string>();
+            return new[]
+            {
+                packageLocal,
+                runtimeLocal,
+                runtimeCurrent,
+            };
         }
 
         private static string GetPlatformLibraryFileName()

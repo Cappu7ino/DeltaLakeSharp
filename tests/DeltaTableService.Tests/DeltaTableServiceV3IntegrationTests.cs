@@ -8,11 +8,11 @@ using System.Linq;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Types;
-using Microsoft.ADMS.Testing.DeltaTableService.Client;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client;
+using Microsoft.DI.DeltaTableService.Client.Models;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
+namespace Microsoft.DI.DeltaTableService.Tests
 {
     /// <summary>
     /// Integration tests for the Delta Table Service V3 native backend.

@@ -16,9 +16,9 @@ using Azure.Identity;
 using Azure.Storage.Files.DataLake;
 using Azure.Storage.Files.DataLake.Models;
 using Azure.Storage.Sas;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client.Models;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client
+namespace Microsoft.DI.DeltaTableService.Client
 {
     /// <summary>
     /// Lightweight helper that acquires a OneLake user-delegation SAS token

@@ -8,9 +8,9 @@ using System.Threading.Tasks;
 using Azure.Core;
 using Azure.Identity;
 using Microsoft.Data.SqlClient;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client.Models;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client
+namespace Microsoft.DI.DeltaTableService.Client
 {
     /// <summary>
     /// Lightweight client for querying Delta tables in a Fabric Lakehouse

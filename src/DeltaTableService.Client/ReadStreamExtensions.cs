@@ -6,9 +6,9 @@ using System.Data;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Internal;
+using Microsoft.DI.DeltaTableService.Client.Internal;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client
+namespace Microsoft.DI.DeltaTableService.Client
 {
     /// <summary>
     /// Extension methods for consuming <see cref="IAsyncEnumerable{RecordBatch}"/>

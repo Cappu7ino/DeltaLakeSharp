@@ -4,10 +4,10 @@
 using System;
 using System.Xml;
 using System.Xml.Serialization;
-using Microsoft.ADMS.Testing.DeltaTableService.Client;
+using Microsoft.DI.DeltaTableService.Client;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
+namespace Microsoft.DI.DeltaTableService.Tests
 {
     /// <summary>
     /// Unit tests for <see cref="OneLakeSasHelper"/> and <see cref="OneLakeEnvironment"/>.

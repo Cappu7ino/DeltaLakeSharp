@@ -8,10 +8,10 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Internal;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client.Internal;
+using Microsoft.DI.DeltaTableService.Client.Models;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client
+namespace Microsoft.DI.DeltaTableService.Client
 {
         /// <summary>
         /// Specifies the backend protocol to use for communicating with the Delta Table Service.
@@ -64,6 +64,24 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
         public DeltaTableServiceClient(Uri serverUri)
             : this(serverUri, ServiceMode.V1_Spark)
         {
+        }
+
+        /// <summary>
+        /// Initializes a new client for an in-process backend that does not
+        /// require a server URI.
+        /// </summary>
+        /// <param name="mode">The backend protocol to use.</param>
+        public DeltaTableServiceClient(ServiceMode mode)
+        {
+            if (mode != ServiceMode.V3_Rust)
+            {
+                throw new ArgumentException(
+                    "A server URI is required for V1 and V2 backends. Use this overload only for in-process modes such as V3_Rust.",
+                    nameof(mode));
+            }
+
+            Mode = mode;
+            _backend = new NativeRustBackend();
         }
 
         /// <summary>

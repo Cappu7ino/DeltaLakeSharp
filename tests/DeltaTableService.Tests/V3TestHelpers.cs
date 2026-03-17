@@ -9,11 +9,11 @@ using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Apache.Arrow.Arrays;
-using Microsoft.ADMS.Testing.DeltaTableService.Client;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client;
+using Microsoft.DI.DeltaTableService.Client.Models;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
+namespace Microsoft.DI.DeltaTableService.Tests
 {
     internal static class V3TestHelpers
     {
@@ -97,7 +97,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
             string timeTravelTablePath = Path.Combine(tempDir, "time_travel_table");
             CreateTestDeltaTable(binaryPath!, timeTravelTablePath, "time-travel");
 
-            var client = new DeltaTableServiceClient(DummyServerUri, ServiceMode.V3_Rust);
+            var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
             bool healthy = await client.HealthCheckAsync();
             Assert.IsTrue(healthy, "Delta Table Service V3 did not become healthy.");
 

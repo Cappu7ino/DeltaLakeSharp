@@ -10,9 +10,9 @@ using System.Linq;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using BenchmarkDotNet.Attributes;
-using Microsoft.ADMS.Testing.DeltaTableService.Client;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Internal;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client;
+using Microsoft.DI.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Testing;
 
 namespace DeltaTableService.Benchmark
 {

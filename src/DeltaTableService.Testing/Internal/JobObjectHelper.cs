@@ -9,21 +9,12 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 #endif
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
+namespace Microsoft.DI.DeltaTableService.Testing.Internal
 {
     /// <summary>
     /// Assigns child processes to a Windows Job Object configured with
-    /// <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c>. This ensures that if the
-    /// parent process (the C# test host) crashes or exits without graceful
-    /// shutdown, all child processes (the Rust binary) are terminated by the OS.
+    /// <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c>.
     /// </summary>
-    /// <remarks>
-    /// On non-Windows platforms this class is a no-op. The
-    /// <see cref="SupportedOSPlatform"/> attribute documents the Windows-only
-    /// nature, but the code gracefully falls through on other platforms by
-    /// throwing <see cref="PlatformNotSupportedException"/> from the
-    /// constructor.
-    /// </remarks>
 #if !NET472
     [SupportedOSPlatform("windows")]
 #endif
@@ -32,15 +23,6 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
         private IntPtr _jobHandle;
         private bool _disposed;
 
-        /// <summary>
-        /// Creates a new anonymous Job Object with the kill-on-close flag.
-        /// </summary>
-        /// <exception cref="PlatformNotSupportedException">
-        /// Thrown on non-Windows platforms.
-        /// </exception>
-        /// <exception cref="Win32Exception">
-        /// Thrown when the Job Object could not be created or configured.
-        /// </exception>
         public JobObjectHelper()
         {
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -56,8 +38,6 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
                     "Failed to create Job Object.");
             }
 
-            // Configure KILL_ON_JOB_CLOSE so child processes die when the
-            // Job Object handle is closed (i.e. when this process exits).
             var info = new NativeMethods.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
             {
                 BasicLimitInformation = new NativeMethods.JOBOBJECT_BASIC_LIMIT_INFORMATION
@@ -81,19 +61,6 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             }
         }
 
-        /// <summary>
-        /// Assigns a running process to this Job Object.
-        /// </summary>
-        /// <param name="process">The process to assign.</param>
-        /// <exception cref="ArgumentNullException">
-        /// Thrown when <paramref name="process"/> is <c>null</c>.
-        /// </exception>
-        /// <exception cref="InvalidOperationException">
-        /// Thrown when the Job Object handle is invalid.
-        /// </exception>
-        /// <exception cref="Win32Exception">
-        /// Thrown when the process could not be assigned to the Job Object.
-        /// </exception>
         public void AssignProcess(Process process)
         {
             if (process == null)
@@ -113,7 +80,6 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             }
         }
 
-        /// <inheritdoc />
         public void Dispose()
         {
             if (_disposed) return;
@@ -126,9 +92,6 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             }
         }
 
-        /// <summary>
-        /// P/Invoke declarations for Windows Job Object APIs.
-        /// </summary>
         private static class NativeMethods
         {
             internal const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
@@ -175,7 +138,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
             }
 
             [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-            internal static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string? lpName);
+            internal static extern IntPtr CreateJobObject(IntPtr lpJobAttributes, string lpName);
 
             [DllImport("kernel32.dll", SetLastError = true)]
             [return: MarshalAs(UnmanagedType.Bool)]

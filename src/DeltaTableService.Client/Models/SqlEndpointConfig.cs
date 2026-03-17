@@ -3,7 +3,7 @@
 
 using System;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Models
+namespace Microsoft.DI.DeltaTableService.Client.Models
 {
     /// <summary>
     /// Connection configuration for a Fabric Lakehouse SQL analytics endpoint.

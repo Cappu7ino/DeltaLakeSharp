@@ -6,9 +6,9 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client.Models;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
+namespace Microsoft.DI.DeltaTableService.Client.Internal
 {
     /// <summary>
     /// Common interface for Delta Table Service backends.

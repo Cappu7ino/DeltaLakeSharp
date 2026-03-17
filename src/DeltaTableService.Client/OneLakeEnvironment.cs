@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client
+namespace Microsoft.DI.DeltaTableService.Client
 {
     /// <summary>
     /// Identifies the OneLake DFS environment to use when acquiring SAS tokens.

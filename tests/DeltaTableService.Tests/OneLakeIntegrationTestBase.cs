@@ -9,11 +9,12 @@ using System.Threading.Tasks;
 using Apache.Arrow;
 using Azure;
 using Azure.Storage.Files.DataLake;
-using Microsoft.ADMS.Testing.DeltaTableService.Client;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client;
+using Microsoft.DI.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Testing;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Tests
+namespace Microsoft.DI.DeltaTableService.Tests
 {
     /// <summary>
     /// Shared base class for OneLake end-to-end integration tests.

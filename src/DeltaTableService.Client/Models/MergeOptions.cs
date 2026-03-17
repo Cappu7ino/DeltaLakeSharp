@@ -4,7 +4,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Models
+namespace Microsoft.DI.DeltaTableService.Client.Models
 {
     /// <summary>
     /// Encapsulates the parameters for a Delta MERGE operation that streams

@@ -6,7 +6,7 @@ description = "Delta Table Service V3 — native Rust Delta/DataFusion core with
 publish = false
 
 [lib]
-name = "delta_table_service_v3"
+name = "delta_table_service_native"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 

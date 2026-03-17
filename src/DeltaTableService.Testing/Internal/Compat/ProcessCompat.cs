@@ -6,7 +6,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Compat
+namespace Microsoft.DI.DeltaTableService.Testing.Internal.Compat
 {
     internal static class ProcessCompat
     {

@@ -32,10 +32,8 @@ transparent to the caller.
 ### Quick Start
 
 ```csharp
-// 1. Create a client. For V3 native mode, the URI is accepted for API
-// compatibility but the backend runs in-process.
-using var client = new DeltaTableServiceClient(
-    new Uri("http://localhost"), ServiceMode.V3_Rust);
+// 1. Create a client. V3 native mode runs in-process and does not require a server URI.
+using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
 
 // 2. Write a Delta table from a CSV string.
 var batch = ArrowConverter.FromCsv("name,age\nAlice,30\nBob,25");
@@ -79,7 +77,7 @@ ExecuteResult mergeResult = await client.MergeDataAsync(
     mergeOptions);
 ```
 
-For V1 and V2 containerized backends, `DeltaTableContainer` remains available as a convenience for local development, compatibility testing, and integration scenarios.
+For V1 and V2 containerized backends, `Microsoft.DI.DeltaTableService.Testing.DeltaTableContainer` remains available as a convenience for local development, compatibility testing, and integration scenarios.
 
 ### DeltaTableServiceClient
 
@@ -291,7 +289,7 @@ dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filte
 dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj
 ```
 
-Container-based integration tests require Docker Desktop to be running. The focused native V3 test suites run in-process without Docker. Each containerized backend image is built automatically by `DeltaTableContainer.BuildAndStartAsync` when those compatibility/integration paths are used.
+Container-based integration tests require Docker Desktop to be running. The focused native V3 test suites run in-process without Docker. Each containerized backend image is built automatically by `Microsoft.DI.DeltaTableService.Testing.DeltaTableContainer.BuildAndStartAsync` when those compatibility/integration paths are used.
 
 ## Docker Images
 

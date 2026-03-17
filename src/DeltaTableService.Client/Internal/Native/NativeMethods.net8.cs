@@ -8,7 +8,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using Apache.Arrow.C;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native
+namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
 {
     internal static partial class NativeMethods
     {

@@ -10,9 +10,9 @@ using System.Text;
 using System.Threading;
 using Apache.Arrow;
 using Apache.Arrow.Types;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client.Models;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client
+namespace Microsoft.DI.DeltaTableService.Client
 {
     /// <summary>
     /// Converts between Apache Arrow <see cref="RecordBatch"/> and common .NET

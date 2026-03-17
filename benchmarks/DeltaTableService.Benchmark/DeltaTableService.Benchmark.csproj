@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\DeltaTableService.Client\DeltaTableService.Client.csproj" />
+    <ProjectReference Include="..\..\src\DeltaTableService.Testing\Microsoft.DI.DeltaTableService.Testing.csproj" />
   </ItemGroup>
 
   <!-- Copy DeltaTableService.Server files to output so Docker build context is available at runtime -->

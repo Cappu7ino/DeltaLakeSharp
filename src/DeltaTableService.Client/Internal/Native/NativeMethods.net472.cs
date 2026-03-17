@@ -3,13 +3,12 @@
 
 #if NET472
 using System;
-using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Apache.Arrow.C;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native
+namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
 {
     internal static partial class NativeMethods
     {

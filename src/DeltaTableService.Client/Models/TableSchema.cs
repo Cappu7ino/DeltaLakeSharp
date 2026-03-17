@@ -3,7 +3,7 @@
 
 using System.Collections.Generic;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Models
+namespace Microsoft.DI.DeltaTableService.Client.Models
 {
     /// <summary>
     /// Represents the schema of a Delta table as a list of column definitions.

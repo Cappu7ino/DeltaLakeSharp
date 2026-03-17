@@ -4,7 +4,7 @@
 using System;
 using System.Runtime.InteropServices;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native
+namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
 {
     internal sealed class NativeEngineHandle : SafeHandle
     {

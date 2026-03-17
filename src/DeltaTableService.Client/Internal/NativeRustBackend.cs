@@ -9,12 +9,12 @@ using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.C;
 using Apache.Arrow.Ipc;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Native;
-using Microsoft.ADMS.Testing.DeltaTableService.Client.Models;
+using Microsoft.DI.DeltaTableService.Client.Internal.Native;
+using Microsoft.DI.DeltaTableService.Client.Models;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
+namespace Microsoft.DI.DeltaTableService.Client.Internal
 {
     /// <summary>
     /// Native in-process backend for the V3 architecture.
