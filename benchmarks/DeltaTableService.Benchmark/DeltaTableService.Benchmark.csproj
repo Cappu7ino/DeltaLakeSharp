@@ -26,6 +26,10 @@
 
   <!-- Copy DeltaTableService.Server files to output so Docker build context is available at runtime -->
   <ItemGroup>
-    <Content Include="..\..\src\DeltaTableService.Server\**\*" Exclude="..\..\src\DeltaTableService.Server\.vs\**;..\..\src\DeltaTableService.Server\__pycache__\**" Link="DeltaTableService.Server\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <Content Include="..\..\src\DeltaTableService.Server\**\*"
+             Exclude="..\..\src\DeltaTableService.Server\.vs\**;..\..\src\DeltaTableService.Server\__pycache__\**;..\..\src\DeltaTableService.Server\v3\target\**"
+             Link="DeltaTableService.Server\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             Visible="false" />
   </ItemGroup>
 </Project>

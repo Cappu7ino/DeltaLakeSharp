@@ -5,7 +5,9 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+#if !NET472
 using System.Runtime.Versioning;
+#endif
 
 namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
 {
@@ -22,7 +24,9 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client.Internal
     /// throwing <see cref="PlatformNotSupportedException"/> from the
     /// constructor.
     /// </remarks>
+#if !NET472
     [SupportedOSPlatform("windows")]
+#endif
     internal sealed class JobObjectHelper : IDisposable
     {
         private IntPtr _jobHandle;

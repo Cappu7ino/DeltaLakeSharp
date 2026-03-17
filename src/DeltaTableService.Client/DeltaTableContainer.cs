@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Images;
+using Microsoft.ADMS.Testing.DeltaTableService.Client.Internal.Compat;
 
 namespace Microsoft.ADMS.Testing.DeltaTableService.Client
 {
@@ -188,7 +189,7 @@ namespace Microsoft.ADMS.Testing.DeltaTableService.Client
                 _ = process.StandardOutput.ReadToEndAsync();
                 _ = process.StandardError.ReadToEndAsync();
 
-                await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+                await ProcessCompat.WaitForExitAsync(process, cancellationToken).ConfigureAwait(false);
                 return process.ExitCode == 0;
             }
             catch

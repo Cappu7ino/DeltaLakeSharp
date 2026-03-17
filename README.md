@@ -4,6 +4,15 @@ A batteries-included Delta Lake client library for .NET with streaming Arrow rea
 
 The library is designed for application code, data tooling, automation, and integration scenarios. The container-based harnesses and test projects in this repository are supporting assets, not the primary purpose of the library.
 
+## Target Frameworks
+
+The client library currently targets:
+
+- `net8.0`
+- `net472`
+
+The native `V3_Rust` backend is supported on both target frameworks. The `net472` target is validated with focused native V3 smoke and integration coverage, while the Docker-backed V1/V2 test paths still depend on local Docker/Testcontainers availability.
+
 ## Architecture
 
 The service ships with **three interchangeable backends**, each exposing the same C# client API:
