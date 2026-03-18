@@ -293,6 +293,7 @@ fn split_assignments(input: &str) -> Result<Vec<(String, String)>, ServiceError>
     let mut assignments = Vec::new();
     let mut current = String::new();
     let mut in_single_quote = false;
+    let mut paren_depth = 0usize;
 
     for ch in input.chars() {
         match ch {
@@ -300,7 +301,15 @@ fn split_assignments(input: &str) -> Result<Vec<(String, String)>, ServiceError>
                 in_single_quote = !in_single_quote;
                 current.push(ch);
             }
-            ',' if !in_single_quote => {
+            '(' if !in_single_quote => {
+                paren_depth += 1;
+                current.push(ch);
+            }
+            ')' if !in_single_quote => {
+                paren_depth = paren_depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if !in_single_quote && paren_depth == 0 => {
                 push_assignment(&mut assignments, &current)?;
                 current.clear();
             }
@@ -942,6 +951,47 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn split_assignments_keeps_commas_inside_parentheses() {
+        let assignments = split_assignments(
+            "amount = amount + 1, unit_price = unit_price + CAST(1.25 AS DECIMAL(18,2)), note = 'updated_v1'",
+        )
+        .expect("split_assignments");
+
+        assert_eq!(assignments.len(), 3);
+        assert_eq!(assignments[0], ("amount".to_string(), "amount + 1".to_string()));
+        assert_eq!(
+            assignments[1],
+            (
+                "unit_price".to_string(),
+                "unit_price + CAST(1.25 AS DECIMAL(18,2))".to_string(),
+            )
+        );
+        assert_eq!(
+            assignments[2],
+            ("note".to_string(), "'updated_v1'".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_update_statement_supports_decimal_cast_assignment() {
+        let parsed = parse_update_statement(
+            "UPDATE bench_dataset SET amount = amount + 1, unit_price = unit_price + CAST(1.25 AS DECIMAL(18,2)), note = 'updated_v1' WHERE id % 17 = 1 AND is_active = true",
+        )
+        .expect("parse_update_statement");
+
+        assert_eq!(parsed.assignments.len(), 3);
+        assert_eq!(parsed.assignments[1].0, "unit_price");
+        assert_eq!(
+            parsed.assignments[1].1,
+            "unit_price + CAST(1.25 AS DECIMAL(18,2))"
+        );
+        assert_eq!(
+            parsed.predicate.as_deref(),
+            Some("id % 17 = 1 AND is_active = true")
+        );
     }
 
     #[tokio::test]

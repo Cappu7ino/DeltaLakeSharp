@@ -89,6 +89,7 @@ The public entry point. Wraps all Arrow/gRPC protocol details behind standard
 | `HealthCheckAsync()` | `Task<bool>` | Checks if the server is healthy and responsive. |
 | `ReadTableAsync(path, storageConfig?)` | `IAsyncEnumerable<RecordBatch>` | Streams raw Arrow `RecordBatch` objects for the entire table. Zero-copy columnar access with true streaming semantics. Use `.ToDataTableAsync()` to materialize as a `DataTable`, or `.ToListAsync()` to buffer all batches. |
 | `ReadChangeDataAsync(path, startingVersion, endingVersion?, storageConfig?)` | `IAsyncEnumerable<RecordBatch>` | Streams Delta Change Data Feed rows as Arrow batches. Currently supported only by the native V3 backend. |
+| `ExecuteChangeDataQueryAsync(sql, path, startingVersion, endingVersion?, storageConfig?)` | `IAsyncEnumerable<RecordBatch>` | Executes a SQL query against Change Data Feed rows exposed as the fixed `_cdf` relation. Currently supported only by the native V3 backend. |
 | `GetSchemaAsync(path, storageConfig?)` | `Task<TableSchema>` | Returns the schema of a Delta table. |
 | `ExecuteQueryAsync(sql, tablePath?, tableName?, storageConfig?)` | `IAsyncEnumerable<RecordBatch>` | Executes a read-oriented SQL query (SELECT, SHOW, DESCRIBE, etc.) and streams results as Arrow batches. When `tablePath`/`tableName` are provided, the table is registered first (required for stateless engines like V2). Use `.ToDataTableAsync()` to materialize as a `DataTable`. |
 | `CreateTableAsync(path, schema, configuration?, storageConfig?)` | `Task<ExecuteResult>` | Creates an empty Delta table with the given schema and optional Delta configuration (DDL). |
@@ -229,6 +230,125 @@ DataTable dt = await client.ReadTableAsync("/data/t").ToDataTableAsync();
 ```csharp
 List<RecordBatch> batches = await client.ReadTableAsync("/data/t").ToListAsync();
 ```
+
+## Benchmark Dataset Generator
+
+The benchmark project includes a CLI generator for creating deterministic Delta datasets for full-table read and full-table Change Data Feed benchmarks.
+
+The generator uses the native V3 client to create and populate local Delta tables with these schema variants:
+
+- default schema
+  - `id`
+  - `tenant_id`
+  - `event_ts`
+  - `region`
+  - `category`
+  - `amount`
+  - `quantity`
+  - `is_active`
+  - `note`
+- decimal schema
+  - `id`
+  - `tenant_id`
+  - `event_ts`
+  - `region`
+  - `category`
+  - `amount`
+  - `unit_price`
+  - `quantity`
+  - `is_active`
+  - `note`
+
+### CLI Usage
+
+```bash
+dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind <full-read|full-cdf> --output <path> [options]
+```
+
+Options:
+
+- `--schema <default|decimal>` schema variant, default `default`
+- `--rows <n>` initial row count, default `1000000`
+- `--batch-size <n>` rows per insert batch/file target, default `100000`
+- `--versions <n>` additional CDF versions to generate, default `20`
+- `--rows-per-version <n>` rows appended in each extra CDF version, default `50000`
+- `--seed <n>` deterministic random seed, default `42`
+- `--overwrite` delete the output path first if it already exists
+
+### Scripted Dataset Generation
+
+Generate the default snapshot dataset matrix used by the benchmark project:
+
+```powershell
+pwsh -NoLogo -NoProfile -File benchmarks/DeltaTableService.Benchmark/Generate-BenchmarkDatasets.ps1 -Overwrite
+```
+
+This creates:
+
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/1m`
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/2m`
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/5m`
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/10m`
+
+Generate the decimal snapshot matrix plus decimal CDF dataset:
+
+```powershell
+pwsh -NoLogo -NoProfile -File benchmarks/DeltaTableService.Benchmark/Generate-DecimalBenchmarkDatasets.ps1 -Overwrite
+```
+
+This creates:
+
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/1m`
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/2m`
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/5m`
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/10m`
+- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-cdf-decimal`
+
+To generate a default CDF dataset directly with the CLI:
+
+```bash
+dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-cdf --schema default --output benchmarks/DeltaTableService.Benchmark/TestData/delta-full-cdf --rows 1000000 --batch-size 250000 --versions 20 --rows-per-version 50000 --overwrite
+```
+
+### Examples
+
+Generate a full-read dataset:
+
+```bash
+dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-read --schema default --output C:\data\delta-full-read --rows 10000000 --batch-size 250000 --overwrite
+```
+
+Generate a full-CDF dataset with version history:
+
+```bash
+dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-cdf --schema default --output C:\data\delta-full-cdf --rows 5000000 --batch-size 100000 --versions 24 --rows-per-version 25000 --overwrite
+```
+
+Generate a decimal full-read dataset:
+
+```bash
+dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-read --schema decimal --output C:\data\delta-full-read-decimal --rows 2000000 --batch-size 500000 --overwrite
+```
+
+Notes:
+
+- `full-read` creates a large latest-snapshot dataset for whole-table scan benchmarks
+- `full-cdf` enables Change Data Feed and adds append/update/delete history across versions
+- `decimal` adds a `unit_price decimal(18,2)` column to the benchmark table schema
+- the generator requires the native V3 backend to be available on the local machine
+
+### Benchmark Results Reference
+
+The persisted benchmark summary for the current benchmark matrix lives at:
+
+- `benchmarks/DeltaTableService.Benchmark/BenchmarkExecutionSummary.md`
+
+Use that file to inspect:
+
+- dataset schemas used for benchmark generation
+- dataset dimensions for default and decimal benchmark data
+- measured non-decimal and decimal benchmark timings
+- managed allocation comparisons and reduction percentages
 
 ## Project Structure
 

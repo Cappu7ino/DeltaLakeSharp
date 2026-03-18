@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using BenchmarkDotNet.Jobs;
 using BenchmarkDotNet.Loggers;
 using BenchmarkDotNet.Columns;
@@ -8,9 +9,12 @@ using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Analysers;
 using BenchmarkDotNet.Diagnosers;
 using BenchmarkDotNet.Exporters;
+using BenchmarkDotNet.Environments;
+using BenchmarkDotNet.Diagnostics.Windows;
 using BenchmarkDotNet.Toolchains.InProcess.Emit;
 using BenchmarkDotNet.Exporters.Csv;
 using BenchmarkDotNet.Exporters.Json;
+using System.Security.Principal;
 
 namespace DeltaTableService.Benchmark
 {
@@ -32,14 +36,32 @@ namespace DeltaTableService.Benchmark
 
             try
             {
+                if (args.Length > 0 && string.Equals(args[0], "generate-dataset", StringComparison.OrdinalIgnoreCase))
+                {
+                    int exitCode = BenchmarkDatasetGenerator.RunAsync(args.Skip(1).ToArray())
+                        .GetAwaiter()
+                        .GetResult();
+                    Environment.ExitCode = exitCode;
+                    return;
+                }
+
                 string[]? bdnArgs = null;
 
                 bool isTrial = false;
+                bool decimalOnly = false;
+                bool nonDecimalOnly = false;
                 if (args != null && args.Length != 0)
                 {
                     isTrial = args.Contains("-trial", StringComparer.OrdinalIgnoreCase);
-                    bdnArgs = args.Where(a => !string.Equals(a, "-trial", StringComparison.OrdinalIgnoreCase)).ToArray();
+                    decimalOnly = args.Contains("-decimal-only", StringComparer.OrdinalIgnoreCase);
+                    nonDecimalOnly = args.Contains("-non-decimal-only", StringComparer.OrdinalIgnoreCase);
+                    bdnArgs = args.Where(a => !string.Equals(a, "-trial", StringComparison.OrdinalIgnoreCase)
+                                           && !string.Equals(a, "-decimal-only", StringComparison.OrdinalIgnoreCase)
+                                           && !string.Equals(a, "-non-decimal-only", StringComparison.OrdinalIgnoreCase)).ToArray();
                 }
+
+                string? scenarioFilter = decimalOnly ? "decimal" : nonDecimalOnly ? "non-decimal" : null;
+                Environment.SetEnvironmentVariable("DTS_BENCHMARK_SCENARIO_FILTER", scenarioFilter);
 
                 IConfig config =
 #if DEBUG
@@ -88,11 +110,14 @@ namespace DeltaTableService.Benchmark
             public BenchmarkConfigForTrial()
             {
                 AddJob(Job.ShortRun
-                    .WithGcServer(true));
+                    .WithRuntime(ClrRuntime.Net472)
+                    .WithGcServer(true)
+                    .WithEnvironmentVariable("COMPlus_EnableEventLog", "1"));
                 WithOptions(ConfigOptions.StopOnFirstError);
                 AddLogger(ConsoleLogger.Default);
                 AddAnalyser(EnvironmentAnalyser.Default);
                 AddDiagnoser(MemoryDiagnoser.Default);
+                Program.AddNativeProfilerIfSupported(this);
                 AddColumnProvider(DefaultColumnProviders.Instance);
                 AddExporter(MarkdownExporter.GitHub);
             }
@@ -107,14 +132,43 @@ namespace DeltaTableService.Benchmark
             public BenchmarkConfig()
             {
                 AddJob(Job.Default
-                    .WithGcServer(true));
+                    .WithRuntime(ClrRuntime.Net472)
+                    .WithGcServer(true)
+                    .WithEnvironmentVariable("COMPlus_EnableEventLog", "1"));
                 WithOptions(ConfigOptions.StopOnFirstError);
                 AddLogger(ConsoleLogger.Default);
                 AddAnalyser(EnvironmentAnalyser.Default);
                 AddDiagnoser(MemoryDiagnoser.Default);
+                Program.AddNativeProfilerIfSupported(this);
                 AddColumnProvider(DefaultColumnProviders.Instance);
                 AddExporter(CsvExporter.Default, JsonExporter.Brief);
                 AddExporter(MarkdownExporter.GitHub);
+            }
+        }
+
+        private static void AddNativeProfilerIfSupported(ManualConfig config)
+        {
+            if (IsProcessElevated())
+            {
+                config.AddDiagnoser(new NativeMemoryProfiler());
+            }
+            else
+            {
+                Logger.Info("Skipping NativeMemoryProfiler because the process is not running as Administrator.");
+            }
+        }
+
+        private static bool IsProcessElevated()
+        {
+            try
+            {
+                using var identity = WindowsIdentity.GetCurrent();
+                var principal = new WindowsPrincipal(identity);
+                return principal.IsInRole(WindowsBuiltInRole.Administrator);
+            }
+            catch
+            {
+                return false;
             }
         }
     }

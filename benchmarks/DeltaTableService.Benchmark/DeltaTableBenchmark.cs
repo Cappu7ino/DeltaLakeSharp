@@ -166,8 +166,8 @@ namespace DeltaTableService.Benchmark
             Logger.Info("Cleaning up benchmark resources...");
             _v1Client?.Dispose();
             _v2Client?.Dispose();
-            await (_v1Container?.DisposeAsync() ?? ValueTask.CompletedTask);
-            await (_v2Container?.DisposeAsync() ?? ValueTask.CompletedTask);
+            await (_v1Container?.DisposeAsync() ?? default(ValueTask));
+            await (_v2Container?.DisposeAsync() ?? default(ValueTask));
             Logger.Info("Cleanup complete.");
         }
 

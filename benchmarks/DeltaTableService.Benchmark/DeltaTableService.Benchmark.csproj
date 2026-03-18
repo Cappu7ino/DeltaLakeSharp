@@ -2,7 +2,7 @@
   <PropertyGroup>
     <RootNamespace>DeltaTableService.Benchmark</RootNamespace>
     <AssemblyName>DeltaTableService.Benchmark</AssemblyName>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFrameworks>net472;net8.0</TargetFrameworks>
     <PlatformTarget>x64</PlatformTarget>
     <OutputType>Exe</OutputType>
     <StartupObject>DeltaTableService.Benchmark.Program</StartupObject>
@@ -11,13 +11,16 @@
     <GenerateProgramFile>false</GenerateProgramFile>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <RustV3ProjectDir>$(MSBuildThisFileDirectory)..\..\src\DeltaTableService.Server\v3</RustV3ProjectDir>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="BenchmarkDotNet" Version="0.15.7" />
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageReference Include="Apache.Arrow" Version="22.1.0" />
     <PackageReference Include="Apache.Arrow.Flight" Version="22.1.0" />
     <PackageReference Include="Google.Protobuf" Version="3.34.0" />
+    <PackageReference Include="BenchmarkDotNet.Diagnostics.Windows" Version="0.15.8" />
+    <PackageReference Include="Microsoft.DI.Delta" Version="3.0.2.442" />
   </ItemGroup>
 
   <ItemGroup>
@@ -30,6 +33,14 @@
     <Content Include="..\..\src\DeltaTableService.Server\**\*"
              Exclude="..\..\src\DeltaTableService.Server\.vs\**;..\..\src\DeltaTableService.Server\__pycache__\**;..\..\src\DeltaTableService.Server\v3\target\**"
              Link="DeltaTableService.Server\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             Visible="false" />
+    <Content Include="TestData\**\*"
+             Link="TestData\%(RecursiveDir)%(Filename)%(Extension)"
+             CopyToOutputDirectory="PreserveNewest"
+             Visible="false" />
+    <Content Include="$(RustV3ProjectDir)\target\release\delta_table_service_native.dll"
+             Link="runtimes\win-x64\native\delta_table_service_native.dll"
              CopyToOutputDirectory="PreserveNewest"
              Visible="false" />
   </ItemGroup>

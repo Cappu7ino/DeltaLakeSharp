@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -300,6 +301,14 @@ namespace Microsoft.DI.DeltaTableService.Client
                         ? (object)dto.Value.DateTime
                         : (object)dto.Value;
                 }
+                case Decimal128Array dec128:
+                    return dec128.GetValue(index);
+                case Decimal256Array dec256:
+                    return dec256.GetValue(index);
+                case Decimal64Array dec64:
+                    return dec64.GetValue(index);
+                case Decimal32Array dec32:
+                    return dec32.GetValue(index);
                 case BinaryArray bin:
                     return bin.GetBytes(index).ToArray();
                 case LargeBinaryArray lbin:
@@ -356,6 +365,10 @@ namespace Microsoft.DI.DeltaTableService.Client
                 case ArrowTypeId.LargeBinary:
                     return typeof(byte[]);
                 default:
+                    if (arrowType is Decimal128Type || arrowType is Decimal256Type || arrowType is Decimal64Type || arrowType is Decimal32Type)
+                    {
+                        return typeof(decimal);
+                    }
                     return typeof(string);
             }
         }
@@ -365,6 +378,26 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// </summary>
         private static string ArrowTypeToString(IArrowType arrowType)
         {
+            if (arrowType is Decimal128Type decimal128)
+            {
+                return $"decimal({decimal128.Precision},{decimal128.Scale})";
+            }
+
+            if (arrowType is Decimal256Type decimal256)
+            {
+                return $"decimal({decimal256.Precision},{decimal256.Scale})";
+            }
+
+            if (arrowType is Decimal64Type decimal64)
+            {
+                return $"decimal({decimal64.Precision},{decimal64.Scale})";
+            }
+
+            if (arrowType is Decimal32Type decimal32)
+            {
+                return $"decimal({decimal32.Precision},{decimal32.Scale})";
+            }
+
             switch (arrowType.TypeId)
             {
                 case ArrowTypeId.String: return "string";
@@ -408,6 +441,7 @@ namespace Microsoft.DI.DeltaTableService.Client
             if (clrType == typeof(ulong)) return UInt64Type.Default;
             if (clrType == typeof(float)) return FloatType.Default;
             if (clrType == typeof(double)) return DoubleType.Default;
+            if (clrType == typeof(decimal)) return new Decimal128Type(18, 2);
             if (clrType == typeof(bool)) return BooleanType.Default;
             if (clrType == typeof(DateTime)) return new TimestampType(TimeUnit.Microsecond, (string)null);
             if (clrType == typeof(DateTimeOffset)) return new TimestampType(TimeUnit.Microsecond, "UTC");
@@ -420,6 +454,11 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// </summary>
         private static IArrowType StringToArrowType(string typeName)
         {
+            if (TryParseDecimalType(typeName, out IArrowType decimalType))
+            {
+                return decimalType;
+            }
+
             switch ((typeName ?? "string").ToLowerInvariant())
             {
                 case "string": return StringType.Default;
@@ -449,6 +488,23 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// </summary>
         private static IArrowArray BuildArray(DataTable dt, int colIndex, IArrowType arrowType)
         {
+            if (arrowType is Decimal128Type decimal128Type)
+            {
+                var b = new Decimal128Array.Builder(decimal128Type);
+                foreach (DataRow row in dt.Rows)
+                {
+                    if (row[colIndex] == DBNull.Value)
+                    {
+                        b.AppendNull();
+                    }
+                    else
+                    {
+                        b.Append(Convert.ToDecimal(row[colIndex], CultureInfo.InvariantCulture));
+                    }
+                }
+                return b.Build();
+            }
+
             switch (arrowType.TypeId)
             {
                 case ArrowTypeId.String:
@@ -535,6 +591,24 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// </summary>
         private static IArrowArray BuildArrayFromRows(object[][] rows, int colIndex, IArrowType arrowType)
         {
+            if (arrowType is Decimal128Type decimal128Type)
+            {
+                var b = new Decimal128Array.Builder(decimal128Type);
+                foreach (object[] row in rows)
+                {
+                    object val = colIndex < row.Length ? row[colIndex] : null;
+                    if (val == null)
+                    {
+                        b.AppendNull();
+                    }
+                    else
+                    {
+                        b.Append(Convert.ToDecimal(val, CultureInfo.InvariantCulture));
+                    }
+                }
+                return b.Build();
+            }
+
             switch (arrowType.TypeId)
             {
                 case ArrowTypeId.String:
@@ -646,6 +720,35 @@ namespace Microsoft.DI.DeltaTableService.Client
                     return b.Build();
                 }
             }
+        }
+
+        private static bool TryParseDecimalType(string typeName, out IArrowType decimalType)
+        {
+            decimalType = null;
+
+            if (string.IsNullOrWhiteSpace(typeName))
+            {
+                return false;
+            }
+
+            string normalized = typeName.Trim();
+            if (!normalized.StartsWith("decimal(", StringComparison.OrdinalIgnoreCase)
+                || !normalized.EndsWith(")", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string inner = normalized.Substring("decimal(".Length, normalized.Length - "decimal(".Length - 1);
+            string[] parts = inner.Split(',');
+            if (parts.Length != 2
+                || !int.TryParse(parts[0].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int precision)
+                || !int.TryParse(parts[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int scale))
+            {
+                return false;
+            }
+
+            decimalType = new Decimal128Type(precision, scale);
+            return true;
         }
     }
 }

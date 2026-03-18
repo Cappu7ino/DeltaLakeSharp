@@ -164,7 +164,12 @@ fn default_operation() -> String {
 }
 
 pub fn arrow_type_from_str(s: &str) -> DataType {
-    match s.to_ascii_lowercase().as_str() {
+    let lower = s.to_ascii_lowercase();
+    if let Some((precision, scale)) = parse_decimal_type(&lower) {
+        return DataType::Decimal128(precision, scale);
+    }
+
+    match lower.as_str() {
         "string" | "str" | "utf8" => DataType::Utf8,
         "int64" | "long" | "bigint" => DataType::Int64,
         "int32" | "int" | "integer" => DataType::Int32,
@@ -181,6 +186,22 @@ pub fn arrow_type_from_str(s: &str) -> DataType {
         "binary" => DataType::Binary,
         _ => DataType::Utf8,
     }
+}
+
+fn parse_decimal_type(s: &str) -> Option<(u8, i8)> {
+    if !s.starts_with("decimal(") || !s.ends_with(')') {
+        return None;
+    }
+
+    let inner = &s["decimal(".len()..s.len() - 1];
+    let mut parts = inner.split(',').map(|p| p.trim());
+    let precision: u8 = parts.next()?.parse().ok()?;
+    let scale: i8 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+
+    Some((precision, scale))
 }
 
 #[cfg(test)]
@@ -206,6 +227,14 @@ mod tests {
     fn arrow_type_float_variants() {
         assert_eq!(arrow_type_from_str("float32"), DataType::Float32);
         assert_eq!(arrow_type_from_str("double"), DataType::Float64);
+    }
+
+    #[test]
+    fn arrow_type_decimal_variant() {
+        assert_eq!(
+            arrow_type_from_str("decimal(18,2)"),
+            DataType::Decimal128(18, 2)
+        );
     }
 
     #[test]
