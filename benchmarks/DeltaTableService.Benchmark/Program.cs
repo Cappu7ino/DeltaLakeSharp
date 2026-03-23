@@ -50,17 +50,37 @@ namespace DeltaTableService.Benchmark
                 bool isTrial = false;
                 bool decimalOnly = false;
                 bool nonDecimalOnly = false;
+                string? explicitScenarioFilter = null;
                 if (args != null && args.Length != 0)
                 {
                     isTrial = args.Contains("-trial", StringComparer.OrdinalIgnoreCase);
                     decimalOnly = args.Contains("-decimal-only", StringComparer.OrdinalIgnoreCase);
                     nonDecimalOnly = args.Contains("-non-decimal-only", StringComparer.OrdinalIgnoreCase);
-                    bdnArgs = args.Where(a => !string.Equals(a, "-trial", StringComparison.OrdinalIgnoreCase)
-                                           && !string.Equals(a, "-decimal-only", StringComparison.OrdinalIgnoreCase)
-                                           && !string.Equals(a, "-non-decimal-only", StringComparison.OrdinalIgnoreCase)).ToArray();
+
+                    var forwardedArgs = new System.Collections.Generic.List<string>();
+                    for (int i = 0; i < args.Length; i++)
+                    {
+                        string arg = args[i];
+                        if (string.Equals(arg, "-trial", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(arg, "-decimal-only", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(arg, "-non-decimal-only", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        if (string.Equals(arg, "-scenario", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                        {
+                            explicitScenarioFilter = args[++i];
+                            continue;
+                        }
+
+                        forwardedArgs.Add(arg);
+                    }
+
+                    bdnArgs = forwardedArgs.ToArray();
                 }
 
-                string? scenarioFilter = decimalOnly ? "decimal" : nonDecimalOnly ? "non-decimal" : null;
+                string? scenarioFilter = explicitScenarioFilter ?? (decimalOnly ? "decimal" : nonDecimalOnly ? "non-decimal" : null);
                 Environment.SetEnvironmentVariable("DTS_BENCHMARK_SCENARIO_FILTER", scenarioFilter);
 
                 IConfig config =

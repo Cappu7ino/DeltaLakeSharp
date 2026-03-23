@@ -3,10 +3,13 @@
 
 using System;
 using System.Collections.Generic;
+using System.Data.Common;
+using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Apache.Arrow;
+using Apache.Arrow.Types;
 using Microsoft.DI.DeltaTableService.Client;
 using Microsoft.DI.DeltaTableService.Client.Internal;
 using Microsoft.DI.DeltaTableService.Client.Models;
@@ -129,6 +132,408 @@ namespace Microsoft.DI.DeltaTableService.Tests
             finally
             {
                 backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadTableAsDataReader_ReturnsRowsForwardOnly()
+        {
+            string tablePath = CreateTempTablePath("native_v3_reader");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                    new object[] { 3, "Charlie" },
+                }, tableSchema);
+
+                await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append);
+
+                using DbDataReader reader = await client.ReadTableAsDataReaderAsync(tablePath);
+                Assert.AreEqual(2, reader.FieldCount);
+                Assert.AreEqual("id", reader.GetName(0));
+                Assert.AreEqual("name", reader.GetName(1));
+
+                var rows = new List<(int id, string name)>();
+                while (reader.Read())
+                {
+                    rows.Add((reader.GetInt32(0), reader.GetString(1)));
+                }
+
+                rows = rows.OrderBy(r => r.id).ToList();
+                CollectionAssert.AreEqual(new[] { (1, "Alice"), (2, "Bob"), (3, "Charlie") }, rows);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ExecuteQueryAsDataReader_ReturnsProjectedRows()
+        {
+            string tablePath = CreateTempTablePath("native_v3_query_reader");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                    new object[] { 3, "Charlie" },
+                }, tableSchema);
+
+                await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append);
+
+                using DbDataReader reader = await client.ExecuteQueryAsDataReaderAsync(
+                    "SELECT id FROM tbl WHERE id >= 2 ORDER BY id",
+                    tablePath,
+                    "tbl");
+
+                var ids = new List<int>();
+                while (reader.Read())
+                {
+                    ids.Add(reader.GetInt32(0));
+                }
+
+                CollectionAssert.AreEqual(new[] { 2, 3 }, ids);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadChangeDataAsDataReader_ReturnsCdfMetadataColumns()
+        {
+            string tablePath = CreateTempTablePath("native_v3_cdf_reader");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await client.CreateTableAsync(
+                    tablePath,
+                    tableSchema,
+                    configuration: new Dictionary<string, string>
+                    {
+                        ["delta.enableChangeDataFeed"] = "true",
+                    });
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                }, tableSchema);
+                await client.InsertAsync(tablePath, initialBatch.Schema, ArrowConverter.ToAsyncEnumerable(initialBatch), SaveMode.Append);
+
+                RecordBatch appendBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 3, "Charlie" },
+                }, tableSchema);
+                await client.InsertAsync(tablePath, appendBatch.Schema, ArrowConverter.ToAsyncEnumerable(appendBatch), SaveMode.Append);
+
+                using DbDataReader reader = await client.ReadChangeDataAsDataReaderAsync(tablePath, startingVersion: 0);
+
+                int changeTypeOrdinal = reader.GetOrdinal("_change_type");
+                int commitVersionOrdinal = reader.GetOrdinal("_commit_version");
+                int rowCount = 0;
+                while (reader.Read())
+                {
+                    Assert.IsFalse(reader.IsDBNull(changeTypeOrdinal));
+                    Assert.IsFalse(reader.IsDBNull(commitVersionOrdinal));
+                    rowCount++;
+                }
+
+                Assert.IsTrue(rowCount > 0, "Expected at least one CDF row.");
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadTableAsDataReader_DefaultDecimalBehavior_UsesSqlDecimal()
+        {
+            string tablePath = CreateTempTablePath("native_v3_decimal_reader");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("unit_price", "decimal(18,2)"),
+                });
+
+                ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = new RecordBatch.Builder()
+                    .Append("id", nullable: false, new Int32Array.Builder().Append(1).Build())
+                    .Append("unit_price", nullable: false, new Decimal128Array.Builder(new Apache.Arrow.Types.Decimal128Type(18, 2)).Append(12.34m).Build())
+                    .Build();
+
+                await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append);
+
+                using DbDataReader reader = await client.ReadTableAsDataReaderAsync(tablePath);
+                Assert.IsTrue(reader.Read());
+                Assert.AreEqual(typeof(SqlDecimal), reader.GetFieldType(1));
+                Assert.AreEqual(new SqlDecimal(12.34m), ((ArrowStreamDataReader)reader).GetSqlDecimal(1));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadTableAsDataReader_ReturnsTimestampValues()
+        {
+            string tablePath = CreateTempTablePath("native_v3_reader_timestamp");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("ts_aware", "timestamp"),
+                    new ColumnDefinition("ts_naive", "timestamp_ntz"),
+                });
+
+                ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                DateTimeOffset awareTimestamp = new DateTimeOffset(2025, 7, 4, 14, 30, 0, TimeSpan.Zero);
+                DateTime naiveTimestamp = new DateTime(2025, 7, 4, 14, 30, 0, DateTimeKind.Unspecified);
+
+                RecordBatch batch = new RecordBatch.Builder()
+                    .Append("id", nullable: false, new Int32Array.Builder().Append(1).Build())
+                    .Append("ts_aware", nullable: false, new TimestampArray.Builder(new TimestampType(TimeUnit.Microsecond, "UTC")).Append(awareTimestamp).Build())
+                    .Append("ts_naive", nullable: false, new TimestampArray.Builder(new TimestampType(TimeUnit.Microsecond, (string)null)).Append(new DateTimeOffset(naiveTimestamp, TimeSpan.Zero)).Build())
+                    .Build();
+
+                await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append);
+
+                using DbDataReader reader = await client.ReadTableAsDataReaderAsync(tablePath);
+                Assert.IsTrue(reader.Read());
+                Assert.AreEqual(typeof(DateTimeOffset), reader.GetFieldType(1));
+                Assert.AreEqual(awareTimestamp, reader.GetValue(1));
+                Assert.AreEqual(awareTimestamp.UtcDateTime, reader.GetDateTime(1));
+                Assert.AreEqual(typeof(DateTime), reader.GetFieldType(2));
+                Assert.AreEqual(naiveTimestamp, reader.GetValue(2));
+                Assert.AreEqual(naiveTimestamp, reader.GetDateTime(2));
+                Assert.IsFalse(reader.Read());
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadTableAsDataReader_OverflowDecimalAsString_ReturnsStringForPrecision38()
+        {
+            string tablePath = CreateTempTablePath("native_v3_table_decimal_string");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                await CreateSingleRowDecimalTableAsync(client, tablePath, SqlDecimal.Parse("123456789012345678901234567890123456.78")).ConfigureAwait(false);
+
+                using DbDataReader reader = await client.ReadTableAsDataReaderAsync(
+                    tablePath,
+                    options: new DeltaDataReaderOptions
+                    {
+                        DecimalBehavior = DeltaDataReaderDecimalBehavior.OverflowDecimalAsString,
+                    }).ConfigureAwait(false);
+
+                Assert.IsTrue(reader.Read());
+                Assert.AreEqual(typeof(string), reader.GetFieldType(1));
+                Assert.AreEqual("123456789012345678901234567890123456.78", reader.GetValue(1));
+                Assert.AreEqual("123456789012345678901234567890123456.78", reader.GetString(1));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadTableAsDataReader_ThrowOnOverflow_ThrowsForPrecision38()
+        {
+            string tablePath = CreateTempTablePath("native_v3_table_decimal_throw");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                await CreateSingleRowDecimalTableAsync(client, tablePath, SqlDecimal.Parse("123456789012345678901234567890123456.78")).ConfigureAwait(false);
+
+                using DbDataReader reader = await client.ReadTableAsDataReaderAsync(
+                    tablePath,
+                    options: new DeltaDataReaderOptions
+                    {
+                        DecimalBehavior = DeltaDataReaderDecimalBehavior.ThrowOnOverflow,
+                    }).ConfigureAwait(false);
+
+                Assert.IsTrue(reader.Read());
+                Assert.AreEqual(typeof(decimal), reader.GetFieldType(1));
+                Assert.ThrowsException<OverflowException>(() => reader.GetValue(1));
+                Assert.ThrowsException<OverflowException>(() => reader.GetDecimal(1));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ReadTableAsync_BinaryColumnRoundTripsThroughArrowBatches()
+        {
+            string tablePath = CreateTempTablePath("native_v3_binary_arrow_roundtrip");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("payload", "binary"),
+                });
+
+                ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                byte[] payload = new byte[] { 1, 2, 3, 4 };
+                RecordBatch batch = new RecordBatch.Builder()
+                    .Append("id", nullable: false, new Int32Array.Builder().Append(1).Build())
+                    .Append("payload", nullable: false, new BinaryArray.Builder().Append(payload).Build())
+                    .Build();
+
+                await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append);
+
+                var resultBatches = new List<RecordBatch>();
+                await foreach (RecordBatch readBatch in client.ReadTableAsync(tablePath))
+                {
+                    resultBatches.Add(readBatch);
+                }
+
+                Assert.AreEqual(1, resultBatches.Count);
+                Assert.AreEqual(1, resultBatches[0].Length);
+                CollectionAssert.AreEqual(payload, (byte[])V3TestHelpers.ReadValue(resultBatches[0].Column(1), 0));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ExecuteQueryAsDataReader_UseDecimal_ReturnsDecimalForSupportedPrecision()
+        {
+            string tablePath = CreateTempTablePath("native_v3_decimal_query_decimal");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                await CreateSingleRowIntTableAsync(client, tablePath).ConfigureAwait(false);
+
+                using DbDataReader reader = await client.ExecuteQueryAsDataReaderAsync(
+                    "SELECT CAST('12.34' AS DECIMAL(18,2)) AS amount FROM tbl LIMIT 1",
+                    tablePath,
+                    "tbl",
+                    options: new DeltaDataReaderOptions
+                    {
+                        DecimalBehavior = DeltaDataReaderDecimalBehavior.UseDecimal,
+                    }).ConfigureAwait(false);
+
+                Assert.IsTrue(reader.Read());
+                Assert.AreEqual(typeof(decimal), reader.GetFieldType(0));
+                Assert.AreEqual(12.34m, reader.GetDecimal(0));
+                Assert.AreEqual(12.34m, reader.GetValue(0));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ExecuteQueryAsDataReader_OverflowDecimalAsString_ReturnsStringForPrecision38()
+        {
+            string tablePath = CreateTempTablePath("native_v3_decimal_query_string");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                await CreateSingleRowIntTableAsync(client, tablePath).ConfigureAwait(false);
+
+                using DbDataReader reader = await client.ExecuteQueryAsDataReaderAsync(
+                    "SELECT CAST('123456789012345678901234567890123456.78' AS DECIMAL(38,2)) AS amount FROM tbl LIMIT 1",
+                    tablePath,
+                    "tbl",
+                    options: new DeltaDataReaderOptions
+                    {
+                        DecimalBehavior = DeltaDataReaderDecimalBehavior.OverflowDecimalAsString,
+                    }).ConfigureAwait(false);
+
+                Assert.IsTrue(reader.Read());
+                Assert.AreEqual(typeof(string), reader.GetFieldType(0));
+                Assert.AreEqual("123456789012345678901234567890123456.78", reader.GetString(0));
+                Assert.AreEqual("123456789012345678901234567890123456.78", reader.GetValue(0));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ExecuteQueryAsDataReader_ThrowOnOverflow_ThrowsForPrecision38()
+        {
+            string tablePath = CreateTempTablePath("native_v3_decimal_query_throw");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                await CreateSingleRowIntTableAsync(client, tablePath).ConfigureAwait(false);
+
+                using DbDataReader reader = await client.ExecuteQueryAsDataReaderAsync(
+                    "SELECT CAST('123456789012345678901234567890123456.78' AS DECIMAL(38,2)) AS amount FROM tbl LIMIT 1",
+                    tablePath,
+                    "tbl",
+                    options: new DeltaDataReaderOptions
+                    {
+                        DecimalBehavior = DeltaDataReaderDecimalBehavior.ThrowOnOverflow,
+                    }).ConfigureAwait(false);
+
+                Assert.IsTrue(reader.Read());
+                Assert.AreEqual(typeof(decimal), reader.GetFieldType(0));
+                Assert.ThrowsException<OverflowException>(() => reader.GetValue(0));
+            }
+            finally
+            {
                 CleanupTablePath(tablePath);
             }
         }
@@ -511,6 +916,105 @@ namespace Microsoft.DI.DeltaTableService.Tests
                 backend.Dispose();
                 CleanupTablePath(tablePath);
             }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_ExecuteChangeDataQueryAsDataReader_FiltersAndProjectsRows()
+        {
+            string tablePath = CreateTempTablePath("native_v3_cdf_query_reader");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await client.CreateTableAsync(
+                    tablePath,
+                    tableSchema,
+                    configuration: new Dictionary<string, string>
+                    {
+                        ["delta.enableChangeDataFeed"] = "true",
+                    });
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "a" },
+                    new object[] { 2, "b" },
+                }, tableSchema);
+                await client.InsertAsync(tablePath, initialBatch.Schema, ArrowConverter.ToAsyncEnumerable(initialBatch), SaveMode.Append);
+
+                ExecuteResult updateResult = await client.UpdateAsync(
+                    "UPDATE native_tbl SET name = 'b2' WHERE id = 2",
+                    tablePath,
+                    "native_tbl");
+                Assert.IsTrue(updateResult.Success, $"UpdateAsync failed: {updateResult.Message}");
+
+                using DbDataReader reader = await client.ExecuteChangeDataQueryAsDataReaderAsync(
+                    "SELECT id, name, _change_type FROM _cdf WHERE _change_type <> 'update_preimage' ORDER BY id, _change_type",
+                    tablePath,
+                    startingVersion: 1);
+
+                Assert.AreEqual(3, reader.FieldCount);
+                Assert.AreEqual("id", reader.GetName(0));
+                Assert.AreEqual("name", reader.GetName(1));
+                Assert.AreEqual("_change_type", reader.GetName(2));
+
+                var rows = new List<(int id, string name, string changeType)>();
+                while (reader.Read())
+                {
+                    rows.Add((reader.GetInt32(0), reader.GetString(1), reader.GetString(2)));
+                }
+
+                Assert.IsTrue(rows.Count >= 3, $"Expected at least 3 projected CDF rows, got {rows.Count}.");
+                Assert.IsFalse(rows.Any(r => r.changeType == "update_preimage"), "Expected filter to exclude update_preimage rows.");
+                Assert.IsTrue(rows.Any(r => r == (1, "a", "insert")));
+                Assert.IsTrue(rows.Any(r => r == (2, "b2", "update_postimage")));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        private static async Task CreateSingleRowIntTableAsync(DeltaTableServiceClient client, string tablePath)
+        {
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+            });
+
+            ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema).ConfigureAwait(false);
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            RecordBatch batch = ArrowConverter.FromRows(new[]
+            {
+                new object[] { 1 },
+            }, tableSchema);
+
+            await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append).ConfigureAwait(false);
+        }
+
+        private static async Task CreateSingleRowDecimalTableAsync(DeltaTableServiceClient client, string tablePath, SqlDecimal value)
+        {
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("unit_price", "decimal(38,2)"),
+            });
+
+            ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema).ConfigureAwait(false);
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            RecordBatch batch = new RecordBatch.Builder()
+                .Append("id", nullable: false, new Int32Array.Builder().Append(1).Build())
+                .Append("unit_price", nullable: false, new Decimal128Array.Builder(new Apache.Arrow.Types.Decimal128Type(38, 2)).Append(value).Build())
+                .Build();
+
+            await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append).ConfigureAwait(false);
         }
 
         private static List<Dictionary<string, object?>> FlattenRows(IEnumerable<RecordBatch> batches)

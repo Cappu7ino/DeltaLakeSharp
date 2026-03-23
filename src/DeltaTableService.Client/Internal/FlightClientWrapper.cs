@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Flight;
 using Apache.Arrow.Flight.Client;
+using Apache.Arrow.Ipc;
 using Google.Protobuf;
 using Grpc.Net.Client;
 using Microsoft.DI.DeltaTableService.Client.Models;
@@ -94,6 +95,18 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             return GetRecordBatchesStreamingAsync(commandJson, cancellationToken);
         }
 
+        public async Task<ArrowStreamResult> OpenReadTableStreamAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            long? numRows = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            byte[] commandJson = BuildReadCommand(path, storageConfig, numRows, version);
+            return await OpenArrowArrayStreamAsync(commandJson, cancellationToken).ConfigureAwait(false);
+        }
+
         /// <inheritdoc />
         public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
             string path,
@@ -108,6 +121,18 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
 #pragma warning disable CS0162
             yield break;
 #pragma warning restore CS0162
+        }
+
+        public Task<ArrowStreamResult> OpenReadChangeDataStreamAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "ReadChangeDataAsync is supported only by the V3 native Rust backend.");
         }
 
         /// <inheritdoc />
@@ -125,6 +150,19 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
 #pragma warning disable CS0162
             yield break;
 #pragma warning restore CS0162
+        }
+
+        public Task<ArrowStreamResult> OpenExecuteChangeDataQueryStreamAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "ExecuteChangeDataQueryAsync is supported only by the V3 native Rust backend.");
         }
 
         /// <inheritdoc />
@@ -158,6 +196,35 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             {
                 yield return batch;
             }
+        }
+
+        public async Task<ArrowStreamResult> OpenExecuteQueryStreamAsync(
+            string sql,
+            string? tablePath = null,
+            string? tableName = null,
+            StorageConfig? storageConfig = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var cmd = new Dictionary<string, object> { ["sql"] = sql };
+            if (tablePath != null)
+            {
+                cmd["table_path"] = tablePath;
+            }
+            if (tableName != null)
+            {
+                cmd["table_name"] = tableName;
+            }
+            AddStorageConfig(cmd, storageConfig);
+            if (version.HasValue)
+            {
+                cmd["version"] = version.Value;
+            }
+
+            byte[] commandJson = JsonSerializer.SerializeToUtf8Bytes(cmd);
+            return await OpenArrowArrayStreamAsync(commandJson, cancellationToken).ConfigureAwait(false);
         }
 
         /// <inheritdoc />
@@ -374,17 +441,34 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             byte[] commandJson,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+            using ArrowStreamResult streamResult = await OpenArrowArrayStreamAsync(commandJson, cancellationToken).ConfigureAwait(false);
+            while (true)
+            {
+                RecordBatch? batch = await streamResult.Stream.ReadNextRecordBatchAsync(cancellationToken).ConfigureAwait(false);
+                if (batch == null)
+                {
+                    yield break;
+                }
+
+                yield return batch;
+            }
+        }
+
+        private async Task<ArrowStreamResult> OpenArrowArrayStreamAsync(
+            byte[] commandJson,
+            CancellationToken cancellationToken)
+        {
             var descriptor = FlightDescriptor.CreateCommandDescriptor(commandJson);
             FlightInfo info = await _client.GetInfo(descriptor).ResponseAsync.ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
 
-            foreach (FlightEndpoint endpoint in info.Endpoints)
+            if (info.Endpoints.Count == 0)
             {
-                var call = _client.GetStream(endpoint.Ticket);
-                while (await call.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false))
-                {
-                    yield return call.ResponseStream.Current;
-                }
+                throw new InvalidOperationException("Flight server returned no endpoints for the requested stream.");
             }
+
+            FlightRecordBatchStreamingCall call = _client.GetStream(info.Endpoints[0].Ticket);
+            return new ArrowStreamResult(info.Schema, new FlightArrowArrayStream(info.Schema, call));
         }
 
         // ------------------------------------------------------------------ //

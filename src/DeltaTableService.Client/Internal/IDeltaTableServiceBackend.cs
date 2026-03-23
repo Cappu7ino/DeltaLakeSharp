@@ -42,11 +42,25 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long? version = null,
             CancellationToken cancellationToken = default);
 
+        Task<ArrowStreamResult> OpenReadTableStreamAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            long? numRows = null,
+            long? version = null,
+            CancellationToken cancellationToken = default);
+
         /// <summary>
         /// Reads Change Data Feed rows from a Delta table, streaming Arrow
         /// RecordBatches for the requested version range.
         /// </summary>
         IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
+        Task<ArrowStreamResult> OpenReadChangeDataStreamAsync(
             string path,
             long startingVersion,
             long? endingVersion = null,
@@ -65,6 +79,14 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             StorageConfig? storageConfig = null,
             CancellationToken cancellationToken = default);
 
+        Task<ArrowStreamResult> OpenExecuteChangeDataQueryStreamAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
         /// <summary>
         /// Executes a read-oriented SQL query (SELECT, SHOW, DESCRIBE, etc.)
         /// via GetFlightInfo + DoGet, returning the result as a stream of Arrow
@@ -75,6 +97,14 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         /// Optionally reads a specific historical version of the table.
         /// </summary>
         IAsyncEnumerable<RecordBatch> ExecuteQueryAsync(
+            string sql,
+            string? tablePath = null,
+            string? tableName = null,
+            StorageConfig? storageConfig = null,
+            long? version = null,
+            CancellationToken cancellationToken = default);
+
+        Task<ArrowStreamResult> OpenExecuteQueryStreamAsync(
             string sql,
             string? tablePath = null,
             string? tableName = null,

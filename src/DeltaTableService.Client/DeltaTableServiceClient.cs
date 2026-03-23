@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -157,6 +158,27 @@ namespace Microsoft.DI.DeltaTableService.Client
         }
 
         /// <summary>
+        /// Reads rows from a Delta table and returns a forward-only
+        /// <see cref="DbDataReader"/> for row-oriented consumption.
+        /// </summary>
+        public async Task<DbDataReader> ReadTableAsDataReaderAsync(
+            string path,
+            StorageConfig storageConfig = null,
+            long? numRows = null,
+            long? version = null,
+            DeltaDataReaderOptions options = null,
+            CancellationToken cancellationToken = default)
+        {
+            ArrowStreamResult streamResult = await _backend.OpenReadTableStreamAsync(
+                path,
+                storageConfig,
+                numRows,
+                version,
+                cancellationToken).ConfigureAwait(false);
+            return new ArrowStreamDataReader(streamResult, options);
+        }
+
+        /// <summary>
         /// Reads Change Data Feed rows from a Delta table and streams them as
         /// Arrow <see cref="RecordBatch"/> objects.
         /// </summary>
@@ -191,6 +213,42 @@ namespace Microsoft.DI.DeltaTableService.Client
             {
                 yield return batch;
             }
+        }
+
+        /// <summary>
+        /// Reads Change Data Feed rows from a Delta table and returns a forward-only
+        /// <see cref="DbDataReader"/> for row-oriented consumption.
+        /// </summary>
+        public async Task<DbDataReader> ReadChangeDataAsDataReaderAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig storageConfig = null,
+            DeltaDataReaderOptions options = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (startingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startingVersion), startingVersion, "Starting version must be >= 0.");
+            }
+
+            if (endingVersion.HasValue && endingVersion.Value < startingVersion)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
+            }
+
+            ArrowStreamResult streamResult = await _backend.OpenReadChangeDataStreamAsync(
+                path,
+                startingVersion,
+                endingVersion,
+                storageConfig,
+                cancellationToken).ConfigureAwait(false);
+            return new ArrowStreamDataReader(streamResult, options);
         }
 
         /// <summary>
@@ -235,6 +293,49 @@ namespace Microsoft.DI.DeltaTableService.Client
             {
                 yield return batch;
             }
+        }
+
+        /// <summary>
+        /// Executes a SQL query against Change Data Feed rows and returns a
+        /// forward-only <see cref="DbDataReader"/> for row-oriented consumption.
+        /// </summary>
+        public async Task<DbDataReader> ExecuteChangeDataQueryAsDataReaderAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig storageConfig = null,
+            DeltaDataReaderOptions options = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(sql))
+            {
+                throw new ArgumentException("SQL query must be provided.", nameof(sql));
+            }
+
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (startingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startingVersion), startingVersion, "Starting version must be >= 0.");
+            }
+
+            if (endingVersion.HasValue && endingVersion.Value < startingVersion)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
+            }
+
+            ArrowStreamResult streamResult = await _backend.OpenExecuteChangeDataQueryStreamAsync(
+                sql,
+                path,
+                startingVersion,
+                endingVersion,
+                storageConfig,
+                cancellationToken).ConfigureAwait(false);
+            return new ArrowStreamDataReader(streamResult, options);
         }
 
         // ------------------------------------------------------------------ //
@@ -287,6 +388,29 @@ namespace Microsoft.DI.DeltaTableService.Client
             {
                 yield return batch;
             }
+        }
+
+        /// <summary>
+        /// Executes a read-oriented SQL query and returns a forward-only
+        /// <see cref="DbDataReader"/> for row-oriented consumption.
+        /// </summary>
+        public async Task<DbDataReader> ExecuteQueryAsDataReaderAsync(
+            string sql,
+            string tablePath = null,
+            string tableName = null,
+            StorageConfig storageConfig = null,
+            long? version = null,
+            DeltaDataReaderOptions options = null,
+            CancellationToken cancellationToken = default)
+        {
+            ArrowStreamResult streamResult = await _backend.OpenExecuteQueryStreamAsync(
+                sql,
+                tablePath,
+                tableName,
+                storageConfig,
+                version,
+                cancellationToken).ConfigureAwait(false);
+            return new ArrowStreamDataReader(streamResult, options);
         }
 
         // ------------------------------------------------------------------ //

@@ -415,6 +415,9 @@ namespace Microsoft.DI.DeltaTableService.Tests
                 StringArray a => a.GetString(index),
                 StringViewArray a => a.GetString(index),
                 LargeStringArray a => a.GetString(index),
+                BinaryArray a => a.GetBytes(index).ToArray(),
+                BinaryViewArray a => a.GetBytes(index).ToArray(),
+                LargeBinaryArray a => a.GetBytes(index).ToArray(),
                 TimestampArray a => a.GetTimestamp(index),
                 _ => throw new AssertFailedException(
                     $"Unexpected array type: {array.GetType().FullName}")

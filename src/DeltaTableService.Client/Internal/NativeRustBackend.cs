@@ -91,30 +91,16 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var command = new Dictionary<string, object>
-            {
-                ["path"] = path,
-            };
-
-            AddStorageConfig(command, storageConfig);
-            if (numRows.HasValue)
-            {
-                command["num_rows"] = numRows.Value;
-            }
-            if (version.HasValue)
-            {
-                command["version"] = version.Value;
-            }
-
-            string commandJson = JsonSerializer.Serialize(command);
-
-            using IArrowArrayStream stream = OpenReadTableStream(commandJson);
+            using ArrowStreamResult streamResult = await OpenReadTableStreamAsync(
+                path,
+                storageConfig,
+                numRows,
+                version,
+                cancellationToken).ConfigureAwait(false);
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                RecordBatch? batch = await stream.ReadNextRecordBatchAsync(cancellationToken)
+                RecordBatch? batch = await streamResult.Stream.ReadNextRecordBatchAsync(cancellationToken)
                     .ConfigureAwait(false);
                 if (batch == null)
                 {
@@ -123,6 +109,19 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
 
                 yield return batch;
             }
+        }
+
+        public Task<ArrowStreamResult> OpenReadTableStreamAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            long? numRows = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildReadTableCommandJson(path, storageConfig, numRows, version);
+            IArrowArrayStream stream = OpenReadTableStream(commandJson);
+            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
 
         public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
@@ -142,6 +141,16 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             {
                 yield return batch;
             }
+        }
+
+        public Task<ArrowStreamResult> OpenReadChangeDataStreamAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            return OpenChangeDataCoreStreamAsync(path, startingVersion, endingVersion, storageConfig, sql: null, cancellationToken);
         }
 
         public async IAsyncEnumerable<RecordBatch> ExecuteChangeDataQueryAsync(
@@ -164,6 +173,17 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             }
         }
 
+        public Task<ArrowStreamResult> OpenExecuteChangeDataQueryStreamAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            return OpenChangeDataCoreStreamAsync(path, startingVersion, endingVersion, storageConfig, sql, cancellationToken);
+        }
+
         private async IAsyncEnumerable<RecordBatch> ExecuteChangeDataCoreAsync(
             string path,
             long startingVersion,
@@ -172,31 +192,17 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             string? sql,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var command = new Dictionary<string, object>
-            {
-                ["path"] = path,
-                ["starting_version"] = startingVersion,
-            };
-
-            AddStorageConfig(command, storageConfig);
-            if (endingVersion.HasValue)
-            {
-                command["ending_version"] = endingVersion.Value;
-            }
-            if (!string.IsNullOrWhiteSpace(sql))
-            {
-                command["sql"] = sql!;
-            }
-
-            string commandJson = JsonSerializer.Serialize(command);
-
-            using IArrowArrayStream stream = OpenChangeDataStream(commandJson);
+            using ArrowStreamResult streamResult = await OpenChangeDataCoreStreamAsync(
+                path,
+                startingVersion,
+                endingVersion,
+                storageConfig,
+                sql,
+                cancellationToken).ConfigureAwait(false);
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                RecordBatch? batch = await stream.ReadNextRecordBatchAsync(cancellationToken)
+                RecordBatch? batch = await streamResult.Stream.ReadNextRecordBatchAsync(cancellationToken)
                     .ConfigureAwait(false);
                 if (batch == null)
                 {
@@ -215,36 +221,17 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var command = new Dictionary<string, object>
-            {
-                ["sql"] = sql,
-            };
-
-            if (!string.IsNullOrWhiteSpace(tablePath))
-            {
-                command["table_path"] = tablePath!;
-            }
-
-            if (!string.IsNullOrWhiteSpace(tableName))
-            {
-                command["table_name"] = tableName!;
-            }
-
-            AddStorageConfig(command, storageConfig);
-            if (version.HasValue)
-            {
-                command["version"] = version.Value;
-            }
-
-            string commandJson = JsonSerializer.Serialize(command);
-
-            using IArrowArrayStream stream = OpenExecuteQueryStream(commandJson);
+            using ArrowStreamResult streamResult = await OpenExecuteQueryStreamAsync(
+                sql,
+                tablePath,
+                tableName,
+                storageConfig,
+                version,
+                cancellationToken).ConfigureAwait(false);
             while (true)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                RecordBatch? batch = await stream.ReadNextRecordBatchAsync(cancellationToken)
+                RecordBatch? batch = await streamResult.Stream.ReadNextRecordBatchAsync(cancellationToken)
                     .ConfigureAwait(false);
                 if (batch == null)
                 {
@@ -253,6 +240,20 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
 
                 yield return batch;
             }
+        }
+
+        public Task<ArrowStreamResult> OpenExecuteQueryStreamAsync(
+            string sql,
+            string? tablePath = null,
+            string? tableName = null,
+            StorageConfig? storageConfig = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildExecuteQueryCommandJson(sql, tablePath, tableName, storageConfig, version);
+            IArrowArrayStream stream = OpenExecuteQueryStream(commandJson);
+            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
 
         public Task<ExecuteResult> CreateEmptyTableAsync(
@@ -749,6 +750,94 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             }
 
             return columns;
+        }
+
+        private static string BuildReadTableCommandJson(
+            string path,
+            StorageConfig? storageConfig,
+            long? numRows,
+            long? version)
+        {
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = path,
+            };
+
+            AddStorageConfig(command, storageConfig);
+            if (numRows.HasValue)
+            {
+                command["num_rows"] = numRows.Value;
+            }
+
+            if (version.HasValue)
+            {
+                command["version"] = version.Value;
+            }
+
+            return JsonSerializer.Serialize(command);
+        }
+
+        private Task<ArrowStreamResult> OpenChangeDataCoreStreamAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion,
+            StorageConfig? storageConfig,
+            string? sql,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = path,
+                ["starting_version"] = startingVersion,
+            };
+
+            AddStorageConfig(command, storageConfig);
+            if (endingVersion.HasValue)
+            {
+                command["ending_version"] = endingVersion.Value;
+            }
+
+            if (!string.IsNullOrWhiteSpace(sql))
+            {
+                command["sql"] = sql!;
+            }
+
+            string commandJson = JsonSerializer.Serialize(command);
+            IArrowArrayStream stream = OpenChangeDataStream(commandJson);
+            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+        }
+
+        private static string BuildExecuteQueryCommandJson(
+            string sql,
+            string? tablePath,
+            string? tableName,
+            StorageConfig? storageConfig,
+            long? version)
+        {
+            var command = new Dictionary<string, object>
+            {
+                ["sql"] = sql,
+            };
+
+            if (!string.IsNullOrWhiteSpace(tablePath))
+            {
+                command["table_path"] = tablePath!;
+            }
+
+            if (!string.IsNullOrWhiteSpace(tableName))
+            {
+                command["table_name"] = tableName!;
+            }
+
+            AddStorageConfig(command, storageConfig);
+            if (version.HasValue)
+            {
+                command["version"] = version.Value;
+            }
+
+            return JsonSerializer.Serialize(command);
         }
 
         /// <summary>

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -94,8 +95,10 @@ namespace DeltaTableService.Benchmark
             _deltaCdfTable = CreateDeltaTableOperations(Scenario.CdfTablePath);
 
             await RepoClient_FullTableRead();
+            await RepoClient_DataReaderFullTableRead();
             await DeltaPackage_FullTableRead();
             await RepoClient_FullChangeDataRead();
+            await RepoClient_DataReaderFullChangeDataRead();
             await DeltaPackage_FullChangeDataRead();
         }
 
@@ -117,6 +120,13 @@ namespace DeltaTableService.Benchmark
         public async Task<ReadIterationResult> RepoClient_FullTableRead()
         {
             return await ConsumeArrowBatchesAsync(_repoClient.ReadTableAsync(Scenario.SnapshotTablePath));
+        }
+
+        [Benchmark(Description = "Repo client IDataReader full table read")]
+        public async Task<ReadIterationResult> RepoClient_DataReaderFullTableRead()
+        {
+            using DbDataReader reader = await _repoClient.ReadTableAsDataReaderAsync(Scenario.SnapshotTablePath);
+            return ConsumeDataReader(reader);
         }
 
         [Benchmark(Description = "Microsoft.DI.Delta full CDF read")]
@@ -141,6 +151,16 @@ namespace DeltaTableService.Benchmark
                     Scenario.CdfTablePath,
                     Scenario.StartingVersion,
                     Scenario.EndingVersion));
+        }
+
+        [Benchmark(Description = "Repo client IDataReader full CDF read")]
+        public async Task<ReadIterationResult> RepoClient_DataReaderFullChangeDataRead()
+        {
+            using DbDataReader reader = await _repoClient.ReadChangeDataAsDataReaderAsync(
+                Scenario.CdfTablePath,
+                Scenario.StartingVersion,
+                Scenario.EndingVersion);
+            return ConsumeDataReader(reader);
         }
 
         private static async Task<ReadIterationResult> ConsumeArrowBatchesAsync(IAsyncEnumerable<RecordBatch> batches)
@@ -172,6 +192,19 @@ namespace DeltaTableService.Benchmark
             }
 
             return new ReadIterationResult(rowCount, blockCount);
+        }
+
+        private static ReadIterationResult ConsumeDataReader(DbDataReader reader)
+        {
+            long rowCount = 0;
+            int fieldCount = reader.FieldCount;
+
+            while (reader.Read())
+            {
+                rowCount++;
+            }
+
+            return new ReadIterationResult(rowCount, fieldCount);
         }
 
         private static DeltaTableOperations CreateDeltaTableOperations(string tablePath)
@@ -270,6 +303,187 @@ namespace DeltaTableService.Benchmark
             public long RowCount { get; }
 
             public long BlockCount { get; }
+        }
+    }
+
+    [MemoryDiagnoser]
+    public class DeltaReadIDataReaderVsBaselineBenchmark
+    {
+        private DeltaTableServiceClient _repoClient = null!;
+        private DeltaTableOperations _deltaSnapshotTable = null!;
+        private DeltaTableOperations _deltaCdfTable = null!;
+
+        [ParamsSource(nameof(ScenarioSources))]
+        public DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario Scenario { get; set; } = null!;
+
+        public IEnumerable<DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario> ScenarioSources =>
+            FilterScenarios(new[]
+            {
+                new DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario(
+                    label: "10M:",
+                    snapshotTablePath: Path.Combine(AppContext.BaseDirectory, "TestData", "delta-full-read", "10m"),
+                    cdfTablePath: Path.Combine(AppContext.BaseDirectory, "TestData", "delta-full-cdf"),
+                    startingVersion: 0,
+                    endingVersion: null),
+                new DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario(
+                    label: "10M Decimal",
+                    snapshotTablePath: Path.Combine(AppContext.BaseDirectory, "TestData", "delta-full-read-decimal", "10m"),
+                    cdfTablePath: Path.Combine(AppContext.BaseDirectory, "TestData", "delta-full-cdf-decimal"),
+                    startingVersion: 0,
+                    endingVersion: null),
+            });
+
+        [GlobalSetup]
+        public async Task GlobalSetup()
+        {
+            ValidateScenarioPaths(Scenario);
+
+            _repoClient = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            if (!await _repoClient.HealthCheckAsync())
+            {
+                throw new InvalidOperationException("The repo client V3 native backend is not healthy.");
+            }
+
+            _deltaSnapshotTable = CreateDeltaTableOperations(Scenario.SnapshotTablePath);
+            _deltaCdfTable = CreateDeltaTableOperations(Scenario.CdfTablePath);
+
+            await DeltaPackage_FullTableRead();
+            await RepoClient_DataReaderFullTableRead();
+            await DeltaPackage_FullChangeDataRead();
+            await RepoClient_DataReaderFullChangeDataRead();
+        }
+
+        [GlobalCleanup]
+        public void GlobalCleanup()
+        {
+            _repoClient?.Dispose();
+        }
+
+        [Benchmark(Baseline = true, Description = "Microsoft.DI.Delta full table read")]
+        public async Task<DeltaReadPerformanceBenchmark.ReadIterationResult> DeltaPackage_FullTableRead()
+        {
+            var options = ReaderOptions.Default;
+            DeltaReader reader = await _deltaSnapshotTable.ReadAsync(options, CancellationToken.None);
+            return await ConsumeDeltaBlocksAsync(reader.ReadSnapshotDataAsync(CancellationToken.None));
+        }
+
+        [Benchmark(Description = "Repo client IDataReader full table read")]
+        public async Task<DeltaReadPerformanceBenchmark.ReadIterationResult> RepoClient_DataReaderFullTableRead()
+        {
+            using DbDataReader reader = await _repoClient.ReadTableAsDataReaderAsync(Scenario.SnapshotTablePath);
+            return ConsumeDataReader(reader);
+        }
+
+        [Benchmark(Description = "Microsoft.DI.Delta full CDF read")]
+        public async Task<DeltaReadPerformanceBenchmark.ReadIterationResult> DeltaPackage_FullChangeDataRead()
+        {
+            var options = ReaderOptions.Default;
+            options.ChangeDataReadOptions.StartingVersion = checked((int)Scenario.StartingVersion);
+            if (Scenario.EndingVersion.HasValue)
+            {
+                options.ChangeDataReadOptions.EndingVersion = checked((int)Scenario.EndingVersion.Value);
+            }
+
+            DeltaReader reader = await _deltaCdfTable.ReadAsync(options, CancellationToken.None);
+            return await ConsumeDeltaBlocksAsync(reader.ReadChangeDataAsync(CancellationToken.None));
+        }
+
+        [Benchmark(Description = "Repo client IDataReader full CDF read")]
+        public async Task<DeltaReadPerformanceBenchmark.ReadIterationResult> RepoClient_DataReaderFullChangeDataRead()
+        {
+            using DbDataReader reader = await _repoClient.ReadChangeDataAsDataReaderAsync(
+                Scenario.CdfTablePath,
+                Scenario.StartingVersion,
+                Scenario.EndingVersion);
+            return ConsumeDataReader(reader);
+        }
+
+        private static DeltaReadPerformanceBenchmark.ReadIterationResult ConsumeDataReader(DbDataReader reader)
+        {
+            long rowCount = 0;
+            int fieldCount = reader.FieldCount;
+
+            while (reader.Read())
+            {
+                rowCount++;
+            }
+
+            return new DeltaReadPerformanceBenchmark.ReadIterationResult(rowCount, fieldCount);
+        }
+
+        private static async Task<DeltaReadPerformanceBenchmark.ReadIterationResult> ConsumeDeltaBlocksAsync(IAsyncEnumerable<IReadColumnDataBlock> blocks)
+        {
+            long rowCount = 0;
+            long blockCount = 0;
+
+            await foreach (IReadColumnDataBlock block in blocks)
+            {
+                blockCount++;
+                if (block.Data.Length > 0)
+                {
+                    rowCount += block.Data[0].GetSize();
+                }
+            }
+
+            return new DeltaReadPerformanceBenchmark.ReadIterationResult(rowCount, blockCount);
+        }
+
+        private static DeltaTableOperations CreateDeltaTableOperations(string tablePath)
+        {
+            string fullTablePath = Path.GetFullPath(tablePath);
+            if (!Directory.Exists(fullTablePath))
+            {
+                throw new DirectoryNotFoundException($"Benchmark table path '{tablePath}' does not exist.");
+            }
+
+            string tableName = Path.GetFileName(fullTablePath);
+            IFileSystem fileSystem = new BenchmarkLocalFileSystem(fullTablePath);
+            return DeltaTable.ForTable(tableName, fileSystem, fullTablePath);
+        }
+
+        private static void ValidateScenarioPaths(DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario scenario)
+        {
+            if (!Directory.Exists(scenario.SnapshotTablePath))
+            {
+                throw new DirectoryNotFoundException(
+                    $"Snapshot dataset path '{scenario.SnapshotTablePath}' does not exist. Generate it first with the benchmark dataset generator.");
+            }
+
+            if (!Directory.Exists(scenario.CdfTablePath))
+            {
+                throw new DirectoryNotFoundException(
+                    $"CDF dataset path '{scenario.CdfTablePath}' does not exist. Generate it first with the benchmark dataset generator.");
+            }
+        }
+
+        private static IEnumerable<DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario> FilterScenarios(IEnumerable<DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario> scenarios)
+        {
+            string? filter = Environment.GetEnvironmentVariable("DTS_BENCHMARK_SCENARIO_FILTER");
+            if (string.IsNullOrWhiteSpace(filter))
+            {
+                return scenarios;
+            }
+
+            DeltaReadPerformanceBenchmark.DeltaReadBenchmarkScenario[] filtered = scenarios
+                .Where(s => MatchesScenarioFilter(s.Label, filter))
+                .ToArray();
+
+            if (filtered.Length == 0)
+            {
+                throw new InvalidOperationException($"No benchmark scenarios matched filter '{filter}'.");
+            }
+
+            return filtered;
+        }
+
+        private static bool MatchesScenarioFilter(string label, string filter)
+        {
+            if (string.Equals(filter, "non-decimal", StringComparison.OrdinalIgnoreCase))
+            {
+                return label.IndexOf("decimal", StringComparison.OrdinalIgnoreCase) < 0;
+            }
+
+            return label.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
         }
     }
 
