@@ -304,8 +304,8 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             for (int i = 0; i < _fields.Length; i++)
             {
                 DataRow row = table.NewRow();
-            object precisionValue = _fields[i].Precision.HasValue ? (object)_fields[i].Precision.Value : DBNull.Value;
-            object scaleValue = _fields[i].Scale.HasValue ? (object)_fields[i].Scale.Value : DBNull.Value;
+                object precisionValue = _fields[i].Precision is int precision ? precision : DBNull.Value;
+                object scaleValue = _fields[i].Scale is int scale ? scale : DBNull.Value;
                 row["ColumnName"] = _fields[i].Name;
                 row["ColumnOrdinal"] = i;
                 row["DataType"] = _fields[i].FieldType;

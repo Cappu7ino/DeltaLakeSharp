@@ -17,11 +17,11 @@ namespace Microsoft.DI.DeltaTableService.Client.Models
         /// <param name="success">Whether the SQL execution succeeded.</param>
         /// <param name="message">A human-readable status or error message.</param>
         /// <param name="result">Optional result rows returned by SELECT or DML statements.</param>
-        public ExecuteResult(bool success, string message, IReadOnlyList<Dictionary<string, object>> result = null)
+        public ExecuteResult(bool success, string message, IReadOnlyList<Dictionary<string, object?>>? result = null)
         {
             Success = success;
             Message = message ?? string.Empty;
-            Result = result ?? new List<Dictionary<string, object>>();
+            Result = result ?? new List<Dictionary<string, object?>>();
         }
 
         /// <summary>
@@ -38,6 +38,6 @@ namespace Microsoft.DI.DeltaTableService.Client.Models
         /// Gets the result rows (if any). Each dictionary maps column name to value.
         /// Empty for DDL statements or failed executions.
         /// </summary>
-        public IReadOnlyList<Dictionary<string, object>> Result { get; }
+        public IReadOnlyList<Dictionary<string, object?>> Result { get; }
     }
 }

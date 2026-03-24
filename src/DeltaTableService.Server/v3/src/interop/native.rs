@@ -9,12 +9,16 @@
 
 use std::ffi::{c_char, CStr, CString};
 use std::ptr;
+use std::sync::Once;
 use std::sync::Mutex;
 
 use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use tracing_subscriber::EnvFilter;
 
 use crate::service::DeltaService;
+
+static INIT_TRACING: Once = Once::new();
 
 /// Opaque native engine handle owned by the consumer.
 pub struct DeltaServiceEngine {
@@ -25,6 +29,15 @@ pub struct DeltaServiceEngine {
 
 impl DeltaServiceEngine {
     fn new() -> Self {
+        INIT_TRACING.call_once(|| {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| EnvFilter::new("info,object_store=debug,deltalake=debug,delta_table_service_v3=debug")),
+                )
+                .try_init();
+        });
+
         Self {
             service: DeltaService::new(),
             last_error: Mutex::new(None),

@@ -103,7 +103,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
             return WithUtf8String(commandJson, ptr => ExecuteDmlNative(engine, ptr));
         }
 
-        internal static string PtrToStringUtf8(IntPtr ptr)
+        internal static string? PtrToStringUtf8(IntPtr ptr)
         {
             if (ptr == IntPtr.Zero)
             {

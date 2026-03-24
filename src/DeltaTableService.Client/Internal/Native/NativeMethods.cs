@@ -16,7 +16,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
         {
             string fileName = GetPlatformLibraryFileName();
             string baseDir = AppContext.BaseDirectory;
-            string dir = baseDir;
+            string? dir = baseDir;
 
             string packageLocal = Path.Combine(baseDir, fileName);
             string runtimeLocal = Path.Combine(baseDir, "runtimes", "win-x64", "native", fileName);

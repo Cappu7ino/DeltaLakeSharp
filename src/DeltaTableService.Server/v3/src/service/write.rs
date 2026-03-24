@@ -67,6 +67,7 @@ pub async fn handle_create_table(body: &[u8]) -> Result<serde_json::Value, Servi
     let opts = storage_options(
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
+        None,
     );
 
     let table = deltalake::DeltaTable::try_from_url(url)
@@ -150,6 +151,7 @@ async fn execute_delete(cmd: &ExecuteDmlCommand) -> Result<serde_json::Value, Se
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
         None,
+        None,
     )
     .await?;
 
@@ -222,6 +224,7 @@ async fn execute_update(cmd: &ExecuteDmlCommand) -> Result<serde_json::Value, Se
         &cmd.table_path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
+        None,
         None,
     )
     .await?;
@@ -419,6 +422,7 @@ pub async fn handle_upgrade_protocol(body: &[u8]) -> Result<serde_json::Value, S
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
         None,
+        None,
     )
     .await?;
 
@@ -534,6 +538,7 @@ async fn write_batches(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
+        None,
     )
     .await?;
 
@@ -623,6 +628,7 @@ async fn merge_batches(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
+        None,
         None,
     )
     .await?;
@@ -843,7 +849,7 @@ mod tests {
         assert!(result["message"].as_str().unwrap().contains("created"));
 
         // Verify the table exists and has the correct schema.
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let schema = table.snapshot().unwrap().snapshot().arrow_schema();
         assert_eq!(schema.fields().len(), 2);
         assert_eq!(schema.field(0).name(), "id");
@@ -867,7 +873,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify the table exists.
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let schema = table.snapshot().unwrap().snapshot().arrow_schema();
         assert_eq!(schema.fields().len(), 2);
     }
@@ -896,7 +902,7 @@ mod tests {
         let result = handle_create_table(&body_bytes).await.unwrap();
         assert_eq!(result["success"], true);
 
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let schema = table.snapshot().unwrap().snapshot().arrow_schema();
         assert_eq!(schema.fields().len(), 12);
     }
@@ -938,7 +944,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify only 1 row remains.
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let ctx = SessionContext::new();
         let provider = table.table_provider().await.unwrap();
         ctx.register_table("t", provider).unwrap();
@@ -1009,7 +1015,7 @@ mod tests {
         let result = handle_execute_dml(&body_bytes).await.unwrap();
         assert_eq!(result["success"], true);
 
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let ctx = SessionContext::new();
         let provider = table.table_provider().await.unwrap();
         ctx.register_table("t", provider).unwrap();
@@ -1172,7 +1178,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify overwrite: should have exactly 2 rows.
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let ctx = SessionContext::new();
         let provider = table.table_provider().await.unwrap();
         ctx.register_table("t", provider).unwrap();
@@ -1231,7 +1237,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify append: should have 3 + 2 = 5 rows.
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let ctx = SessionContext::new();
         let provider = table.table_provider().await.unwrap();
         ctx.register_table("t", provider).unwrap();
@@ -1297,7 +1303,7 @@ mod tests {
         assert!(result["result"][0]["num_source_rows"].as_i64().unwrap() > 0);
 
         // Verify: 4 rows (1,a), (2,B_updated), (3,c), (4,d_new)
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let ctx = SessionContext::new();
         let provider = table.table_provider().await.unwrap();
         ctx.register_table("t", provider).unwrap();
@@ -1360,7 +1366,7 @@ mod tests {
         assert_eq!(result["success"], true);
 
         // Verify: 2 rows remain (1,a), (3,c)
-        let table = open_delta_table(&path, None, None, None).await.unwrap();
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
         let ctx = SessionContext::new();
         let provider = table.table_provider().await.unwrap();
         ctx.register_table("t", provider).unwrap();

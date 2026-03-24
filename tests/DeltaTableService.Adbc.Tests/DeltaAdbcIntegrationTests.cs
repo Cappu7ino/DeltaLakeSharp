@@ -1,0 +1,1050 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using Apache.Arrow;
+using Apache.Arrow.Adbc;
+using Apache.Arrow.Types;
+using Microsoft.DI.DeltaTableService.Adbc.Internal;
+using Microsoft.DI.DeltaTableService.Client;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+namespace Microsoft.DI.DeltaTableService.Adbc.Tests
+{
+    [TestClass]
+    [TestCategory("Integration")]
+    [TestCategory("V3")]
+    [TestCategory("V3Native")]
+    public class DeltaAdbcIntegrationTests
+    {
+        private string? _tempDir;
+
+        [TestCleanup]
+        public void TestCleanup()
+        {
+            if (!string.IsNullOrEmpty(_tempDir) && Directory.Exists(_tempDir))
+            {
+                try
+                {
+                    Directory.Delete(_tempDir, recursive: true);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        [TestMethod]
+        public void Driver_OpenConnectReadAndQuery_Succeeds()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                Schema schema = connection.GetTableSchema(null, null, DeltaAdbcConnectOptions.LogicalTableName);
+                Assert.AreEqual(2, schema.FieldsList.Count);
+                Assert.AreEqual("id", schema.FieldsList[0].Name);
+                Assert.AreEqual(Int32Type.Default.TypeId, schema.FieldsList[0].DataType.TypeId);
+                Assert.AreEqual("name", schema.FieldsList[1].Name);
+
+                var readStatement = connection.CreateStatement();
+                try
+                {
+                    QueryResult readResult = readStatement.ExecuteQuery();
+                    var readStream = readResult.Stream ?? throw new AssertFailedException("Read stream should not be null.");
+                    try
+                    {
+                        List<(int id, string name)> rows = ReadAllRowsSorted(readStream);
+                        Assert.AreEqual(3, rows.Count);
+                        Assert.AreEqual((1, "a"), rows[0]);
+                        Assert.AreEqual((2, "b"), rows[1]);
+                        Assert.AreEqual((3, "c"), rows[2]);
+                    }
+                    finally
+                    {
+                        readStream.Dispose();
+                    }
+                }
+                finally
+                {
+                    readStatement.Dispose();
+                }
+
+                var sqlStatement = connection.CreateStatement();
+                try
+                {
+                    sqlStatement.SqlQuery = "SELECT id, name FROM delta_table WHERE id >= 2 ORDER BY id";
+                    QueryResult sqlResult = sqlStatement.ExecuteQuery();
+                    var sqlStream = sqlResult.Stream ?? throw new AssertFailedException("SQL stream should not be null.");
+                    try
+                    {
+                        List<(int id, string name)> rows = ReadAllRowsSorted(sqlStream);
+                        Assert.AreEqual(2, rows.Count);
+                        Assert.AreEqual((2, "b"), rows[0]);
+                        Assert.AreEqual((3, "c"), rows[1]);
+                    }
+                    finally
+                    {
+                        sqlStream.Dispose();
+                    }
+                }
+                finally
+                {
+                    sqlStatement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetInfo_ReturnsExpectedMetadata()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var stream = connection.GetInfo(System.Array.Empty<AdbcInfoCode>());
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+                Assert.AreEqual(8, batch.Length);
+                Assert.AreEqual("Delta Lake", ReadInfoValue(batch, AdbcInfoCode.VendorName));
+                Assert.AreEqual(true, ReadInfoValue(batch, AdbcInfoCode.VendorSql));
+                Assert.AreEqual("Microsoft.DI.DeltaTableService.Adbc", ReadInfoValue(batch, AdbcInfoCode.DriverName));
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_OpenWithBatchSize_ReturnsMultipleSingleRowBatches()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.BatchSizeOptionKey, "1");
+                    statement.SqlQuery = "SELECT id, name FROM delta_table ORDER BY id";
+                    QueryResult sqlResult = statement.ExecuteQuery();
+                    var sqlStream = sqlResult.Stream ?? throw new AssertFailedException("SQL stream should not be null.");
+                    try
+                    {
+                        var batches = ReadAllBatches(sqlStream);
+
+                        Assert.IsTrue(batches.Count >= 3, "Expected multiple batches when delta.batch_size=1.");
+                        Assert.IsTrue(batches.TrueForAll(batch => batch.Length <= 1), "Expected each batch to contain at most one row.");
+
+                        List<(int id, string name)> rows = ReadAllRowsSorted(batches);
+
+                        Assert.AreEqual(3, rows.Count);
+                        Assert.AreEqual((1, "a"), rows[0]);
+                        Assert.AreEqual((2, "b"), rows[1]);
+                        Assert.AreEqual((3, "c"), rows[2]);
+                    }
+                    finally
+                    {
+                        sqlStream.Dispose();
+                    }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_OpenReadTableWithBatchSize_ReturnsMultipleSingleRowBatches()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.BatchSizeOptionKey, "1");
+                    QueryResult readResult = statement.ExecuteQuery();
+                    var readStream = readResult.Stream ?? throw new AssertFailedException("Read stream should not be null.");
+                    try
+                    {
+                        var batches = ReadAllBatches(readStream);
+
+                        Assert.IsTrue(batches.Count >= 3, "Expected multiple batches when delta.batch_size=1.");
+                        Assert.IsTrue(batches.TrueForAll(batch => batch.Length <= 1), "Expected each batch to contain at most one row.");
+
+                        List<(int id, string name)> rows = ReadAllRowsSorted(batches);
+                        Assert.AreEqual(3, rows.Count);
+                        Assert.AreEqual((1, "a"), rows[0]);
+                        Assert.AreEqual((2, "b"), rows[1]);
+                        Assert.AreEqual((3, "c"), rows[2]);
+                    }
+                    finally
+                    {
+                        readStream.Dispose();
+                    }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_OpenReadTable_WithStatementVersion_ReadsHistoricalSnapshot()
+        {
+            using OpenedConnection opened = OpenConnectionWithTimeTravel();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.VersionOptionKey, "0");
+                    QueryResult readResult = statement.ExecuteQuery();
+                    var readStream = readResult.Stream ?? throw new AssertFailedException("Read stream should not be null.");
+                    try
+                    {
+                        List<(int id, string name)> rows = ReadAllRowsSorted(readStream);
+                        Assert.AreEqual(2, rows.Count);
+                        Assert.AreEqual((1, "v0_a"), rows[0]);
+                        Assert.AreEqual((2, "v0_b"), rows[1]);
+                    }
+                    finally
+                    {
+                        readStream.Dispose();
+                    }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_OpenSqlQuery_WithStatementVersion_ReadsHistoricalSnapshot()
+        {
+            using OpenedConnection opened = OpenConnectionWithTimeTravel();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.VersionOptionKey, "0");
+                    statement.SqlQuery = "SELECT id, name FROM delta_table ORDER BY id";
+                    QueryResult sqlResult = statement.ExecuteQuery();
+                    var sqlStream = sqlResult.Stream ?? throw new AssertFailedException("SQL stream should not be null.");
+                    try
+                    {
+                        List<(int id, string name)> rows = ReadAllRowsSorted(sqlStream);
+                        Assert.AreEqual(2, rows.Count);
+                        Assert.AreEqual((1, "v0_a"), rows[0]);
+                        Assert.AreEqual((2, "v0_b"), rows[1]);
+                    }
+                    finally
+                    {
+                        sqlStream.Dispose();
+                    }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_StatementBatchSize_OverridesConnectionDefault()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.BatchSizeOptionKey, "1");
+                    QueryResult readResult = statement.ExecuteQuery();
+                    var readStream = readResult.Stream ?? throw new AssertFailedException("Read stream should not be null.");
+                    try
+                    {
+                        var batches = ReadAllBatches(readStream);
+
+                        Assert.IsTrue(batches.Count >= 3, "Expected statement batch size to override connection default.");
+                        Assert.IsTrue(batches.TrueForAll(batch => batch.Length <= 1), "Expected each batch to contain at most one row.");
+                    }
+                    finally
+                    {
+                        readStream.Dispose();
+                    }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetObjects_ReturnsLogicalTableAndColumns()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                Schema schema = connection.GetTableSchema(null, null, DeltaAdbcConnectOptions.LogicalTableName);
+
+                using var stream = connection.GetObjects(
+                    AdbcConnection.GetObjectsDepth.All,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+                Assert.AreEqual(1, batch.Length);
+                Assert.AreEqual(string.Empty, ((StringArray)batch.Column(0)).GetString(0));
+
+                var dbSchemas = (ListArray)batch.Column(1);
+                AssertListLength(dbSchemas, 0, 1);
+
+                var dbSchemaValues = (StructArray)dbSchemas.Values;
+                Assert.AreEqual(string.Empty, ((StringArray)dbSchemaValues.Fields[0]).GetString(0));
+
+                var tables = (ListArray)dbSchemaValues.Fields[1];
+                AssertListLength(tables, 0, 1);
+
+                var tableValues = (StructArray)tables.Values;
+                Assert.AreEqual(DeltaAdbcConnectOptions.LogicalTableName, ((StringArray)tableValues.Fields[0]).GetString(0));
+                Assert.AreEqual("TABLE", ((StringArray)tableValues.Fields[1]).GetString(0));
+
+                var columns = (ListArray)tableValues.Fields[2];
+                AssertListLength(columns, 0, 2);
+
+                var columnValues = (StructArray)columns.Values;
+                var columnNames = (StringArray)columnValues.Fields[0];
+                var ordinalPositions = (Int32Array)columnValues.Fields[1];
+                var xdbcTypeNames = (StringArray)columnValues.Fields[4];
+                var nullableFlags = (StringArray)columnValues.Fields[13];
+
+                Assert.AreEqual("id", columnNames.GetString(0));
+                Assert.AreEqual(1, ordinalPositions.GetValue(0));
+                Assert.AreEqual(schema.FieldsList[0].DataType.Name, xdbcTypeNames.GetString(0));
+                Assert.AreEqual("NO", nullableFlags.GetString(0));
+
+                Assert.AreEqual("name", columnNames.GetString(1));
+                Assert.AreEqual(2, ordinalPositions.GetValue(1));
+                Assert.AreEqual(schema.FieldsList[1].DataType.Name, xdbcTypeNames.GetString(1));
+                Assert.AreEqual("YES", nullableFlags.GetString(1));
+
+                var constraints = (ListArray)tableValues.Fields[3];
+                AssertListLength(constraints, 0, 0);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetTableTypes_ReturnsSingleTableType()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var stream = connection.GetTableTypes();
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+                Assert.AreEqual(1, batch.Length);
+                Assert.AreEqual("TABLE", ((StringArray)batch.Column(0)).GetString(0));
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetObjects_WithMismatchedTableTypeFilter_ReturnsEmptyBatch()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var stream = connection.GetObjects(
+                    AdbcConnection.GetObjectsDepth.All,
+                    null,
+                    null,
+                    null,
+                    new[] { "VIEW" },
+                    null);
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+                Assert.AreEqual(0, batch.Length);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetObjects_WithMismatchedTablePattern_ReturnsEmptyBatch()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var stream = connection.GetObjects(
+                    AdbcConnection.GetObjectsDepth.All,
+                    null,
+                    null,
+                    "other_table",
+                    null,
+                    null);
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+                Assert.AreEqual(0, batch.Length);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetObjects_WithColumnPattern_FiltersColumns()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var stream = connection.GetObjects(
+                    AdbcConnection.GetObjectsDepth.All,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "id");
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+                Assert.AreEqual(1, batch.Length);
+
+                var columns = GetColumnStructArray(batch);
+                Assert.AreEqual(1, columns.Length);
+
+                var columnNames = (StringArray)columns.Fields[0];
+                var ordinalPositions = (Int32Array)columns.Fields[1];
+                Assert.AreEqual("id", columnNames.GetString(0));
+                Assert.AreEqual(1, ordinalPositions.GetValue(0));
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetObjects_WithTablesDepth_OmitsColumnRows()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var stream = connection.GetObjects(
+                    AdbcConnection.GetObjectsDepth.Tables,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+                Assert.AreEqual(1, batch.Length);
+
+                var columns = GetColumnStructArray(batch);
+                Assert.AreEqual(0, columns.Length);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecuteQuery_WithStatementCdfDirectRead_ReturnsChangeDataRows()
+        {
+            using OpenedConnection opened = OpenConnectionWithChangeData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
+                    QueryResult result = statement.ExecuteQuery();
+                    var stream = result.Stream ?? throw new AssertFailedException("CDF stream should not be null.");
+                    try
+                    {
+                        List<Dictionary<string, object?>> rows = ReadAllDictionaryRows(stream);
+                        Assert.IsTrue(rows.Count >= 3, $"Expected multiple change rows, got {rows.Count}.");
+                        Assert.IsTrue(rows.TrueForAll(row => row.ContainsKey("_change_type")));
+                        Assert.IsTrue(rows.TrueForAll(row => row.ContainsKey("_commit_version")));
+                        Assert.IsTrue(rows.TrueForAll(row => row.ContainsKey("_commit_timestamp")));
+                        Assert.IsTrue(rows.Exists(row => Equals(row["id"], 1) && Equals(row["_change_type"], "insert")));
+                        Assert.IsTrue(rows.Exists(row => Equals(row["id"], 2) && Equals(row["name"], "b2") && Equals(row["_change_type"], "update_postimage")));
+                    }
+                    finally
+                    {
+                        stream.Dispose();
+                    }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecuteQuery_WithStatementCdfProjectionAndFilter_ReturnsRows()
+        {
+            using OpenedConnection opened = OpenConnectionWithChangeData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
+                    statement.SqlQuery = "SELECT id, name, _change_type FROM _cdf WHERE _change_type <> 'update_preimage' ORDER BY id, _change_type";
+                    QueryResult result = statement.ExecuteQuery();
+                    var stream = result.Stream ?? throw new AssertFailedException("CDF SQL stream should not be null.");
+                    try
+                    {
+                        List<Dictionary<string, object?>> rows = ReadAllDictionaryRows(stream);
+                        Assert.IsTrue(rows.Count >= 3, $"Expected at least 3 filtered change rows, got {rows.Count}.");
+                        Assert.IsTrue(rows.TrueForAll(row => row.ContainsKey("id") && row.ContainsKey("name") && row.ContainsKey("_change_type")));
+                        Assert.IsFalse(rows.Exists(row => row.ContainsKey("_commit_version")));
+                        Assert.IsFalse(rows.Exists(row => Equals(row["_change_type"], "update_preimage")));
+                        Assert.IsTrue(rows.Exists(row => Equals(row["id"], 1) && Equals(row["name"], "a") && Equals(row["_change_type"], "insert")));
+                        Assert.IsTrue(rows.Exists(row => Equals(row["id"], 2) && Equals(row["name"], "b2") && Equals(row["_change_type"], "update_postimage")));
+                    }
+                    finally
+                    {
+                        stream.Dispose();
+                    }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecuteQuery_WithCdfEndingVersionLessThanStart_ThrowsInvalidArgument()
+        {
+            using OpenedConnection opened = OpenConnectionWithChangeData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "9");
+
+                    AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.SetOption(DeltaAdbcStatementOptions.CdfEndingVersionOptionKey, "5"));
+
+                    Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
+                    StringAssert.Contains(exception.Message, DeltaAdbcStatementOptions.CdfEndingVersionOptionKey);
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecuteQuery_WithCdfStatementOptionsAndSqlWithoutCdfReference_ThrowsInvalidArgument()
+        {
+            using OpenedConnection opened = OpenConnectionWithChangeData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
+                    statement.SqlQuery = "SELECT * FROM delta_table";
+
+                    AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecuteQuery());
+
+                    Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
+                    StringAssert.Contains(exception.Message, "_cdf");
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetTableSchema_WithCatalog_ThrowsInvalidArgument()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                AdbcException exception = Assert.ThrowsException<AdbcException>(
+                    () => connection.GetTableSchema("catalog", null, DeltaAdbcConnectOptions.LogicalTableName));
+
+                Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetTableSchema_WithDbSchema_ThrowsInvalidArgument()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                AdbcException exception = Assert.ThrowsException<AdbcException>(
+                    () => connection.GetTableSchema(null, "schema", DeltaAdbcConnectOptions.LogicalTableName));
+
+                Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetTableSchema_WithUnknownLogicalTable_ThrowsNotFound()
+        {
+            using OpenedConnection opened = OpenConnection();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                AdbcException exception = Assert.ThrowsException<AdbcException>(
+                    () => connection.GetTableSchema(null, null, "other_table"));
+
+                Assert.AreEqual(AdbcStatusCode.NotFound, exception.Status);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        private static List<(int id, string name)> ReadAllRowsSorted(Apache.Arrow.Ipc.IArrowArrayStream stream)
+        {
+            return ReadAllRowsSorted(ReadAllBatches(stream));
+        }
+
+        private static List<Dictionary<string, object?>> ReadAllDictionaryRows(Apache.Arrow.Ipc.IArrowArrayStream stream)
+        {
+            return ArrowConverter.ToDictionaryList(ReadAllBatches(stream));
+        }
+
+        private static List<RecordBatch> ReadAllBatches(Apache.Arrow.Ipc.IArrowArrayStream stream)
+        {
+            var batches = new List<RecordBatch>();
+
+            while (true)
+            {
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+                if (batch == null)
+                {
+                    break;
+                }
+
+                batches.Add(batch);
+            }
+
+            return batches;
+        }
+
+        private static List<(int id, string name)> ReadAllRowsSorted(IEnumerable<RecordBatch> batches)
+        {
+            var rows = new List<(int id, string name)>();
+
+            foreach (RecordBatch batch in batches)
+            {
+                var idArray = (Int32Array)batch.Column(0);
+                IArrowArray nameArray = batch.Column(1);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    int id = idArray.GetValue(i) ?? -1;
+                    string name = ReadStringValue(nameArray, i);
+                    rows.Add((id, name));
+                }
+            }
+
+            rows.Sort((left, right) => left.id.CompareTo(right.id));
+            return rows;
+        }
+
+        private static string ReadStringValue(IArrowArray array, int index)
+        {
+            return array switch
+            {
+                StringArray sa => sa.GetString(index),
+                StringViewArray sva => sva.GetString(index),
+                LargeStringArray lsa => lsa.GetString(index),
+                _ => throw new AssertFailedException($"Unexpected string column type: {array.GetType().FullName}"),
+            } ?? string.Empty;
+        }
+
+        private static object? ReadInfoValue(RecordBatch batch, AdbcInfoCode code)
+        {
+            var infoNames = (UInt32Array)batch.Column(0);
+            var infoValues = (DenseUnionArray)batch.Column(1);
+
+            for (int i = 0; i < batch.Length; i++)
+            {
+                if (infoNames.GetValue(i) == (uint)code)
+                {
+                    int childIndex = infoValues.TypeIds[i];
+                    int valueOffset = infoValues.ValueOffsets[i];
+
+                    switch (childIndex)
+                    {
+                        case 0:
+                            return ((StringArray)infoValues.Fields[0]).GetString(valueOffset);
+                        case 1:
+                            return ((BooleanArray)infoValues.Fields[1]).GetValue(valueOffset);
+                        case 2:
+                            return ((Int64Array)infoValues.Fields[2]).GetValue(valueOffset);
+                        case 3:
+                            return ((Int32Array)infoValues.Fields[3]).GetValue(valueOffset);
+                    }
+                }
+            }
+
+            Assert.Fail($"Info code '{code}' was not present in the metadata batch.");
+            return null;
+        }
+
+        private static void AssertListLength(ListArray array, int index, int expectedLength)
+        {
+            int actualLength = array.ValueOffsets[index + 1] - array.ValueOffsets[index];
+            Assert.AreEqual(expectedLength, actualLength);
+        }
+
+        private static StructArray GetColumnStructArray(RecordBatch batch)
+        {
+            var dbSchemas = (ListArray)batch.Column(1);
+            var dbSchemaValues = (StructArray)dbSchemas.Values;
+            var tables = (ListArray)dbSchemaValues.Fields[1];
+            var tableValues = (StructArray)tables.Values;
+            var columns = (ListArray)tableValues.Fields[2];
+            return (StructArray)columns.Values;
+        }
+
+        private OpenedConnection OpenConnection(IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            string? binaryPath = FindRustFixtureBinary();
+            if (binaryPath == null)
+            {
+                Assert.Inconclusive(
+                    "Rust fixture binary not found. Build it first: cd src/DeltaTableService.Server/v3 && cargo build");
+            }
+
+            _tempDir = Path.Combine(Path.GetTempPath(), $"adbc_v3_{Guid.NewGuid():N}");
+            string tablePath = Path.Combine(_tempDir, "test_table");
+            CreateTestDeltaTable(binaryPath!, tablePath);
+
+            var options = new Dictionary<string, string>
+            {
+                [DeltaAdbcConnectOptions.TableUriKey] = tablePath,
+            };
+
+            if (extraOptions != null)
+            {
+                foreach (KeyValuePair<string, string> option in extraOptions)
+                {
+                    options[option.Key] = option.Value;
+                }
+            }
+
+            var driver = new DeltaAdbcDriver();
+            var database = driver.Open(options);
+            var connection = database.Connect(null);
+
+            return new OpenedConnection(driver, database, connection);
+        }
+
+        private OpenedConnection OpenConnectionWithChangeData(IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            string? binaryPath = FindRustFixtureBinary();
+            if (binaryPath == null)
+            {
+                Assert.Inconclusive(
+                    "Rust fixture binary not found. Build it first: cd src/DeltaTableService.Server/v3 && cargo build");
+            }
+
+            _tempDir = Path.Combine(Path.GetTempPath(), $"adbc_v3_cdf_{Guid.NewGuid():N}");
+            string tablePath = Path.Combine(_tempDir, "test_table");
+            CreateChangeDataDeltaTable(tablePath);
+
+            var options = new Dictionary<string, string>
+            {
+                [DeltaAdbcConnectOptions.TableUriKey] = tablePath,
+            };
+
+            if (extraOptions != null)
+            {
+                foreach (KeyValuePair<string, string> option in extraOptions)
+                {
+                    options[option.Key] = option.Value;
+                }
+            }
+
+            var driver = new DeltaAdbcDriver();
+            var database = driver.Open(options);
+            var connection = database.Connect(null);
+
+            return new OpenedConnection(driver, database, connection);
+        }
+
+        private OpenedConnection OpenConnectionWithTimeTravel(IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            string? binaryPath = FindRustFixtureBinary();
+            if (binaryPath == null)
+            {
+                Assert.Inconclusive(
+                    "Rust fixture binary not found. Build it first: cd src/DeltaTableService.Server/v3 && cargo build");
+            }
+
+            _tempDir = Path.Combine(Path.GetTempPath(), $"adbc_v3_time_travel_{Guid.NewGuid():N}");
+            string tablePath = Path.Combine(_tempDir, "test_table");
+            CreateTestDeltaTable(binaryPath!, tablePath, fixtureType: "time-travel");
+
+            var options = new Dictionary<string, string>
+            {
+                [DeltaAdbcConnectOptions.TableUriKey] = tablePath,
+            };
+
+            if (extraOptions != null)
+            {
+                foreach (KeyValuePair<string, string> option in extraOptions)
+                {
+                    options[option.Key] = option.Value;
+                }
+            }
+
+            var driver = new DeltaAdbcDriver();
+            var database = driver.Open(options);
+            var connection = database.Connect(null);
+
+            return new OpenedConnection(driver, database, connection);
+        }
+
+        private static void CreateChangeDataDeltaTable(string tablePath)
+        {
+            var tableSchema = new Microsoft.DI.DeltaTableService.Client.Models.TableSchema(new List<Microsoft.DI.DeltaTableService.Client.Models.ColumnDefinition>
+            {
+                new Microsoft.DI.DeltaTableService.Client.Models.ColumnDefinition("id", "int32"),
+                new Microsoft.DI.DeltaTableService.Client.Models.ColumnDefinition("name", "string"),
+            });
+
+            using var client = new Microsoft.DI.DeltaTableService.Client.DeltaTableServiceClient(Microsoft.DI.DeltaTableService.Client.ServiceMode.V3_Rust);
+
+            Microsoft.DI.DeltaTableService.Client.Models.ExecuteResult createResult = client.CreateTableAsync(
+                tablePath,
+                tableSchema,
+                configuration: new Dictionary<string, string>
+                {
+                    ["delta.enableChangeDataFeed"] = "true",
+                }).GetAwaiter().GetResult();
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Apache.Arrow.RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+            {
+                new object[] { 1, "a" },
+                new object[] { 2, "b" },
+            }, tableSchema);
+            client.InsertAsync(tablePath, initialBatch.Schema, ArrowConverter.ToAsyncEnumerable(initialBatch), Microsoft.DI.DeltaTableService.Client.Models.SaveMode.Append)
+                .GetAwaiter().GetResult();
+
+            Microsoft.DI.DeltaTableService.Client.Models.ExecuteResult updateResult = client.UpdateAsync(
+                "UPDATE delta_table SET name = 'b2' WHERE id = 2",
+                tablePath,
+                DeltaAdbcConnectOptions.LogicalTableName).GetAwaiter().GetResult();
+            Assert.IsTrue(updateResult.Success, $"UpdateAsync failed: {updateResult.Message}");
+
+            Apache.Arrow.RecordBatch appendBatch = ArrowConverter.FromRows(new[]
+            {
+                new object[] { 3, "c" },
+            }, tableSchema);
+            client.InsertAsync(tablePath, appendBatch.Schema, ArrowConverter.ToAsyncEnumerable(appendBatch), Microsoft.DI.DeltaTableService.Client.Models.SaveMode.Append)
+                .GetAwaiter().GetResult();
+        }
+
+        private static string? FindRustFixtureBinary()
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null)
+            {
+                string solutionFile = Path.Combine(dir, "DeltaTableService.sln");
+                if (File.Exists(solutionFile))
+                {
+                    string binaryPath = Path.Combine(
+                        dir,
+                        "src",
+                        "DeltaTableService.Server",
+                        "v3",
+                        "target",
+                        "debug",
+                        "delta-table-service-v3-fixture.exe");
+                    return File.Exists(binaryPath) ? binaryPath : null;
+                }
+
+                dir = Path.GetDirectoryName(dir);
+            }
+
+            return null;
+        }
+
+        private static void CreateTestDeltaTable(string binaryPath, string tablePath, string fixtureType = "basic")
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(tablePath)!);
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = binaryPath,
+                Arguments = $"create \"{tablePath}\" --fixture-type {fixtureType}",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+
+            using var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Failed to start fixture creation process.");
+
+            string stdout = process.StandardOutput.ReadToEnd();
+            string stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit(30_000);
+
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    $"Fixture creation failed (exit code {process.ExitCode}).\nstdout: {stdout}\nstderr: {stderr}");
+            }
+
+            if (!stdout.Contains("TEST_FIXTURE_CREATED", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Fixture creation did not print expected sentinel.\nstdout: {stdout}\nstderr: {stderr}");
+            }
+        }
+
+        private sealed class OpenedConnection : IDisposable
+        {
+            private readonly AdbcDatabase _database;
+            private readonly AdbcDriver _driver;
+
+            public OpenedConnection(AdbcDriver driver, AdbcDatabase database, AdbcConnection connection)
+            {
+                _driver = driver;
+                _database = database;
+                Connection = connection;
+            }
+
+            public AdbcConnection Connection { get; }
+
+            public void Dispose()
+            {
+                Connection.Dispose();
+                _database.Dispose();
+                _driver.Dispose();
+            }
+        }
+    }
+}

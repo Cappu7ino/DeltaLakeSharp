@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DeltaTableService.Benchmark": {
+      "commandName": "Project",
+      "commandLineArgs": "sanity-check-delta"
+    }
+  }
+}

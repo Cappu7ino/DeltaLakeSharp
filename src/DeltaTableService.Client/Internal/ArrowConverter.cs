@@ -72,9 +72,9 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// Converts one or more <see cref="RecordBatch"/> instances into a list
         /// of row dictionaries.
         /// </summary>
-        public static List<Dictionary<string, object>> ToDictionaryList(IReadOnlyList<RecordBatch> batches)
+        public static List<Dictionary<string, object?>> ToDictionaryList(IReadOnlyList<RecordBatch> batches)
         {
-            var result = new List<Dictionary<string, object>>();
+            var result = new List<Dictionary<string, object?>>();
             if (batches == null || batches.Count == 0)
             {
                 return result;
@@ -85,7 +85,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                 Schema schema = batch.Schema;
                 for (int row = 0; row < batch.Length; row++)
                 {
-                    var dict = new Dictionary<string, object>(batch.ColumnCount);
+                    var dict = new Dictionary<string, object?>(batch.ColumnCount);
                     for (int col = 0; col < batch.ColumnCount; col++)
                     {
                         dict[schema.FieldsList[col].Name] = GetValue(batch.Column(col), row);
@@ -185,7 +185,7 @@ namespace Microsoft.DI.DeltaTableService.Client
             var lines = new List<string[]>();
             using (var reader = new StringReader(csv))
             {
-                string line;
+                string? line;
                 while ((line = reader.ReadLine()) != null)
                 {
                     if (!string.IsNullOrWhiteSpace(line))
@@ -213,7 +213,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                 var builder = new StringArray.Builder();
                 for (int row = 1; row <= rowCount; row++)
                 {
-                    string value = col < lines[row].Length ? lines[row][col].Trim() : null;
+                    string? value = col < lines[row].Length ? lines[row][col].Trim() : null;
                     builder.Append(value);
                 }
                 arrays.Add(builder.Build());
@@ -250,7 +250,7 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// <summary>
         /// Extracts a scalar value from the given Arrow array at the specified row index.
         /// </summary>
-        private static object GetValue(IArrowArray array, int index)
+        private static object? GetValue(IArrowArray array, int index)
         {
             if (array.IsNull(index))
             {
@@ -443,7 +443,7 @@ namespace Microsoft.DI.DeltaTableService.Client
             if (clrType == typeof(double)) return DoubleType.Default;
             if (clrType == typeof(decimal)) return new Decimal128Type(18, 2);
             if (clrType == typeof(bool)) return BooleanType.Default;
-            if (clrType == typeof(DateTime)) return new TimestampType(TimeUnit.Microsecond, (string)null);
+            if (clrType == typeof(DateTime)) return new TimestampType(TimeUnit.Microsecond, (string?)null);
             if (clrType == typeof(DateTimeOffset)) return new TimestampType(TimeUnit.Microsecond, "UTC");
             if (clrType == typeof(byte[])) return BinaryType.Default;
             return StringType.Default;
@@ -452,7 +452,7 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// <summary>
         /// Converts a type name string to an Arrow type.
         /// </summary>
-        private static IArrowType StringToArrowType(string typeName)
+        private static IArrowType StringToArrowType(string? typeName)
         {
             if (TryParseDecimalType(typeName, out IArrowType decimalType))
             {
@@ -476,7 +476,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                 case "boolean": case "bool": return BooleanType.Default;
                 case "date": return Date32Type.Default;
                 case "timestamp": return new TimestampType(TimeUnit.Microsecond, "UTC");
-                case "timestamp_ntz": return new TimestampType(TimeUnit.Microsecond, (string)null);
+                case "timestamp_ntz": return new TimestampType(TimeUnit.Microsecond, (string?)null);
                 case "binary": return BinaryType.Default;
                 case "large_binary": return LargeBinaryType.Default;
                 default: return StringType.Default;
@@ -596,7 +596,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                 var b = new Decimal128Array.Builder(decimal128Type);
                 foreach (object[] row in rows)
                 {
-                    object val = colIndex < row.Length ? row[colIndex] : null;
+                    object? val = colIndex < row.Length ? row[colIndex] : null;
                     if (val == null)
                     {
                         b.AppendNull();
@@ -622,7 +622,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                     var b = new Int32Array.Builder();
                     foreach (object[] row in rows)
                     {
-                        object val = colIndex < row.Length ? row[colIndex] : null;
+                        object? val = colIndex < row.Length ? row[colIndex] : null;
                         b.Append(val == null ? (int?)null : Convert.ToInt32(val));
                     }
                     return b.Build();
@@ -632,7 +632,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                     var b = new Int64Array.Builder();
                     foreach (object[] row in rows)
                     {
-                        object val = colIndex < row.Length ? row[colIndex] : null;
+                        object? val = colIndex < row.Length ? row[colIndex] : null;
                         b.Append(val == null ? (long?)null : Convert.ToInt64(val));
                     }
                     return b.Build();
@@ -642,7 +642,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                     var b = new DoubleArray.Builder();
                     foreach (object[] row in rows)
                     {
-                        object val = colIndex < row.Length ? row[colIndex] : null;
+                        object? val = colIndex < row.Length ? row[colIndex] : null;
                         b.Append(val == null ? (double?)null : Convert.ToDouble(val));
                     }
                     return b.Build();
@@ -652,7 +652,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                     var b = new FloatArray.Builder();
                     foreach (object[] row in rows)
                     {
-                        object val = colIndex < row.Length ? row[colIndex] : null;
+                        object? val = colIndex < row.Length ? row[colIndex] : null;
                         b.Append(val == null ? (float?)null : Convert.ToSingle(val));
                     }
                     return b.Build();
@@ -662,7 +662,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                     var b = new BooleanArray.Builder();
                     foreach (object[] row in rows)
                     {
-                        object val = colIndex < row.Length ? row[colIndex] : null;
+                        object? val = colIndex < row.Length ? row[colIndex] : null;
                         if (val == null)
                             b.AppendNull();
                         else
@@ -676,7 +676,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                     var b = new TimestampArray.Builder(tsType);
                     foreach (object[] row in rows)
                     {
-                        object val = colIndex < row.Length ? row[colIndex] : null;
+                        object? val = colIndex < row.Length ? row[colIndex] : null;
                         if (val == null)
                         {
                             b.AppendNull();
@@ -700,7 +700,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                     var b = new Date32Array.Builder();
                     foreach (object[] row in rows)
                     {
-                        object val = colIndex < row.Length ? row[colIndex] : null;
+                        object? val = colIndex < row.Length ? row[colIndex] : null;
                         if (val == null)
                         {
                             b.AppendNull();
@@ -722,16 +722,16 @@ namespace Microsoft.DI.DeltaTableService.Client
             }
         }
 
-        private static bool TryParseDecimalType(string typeName, out IArrowType decimalType)
+        private static bool TryParseDecimalType(string? typeName, out IArrowType decimalType)
         {
-            decimalType = null;
+            decimalType = default!;
 
             if (string.IsNullOrWhiteSpace(typeName))
             {
                 return false;
             }
 
-            string normalized = typeName.Trim();
+            string normalized = typeName!.Trim();
             if (!normalized.StartsWith("decimal(", StringComparison.OrdinalIgnoreCase)
                 || !normalized.EndsWith(")", StringComparison.Ordinal))
             {

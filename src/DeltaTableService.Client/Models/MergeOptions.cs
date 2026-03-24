@@ -71,7 +71,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Models
         /// Equivalent to <c>WHEN MATCHED THEN UPDATE SET col1 = expr1, ...</c>.
         /// When <see cref="WhenMatchedUpdateAll"/> is <c>true</c>, this is ignored.
         /// </summary>
-        public Dictionary<string, string> WhenMatchedUpdateSet { get; set; }
+        public Dictionary<string, string>? WhenMatchedUpdateSet { get; set; }
 
         /// <summary>
         /// An optional predicate for deleting matched rows,
@@ -80,7 +80,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Models
         /// When set to <c>"true"</c> (or any truthy expression), all matched
         /// rows are deleted unconditionally.
         /// </summary>
-        public string WhenMatchedDeletePredicate { get; set; }
+        public string? WhenMatchedDeletePredicate { get; set; }
 
         // ------------------------------------------------------------------ //
         //  WHEN NOT MATCHED clauses (source rows with no target match)
@@ -98,7 +98,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Models
         /// Equivalent to <c>WHEN NOT MATCHED THEN INSERT (col1, col2) VALUES (expr1, expr2)</c>.
         /// When <see cref="WhenNotMatchedInsertAll"/> is <c>true</c>, this is ignored.
         /// </summary>
-        public Dictionary<string, string> WhenNotMatchedInsertSet { get; set; }
+        public Dictionary<string, string>? WhenNotMatchedInsertSet { get; set; }
 
         // ------------------------------------------------------------------ //
         //  WHEN NOT MATCHED BY SOURCE clauses (target rows with no source match)
@@ -109,7 +109,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Models
         /// in the source, e.g. <c>"true"</c> to delete all unmatched target rows.
         /// Equivalent to <c>WHEN NOT MATCHED BY SOURCE [AND condition] THEN DELETE</c>.
         /// </summary>
-        public string WhenNotMatchedBySourceDeletePredicate { get; set; }
+        public string? WhenNotMatchedBySourceDeletePredicate { get; set; }
 
         /// <summary>
         /// Explicit column-level update assignments for target rows that have
@@ -117,14 +117,14 @@ namespace Microsoft.DI.DeltaTableService.Client.Models
         /// e.g. <c>{"active": "'false'"}</c>.
         /// Equivalent to <c>WHEN NOT MATCHED BY SOURCE THEN UPDATE SET col = expr</c>.
         /// </summary>
-        public Dictionary<string, string> WhenNotMatchedBySourceUpdateSet { get; set; }
+        public Dictionary<string, string>? WhenNotMatchedBySourceUpdateSet { get; set; }
 
         /// <summary>
         /// An optional predicate that gates the
         /// <see cref="WhenNotMatchedBySourceUpdateSet"/> clause,
         /// e.g. <c>"target.active = true"</c>.
         /// </summary>
-        public string WhenNotMatchedBySourceUpdatePredicate { get; set; }
+        public string? WhenNotMatchedBySourceUpdatePredicate { get; set; }
 
         // ------------------------------------------------------------------ //
         //  Serialisation helper (used by FlightClientWrapper)

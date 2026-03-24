@@ -12,12 +12,12 @@ namespace Microsoft.DI.DeltaTableService.Tests
     /// Reads an existing Delta table from a Fabric Lakehouse via SAS authentication.
     ///
     /// <para>
-    /// <b>Known limitation (deltalake 1.4.x):</b> The Rust <c>object_store</c> crate's
-    /// <c>use_fabric_endpoint</c> option always constructs the URL as
-    /// <c>{account_name}.dfs.fabric.microsoft.com</c>, ignoring any explicit
-    /// <c>endpoint</c> override.  Since the SAS token must be signed with
-    /// account name <c>"onelake"</c>, non-production environments (e.g. MSIT with
-    /// DNS host <c>msit-onelake.dfs.fabric.microsoft.com</c>) cannot be reached.
+        /// <b>Known limitation (deltalake 1.4.x):</b> The Rust <c>object_store</c> crate's
+        /// <c>use_fabric_endpoint</c> flow is standardized around the production
+        /// Fabric endpoint. Since the SAS token must be signed with account name
+        /// <c>"onelake"</c>, non-production environments (e.g. MSIT with DNS host
+        /// <c>msit-onelake.dfs.fabric.microsoft.com</c>) cannot be reached through
+        /// this V2 path.
     /// Data-access tests are therefore marked <see cref="Assert.Inconclusive()"/>.
     /// V1 (Spark/Hadoop) does not have this limitation.
     /// </para>
@@ -77,8 +77,8 @@ namespace Microsoft.DI.DeltaTableService.Tests
         {
             Assert.Inconclusive(
                 "V2 (deltalake 1.4.x / object_store) cannot access non-production OneLake endpoints. " +
-                "The use_fabric_endpoint option ignores explicit endpoint overrides, always routing to " +
-                "production (onelake.dfs.fabric.microsoft.com). Use V1 for MSIT OneLake testing.");
+                "The standardized use_fabric_endpoint flow routes to production (onelake.dfs.fabric.microsoft.com). " +
+                "Use V1 for MSIT OneLake testing.");
             return Task.CompletedTask;
         }
 
@@ -91,8 +91,8 @@ namespace Microsoft.DI.DeltaTableService.Tests
         {
             Assert.Inconclusive(
                 "V2 (deltalake 1.4.x / object_store) cannot access non-production OneLake endpoints. " +
-                "The use_fabric_endpoint option ignores explicit endpoint overrides, always routing to " +
-                "production (onelake.dfs.fabric.microsoft.com). Use V1 for MSIT OneLake testing.");
+                "The standardized use_fabric_endpoint flow routes to production (onelake.dfs.fabric.microsoft.com). " +
+                "Use V1 for MSIT OneLake testing.");
             return Task.CompletedTask;
         }
 
@@ -105,8 +105,8 @@ namespace Microsoft.DI.DeltaTableService.Tests
         {
             Assert.Inconclusive(
                 "V2 (deltalake 1.4.x / object_store) cannot access non-production OneLake endpoints. " +
-                "The use_fabric_endpoint option ignores explicit endpoint overrides, always routing to " +
-                "production (onelake.dfs.fabric.microsoft.com). Use V1 for MSIT OneLake testing.");
+                "The standardized use_fabric_endpoint flow routes to production (onelake.dfs.fabric.microsoft.com). " +
+                "Use V1 for MSIT OneLake testing.");
             return Task.CompletedTask;
         }
 

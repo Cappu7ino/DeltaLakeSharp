@@ -9,6 +9,7 @@ using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
+using Apache.Arrow.Ipc;
 using Microsoft.DI.DeltaTableService.Client.Internal;
 using Microsoft.DI.DeltaTableService.Client.Models;
 
@@ -141,17 +142,23 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// </summary>
         /// <param name="path">Path to the Delta table (local or abfss://).</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
         /// <param name="numRows">Optional maximum number of rows to return.</param>
+        /// <param name="batchSize">Optional maximum record batch size. Must be greater than zero when provided.</param>
         /// <param name="version">Optional Delta table version for time-travel reads.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public async IAsyncEnumerable<RecordBatch> ReadTableAsync(
             string path,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? numRows = null,
+            int? batchSize = null,
             long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            await foreach (RecordBatch batch in _backend.ReadTableAsync(path, storageConfig, numRows, version, cancellationToken).ConfigureAwait(false))
+            ValidateBatchSize(batchSize);
+
+            await foreach (RecordBatch batch in _backend.ReadTableAsync(path, storageConfig, genericStorageOptions, numRows, batchSize, version, cancellationToken).ConfigureAwait(false))
             {
                 yield return batch;
             }
@@ -161,21 +168,68 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// Reads rows from a Delta table and returns a forward-only
         /// <see cref="DbDataReader"/> for row-oriented consumption.
         /// </summary>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="numRows">Optional maximum number of rows to return.</param>
+        /// <param name="batchSize">Optional maximum record batch size. Must be greater than zero when provided.</param>
+        /// <param name="version">Optional Delta table version for time-travel reads.</param>
+        /// <param name="options">Optional row-reader behavior settings.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         public async Task<DbDataReader> ReadTableAsDataReaderAsync(
             string path,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? numRows = null,
+            int? batchSize = null,
             long? version = null,
-            DeltaDataReaderOptions options = null,
+            DeltaDataReaderOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            ValidateBatchSize(batchSize);
+
             ArrowStreamResult streamResult = await _backend.OpenReadTableStreamAsync(
                 path,
                 storageConfig,
+                genericStorageOptions,
                 numRows,
+                batchSize,
                 version,
                 cancellationToken).ConfigureAwait(false);
             return new ArrowStreamDataReader(streamResult, options);
+        }
+
+        /// <summary>
+        /// Reads rows from a Delta table and returns an Arrow array stream for
+        /// consumers that operate directly on Arrow-native batches.
+        /// </summary>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="numRows">Optional maximum number of rows to return.</param>
+        /// <param name="batchSize">Optional maximum record batch size. Must be greater than zero when provided.</param>
+        /// <param name="version">Optional Delta table version for time-travel reads.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        public async Task<IArrowArrayStream> ReadTableAsArrowStreamAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? numRows = null,
+            int? batchSize = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            ValidateBatchSize(batchSize);
+
+            ArrowStreamResult streamResult = await _backend.OpenReadTableStreamAsync(
+                path,
+                storageConfig,
+                genericStorageOptions,
+                numRows,
+                batchSize,
+                version,
+                cancellationToken).ConfigureAwait(false);
+            return streamResult.Stream;
         }
 
         /// <summary>
@@ -186,12 +240,14 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// <param name="startingVersion">Inclusive starting Delta version.</param>
         /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
             string path,
             long startingVersion,
             long? endingVersion = null,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             if (path == null)
@@ -209,7 +265,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                 throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
             }
 
-            await foreach (RecordBatch batch in _backend.ReadChangeDataAsync(path, startingVersion, endingVersion, storageConfig, cancellationToken).ConfigureAwait(false))
+            await foreach (RecordBatch batch in _backend.ReadChangeDataAsync(path, startingVersion, endingVersion, storageConfig, genericStorageOptions, cancellationToken).ConfigureAwait(false))
             {
                 yield return batch;
             }
@@ -219,12 +275,20 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// Reads Change Data Feed rows from a Delta table and returns a forward-only
         /// <see cref="DbDataReader"/> for row-oriented consumption.
         /// </summary>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="startingVersion">Inclusive starting Delta version.</param>
+        /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="options">Optional row-reader behavior settings.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         public async Task<DbDataReader> ReadChangeDataAsDataReaderAsync(
             string path,
             long startingVersion,
             long? endingVersion = null,
-            StorageConfig storageConfig = null,
-            DeltaDataReaderOptions options = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            DeltaDataReaderOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             if (path == null)
@@ -247,8 +311,51 @@ namespace Microsoft.DI.DeltaTableService.Client
                 startingVersion,
                 endingVersion,
                 storageConfig,
+                genericStorageOptions,
                 cancellationToken).ConfigureAwait(false);
             return new ArrowStreamDataReader(streamResult, options);
+        }
+
+        /// <summary>
+        /// Reads Change Data Feed rows from a Delta table and returns an Arrow array stream.
+        /// </summary>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="startingVersion">Inclusive starting Delta version.</param>
+        /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        public async Task<IArrowArrayStream> ReadChangeDataAsArrowStreamAsync(
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (startingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startingVersion), startingVersion, "Starting version must be >= 0.");
+            }
+
+            if (endingVersion.HasValue && endingVersion.Value < startingVersion)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
+            }
+
+            ArrowStreamResult streamResult = await _backend.OpenReadChangeDataStreamAsync(
+                path,
+                startingVersion,
+                endingVersion,
+                storageConfig,
+                genericStorageOptions,
+                cancellationToken).ConfigureAwait(false);
+            return streamResult.Stream;
         }
 
         /// <summary>
@@ -260,13 +367,15 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// <param name="startingVersion">Inclusive starting Delta version.</param>
         /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public async IAsyncEnumerable<RecordBatch> ExecuteChangeDataQueryAsync(
             string sql,
             string path,
             long startingVersion,
             long? endingVersion = null,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(sql))
@@ -289,7 +398,7 @@ namespace Microsoft.DI.DeltaTableService.Client
                 throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
             }
 
-            await foreach (RecordBatch batch in _backend.ExecuteChangeDataQueryAsync(sql, path, startingVersion, endingVersion, storageConfig, cancellationToken).ConfigureAwait(false))
+            await foreach (RecordBatch batch in _backend.ExecuteChangeDataQueryAsync(sql, path, startingVersion, endingVersion, storageConfig, genericStorageOptions, cancellationToken).ConfigureAwait(false))
             {
                 yield return batch;
             }
@@ -299,13 +408,22 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// Executes a SQL query against Change Data Feed rows and returns a
         /// forward-only <see cref="DbDataReader"/> for row-oriented consumption.
         /// </summary>
+        /// <param name="sql">The SQL query to execute against `_cdf`.</param>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="startingVersion">Inclusive starting Delta version.</param>
+        /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="options">Optional row-reader behavior settings.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         public async Task<DbDataReader> ExecuteChangeDataQueryAsDataReaderAsync(
             string sql,
             string path,
             long startingVersion,
             long? endingVersion = null,
-            StorageConfig storageConfig = null,
-            DeltaDataReaderOptions options = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            DeltaDataReaderOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             if (string.IsNullOrWhiteSpace(sql))
@@ -334,10 +452,60 @@ namespace Microsoft.DI.DeltaTableService.Client
                 startingVersion,
                 endingVersion,
                 storageConfig,
+                genericStorageOptions,
                 cancellationToken).ConfigureAwait(false);
             return new ArrowStreamDataReader(streamResult, options);
         }
 
+        /// <summary>
+        /// Executes a SQL query against Change Data Feed rows and returns an Arrow array stream.
+        /// </summary>
+        /// <param name="sql">The SQL query to execute against `_cdf`.</param>
+        /// <param name="path">Path to the Delta table (local or abfss://).</param>
+        /// <param name="startingVersion">Inclusive starting Delta version.</param>
+        /// <param name="endingVersion">Optional inclusive ending Delta version. Defaults to the latest version.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        public async Task<IArrowArrayStream> ExecuteChangeDataQueryAsArrowStreamAsync(
+            string sql,
+            string path,
+            long startingVersion,
+            long? endingVersion = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(sql))
+            {
+                throw new ArgumentException("SQL query must be provided.", nameof(sql));
+            }
+
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (startingVersion < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(startingVersion), startingVersion, "Starting version must be >= 0.");
+            }
+
+            if (endingVersion.HasValue && endingVersion.Value < startingVersion)
+            {
+                throw new ArgumentOutOfRangeException(nameof(endingVersion), endingVersion.Value, "Ending version must be >= startingVersion.");
+            }
+
+            ArrowStreamResult streamResult = await _backend.OpenExecuteChangeDataQueryStreamAsync(
+                sql,
+                path,
+                startingVersion,
+                endingVersion,
+                storageConfig,
+                genericStorageOptions,
+                cancellationToken).ConfigureAwait(false);
+            return streamResult.Stream;
+        }
         // ------------------------------------------------------------------ //
         //  Get schema
         // ------------------------------------------------------------------ //
@@ -347,15 +515,17 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// </summary>
         /// <param name="path">Path to the Delta table.</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
         /// <param name="version">Optional Delta table version for time-travel reads.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public Task<TableSchema> GetSchemaAsync(
             string path,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? version = null,
             CancellationToken cancellationToken = default)
         {
-            return _backend.GetSchemaAsync(path, storageConfig, version, cancellationToken);
+            return _backend.GetSchemaAsync(path, storageConfig, genericStorageOptions, version, cancellationToken);
         }
 
         // ------------------------------------------------------------------ //
@@ -374,17 +544,23 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// <param name="tablePath">Optional path to a Delta table to register before executing.</param>
         /// <param name="tableName">Optional logical table name to use in the SQL query.</param>
         /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="batchSize">Optional maximum record batch size. Must be greater than zero when provided.</param>
         /// <param name="version">Optional Delta table version for time-travel reads.</param>
         /// <param name="cancellationToken">Optional cancellation token.</param>
         public async IAsyncEnumerable<RecordBatch> ExecuteQueryAsync(
             string sql,
-            string tablePath = null,
-            string tableName = null,
-            StorageConfig storageConfig = null,
+            string? tablePath = null,
+            string? tableName = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
             long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            await foreach (RecordBatch batch in _backend.ExecuteQueryAsync(sql, tablePath, tableName, storageConfig, version, cancellationToken).ConfigureAwait(false))
+            ValidateBatchSize(batchSize);
+
+            await foreach (RecordBatch batch in _backend.ExecuteQueryAsync(sql, tablePath, tableName, storageConfig, genericStorageOptions, batchSize, version, cancellationToken).ConfigureAwait(false))
             {
                 yield return batch;
             }
@@ -394,25 +570,81 @@ namespace Microsoft.DI.DeltaTableService.Client
         /// Executes a read-oriented SQL query and returns a forward-only
         /// <see cref="DbDataReader"/> for row-oriented consumption.
         /// </summary>
+        /// <param name="sql">The SQL query to execute (SELECT, SHOW, DESCRIBE, etc.).</param>
+        /// <param name="tablePath">Optional path to a Delta table to register before executing.</param>
+        /// <param name="tableName">Optional logical table name to use in the SQL query.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="batchSize">Optional maximum record batch size. Must be greater than zero when provided.</param>
+        /// <param name="version">Optional Delta table version for time-travel reads.</param>
+        /// <param name="options">Optional row-reader behavior settings.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
         public async Task<DbDataReader> ExecuteQueryAsDataReaderAsync(
             string sql,
-            string tablePath = null,
-            string tableName = null,
-            StorageConfig storageConfig = null,
+            string? tablePath = null,
+            string? tableName = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
             long? version = null,
-            DeltaDataReaderOptions options = null,
+            DeltaDataReaderOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            ValidateBatchSize(batchSize);
             ArrowStreamResult streamResult = await _backend.OpenExecuteQueryStreamAsync(
                 sql,
                 tablePath,
                 tableName,
                 storageConfig,
+                genericStorageOptions,
+                batchSize,
                 version,
                 cancellationToken).ConfigureAwait(false);
             return new ArrowStreamDataReader(streamResult, options);
         }
 
+        /// <summary>
+        /// Executes a read-oriented SQL query and returns an Arrow array stream.
+        /// </summary>
+        /// <param name="sql">The SQL query to execute (SELECT, SHOW, DESCRIBE, etc.).</param>
+        /// <param name="tablePath">Optional path to a Delta table to register before executing.</param>
+        /// <param name="tableName">Optional logical table name to use in the SQL query.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="genericStorageOptions">Optional generic storage options passed through to delta-rs-backed object stores.</param>
+        /// <param name="batchSize">Optional maximum record batch size. Must be greater than zero when provided.</param>
+        /// <param name="version">Optional Delta table version for time-travel reads.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        public async Task<IArrowArrayStream> ExecuteQueryAsArrowStreamAsync(
+            string sql,
+            string? tablePath = null,
+            string? tableName = null,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            ValidateBatchSize(batchSize);
+
+            ArrowStreamResult streamResult = await _backend.OpenExecuteQueryStreamAsync(
+                sql,
+                tablePath,
+                tableName,
+                storageConfig,
+                genericStorageOptions,
+                batchSize,
+                version,
+                cancellationToken).ConfigureAwait(false);
+            return streamResult.Stream;
+        }
+
+        private static void ValidateBatchSize(int? batchSize)
+        {
+            if (batchSize.HasValue && batchSize.Value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(batchSize), batchSize.Value, "Batch size must be greater than zero.");
+            }
+        }
         // ------------------------------------------------------------------ //
         //  Create table - overload 1: empty table with schema
         // ------------------------------------------------------------------ //
@@ -445,9 +677,9 @@ namespace Microsoft.DI.DeltaTableService.Client
         public Task<ExecuteResult> CreateTableAsync(
             string path,
             TableSchema schema,
-            Dictionary<string, string> configuration = null,
-            StorageConfig storageConfig = null,
-            IReadOnlyList<string> partitionBy = null,
+            Dictionary<string, string>? configuration = null,
+            StorageConfig? storageConfig = null,
+            IReadOnlyList<string>? partitionBy = null,
             CancellationToken cancellationToken = default)
         {
             return _backend.CreateEmptyTableAsync(path, schema, storageConfig, configuration, partitionBy, cancellationToken);
@@ -484,8 +716,8 @@ namespace Microsoft.DI.DeltaTableService.Client
             IAsyncEnumerable<RecordBatch> batches,
             SaveMode mode = SaveMode.Overwrite,
             WriteSchemaMode? schemaMode = null,
-            StorageConfig storageConfig = null,
-            IReadOnlyList<string> partitionBy = null,
+            StorageConfig? storageConfig = null,
+            IReadOnlyList<string>? partitionBy = null,
             CancellationToken cancellationToken = default)
         {
             string modeString = mode == SaveMode.Append ? "append" : "overwrite";
@@ -515,7 +747,7 @@ namespace Microsoft.DI.DeltaTableService.Client
             string sql,
             string tablePath,
             string tableName,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
             CancellationToken cancellationToken = default)
         {
             if (!sql.TrimStart().StartsWith("DELETE", StringComparison.OrdinalIgnoreCase))
@@ -549,7 +781,7 @@ namespace Microsoft.DI.DeltaTableService.Client
             string sql,
             string tablePath,
             string tableName,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
             CancellationToken cancellationToken = default)
         {
             if (!sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
@@ -582,7 +814,7 @@ namespace Microsoft.DI.DeltaTableService.Client
             string sql,
             string tablePath,
             string tableName,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
             CancellationToken cancellationToken = default)
         {
             if (!sql.TrimStart().StartsWith("MERGE", StringComparison.OrdinalIgnoreCase))
@@ -625,7 +857,7 @@ namespace Microsoft.DI.DeltaTableService.Client
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             MergeOptions mergeOptions,
-            StorageConfig storageConfig = null,
+            StorageConfig? storageConfig = null,
             CancellationToken cancellationToken = default)
         {
             if (path == null)
@@ -675,9 +907,9 @@ namespace Microsoft.DI.DeltaTableService.Client
             string tablePath,
             int readerVersion,
             int writerVersion,
-            IReadOnlyList<string> readerFeatures = null,
-            IReadOnlyList<string> writerFeatures = null,
-            StorageConfig storageConfig = null,
+            IReadOnlyList<string>? readerFeatures = null,
+            IReadOnlyList<string>? writerFeatures = null,
+            StorageConfig? storageConfig = null,
             CancellationToken cancellationToken = default)
         {
             if (tablePath == null)

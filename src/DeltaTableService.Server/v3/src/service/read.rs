@@ -8,13 +8,14 @@ use std::sync::Arc;
 use arrow::datatypes::{Schema, SchemaRef};
 use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchReader};
+use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use deltalake::delta_datafusion::DeltaCdfTableProvider;
 use futures::StreamExt;
 use tracing::{debug, info};
 
-use super::helpers::{open_delta_table, register_delta_table};
+use super::helpers::{open_delta_table, open_delta_table_for_datafusion, register_delta_table};
 use super::request::{Command, ReadChangeDataCommand, ReadCommand, SqlCommand};
 use crate::error::ServiceError;
 
@@ -75,6 +76,7 @@ async fn get_delta_schema(cmd: &ReadCommand) -> Result<SchemaRef, ServiceError> 
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
+        cmd.storage_options.as_ref(),
         cmd.version,
     )
     .await?;
@@ -151,13 +153,14 @@ async fn change_data_batch_reader(
 async fn execute_read_table_stream(
     cmd: ReadCommand,
 ) -> Result<(SchemaRef, SendableRecordBatchStream), ServiceError> {
-    let ctx = SessionContext::new();
+    let ctx = create_session_context(cmd.batch_size)?;
     register_delta_table(
         &ctx,
         "_tbl",
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
+        cmd.storage_options.as_ref(),
         cmd.version,
     )
     .await?;
@@ -177,7 +180,7 @@ async fn execute_read_table_stream(
 async fn execute_sql_stream(
     cmd: SqlCommand,
 ) -> Result<(SchemaRef, SendableRecordBatchStream), ServiceError> {
-    let ctx = SessionContext::new();
+    let ctx = create_session_context(cmd.batch_size)?;
 
     if let (Some(table_path), Some(table_name)) = (&cmd.table_path, &cmd.table_name) {
         register_delta_table(
@@ -186,6 +189,7 @@ async fn execute_sql_stream(
             table_path,
             cmd.storage_account.as_deref(),
             cmd.sas_token.as_deref(),
+            cmd.storage_options.as_ref(),
             cmd.version,
         )
         .await?;
@@ -201,11 +205,13 @@ async fn execute_sql_stream(
 async fn execute_change_data_stream(
     cmd: ReadChangeDataCommand,
 ) -> Result<(SchemaRef, SendableRecordBatchStream), ServiceError> {
-    let ctx = SessionContext::new();
-    let table = open_delta_table(
+    let ctx = create_session_context(cmd.batch_size)?;
+    let table = open_delta_table_for_datafusion(
+        &ctx,
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
+        cmd.storage_options.as_ref(),
         None,
     )
     .await?;
@@ -230,6 +236,19 @@ async fn execute_change_data_stream(
     let schema: SchemaRef = Arc::clone(df.schema().inner());
     let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
     Ok((schema, batch_stream))
+}
+
+fn create_session_context(batch_size: Option<usize>) -> Result<SessionContext, ServiceError> {
+    match batch_size {
+        Some(0) => Err(ServiceError::InvalidRequest(
+            "batch_size must be greater than zero".to_string(),
+        )),
+        Some(size) => {
+            let config = SessionConfig::new().with_batch_size(size);
+            Ok(SessionContext::new_with_config(config))
+        }
+        None => Ok(SessionContext::new()),
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +302,27 @@ mod tests {
     fn sql_command_bytes(sql: &str, table_path: Option<&str>, table_name: Option<&str>) -> Vec<u8> {
         let mut map = serde_json::Map::new();
         map.insert("sql".to_string(), serde_json::Value::String(sql.to_string()));
+        if let Some(tp) = table_path {
+            map.insert("table_path".to_string(), serde_json::Value::String(tp.to_string()));
+        }
+        if let Some(tn) = table_name {
+            map.insert("table_name".to_string(), serde_json::Value::String(tn.to_string()));
+        }
+        serde_json::to_vec(&map).expect("failed to serialize sql command")
+    }
+
+    fn sql_command_bytes_with_batch_size(
+        sql: &str,
+        table_path: Option<&str>,
+        table_name: Option<&str>,
+        batch_size: usize,
+    ) -> Vec<u8> {
+        let mut map = serde_json::Map::new();
+        map.insert("sql".to_string(), serde_json::Value::String(sql.to_string()));
+        map.insert(
+            "batch_size".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(batch_size as u64)),
+        );
         if let Some(tp) = table_path {
             map.insert("table_path".to_string(), serde_json::Value::String(tp.to_string()));
         }
@@ -360,6 +400,22 @@ mod tests {
         .await;
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
         assert_eq!(batches[0].schema().fields().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn read_batches_sql_with_batch_size_honors_max_batch_length() {
+        let (path, _guard) = create_test_delta_table().await;
+        let batches = collect_batches(&sql_command_bytes_with_batch_size(
+            "SELECT id, name FROM tbl ORDER BY id",
+            Some(&path),
+            Some("tbl"),
+            1,
+        ))
+        .await;
+
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+        assert!(batches.len() >= 3, "Expected one-row batches when batch_size=1.");
+        assert!(batches.iter().all(|b| b.num_rows() <= 1));
     }
 
     #[tokio::test]

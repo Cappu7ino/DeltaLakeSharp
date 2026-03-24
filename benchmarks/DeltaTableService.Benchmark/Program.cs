@@ -15,6 +15,7 @@ using BenchmarkDotNet.Toolchains.InProcess.Emit;
 using BenchmarkDotNet.Exporters.Csv;
 using BenchmarkDotNet.Exporters.Json;
 using System.Security.Principal;
+using System.Net;
 
 namespace DeltaTableService.Benchmark
 {
@@ -32,6 +33,7 @@ namespace DeltaTableService.Benchmark
         /// <param name="args">the command line arguments</param>
         public static void Main(string[] args)
         {
+            ConfigureLegacyFrameworkNetworking();
             Logger.Info("Started running DeltaTableService performance benchmarks.");
 
             try
@@ -99,6 +101,15 @@ namespace DeltaTableService.Benchmark
             }
 
             Logger.Info("Completed running DeltaTableService performance benchmarks.");
+        }
+
+        private static void ConfigureLegacyFrameworkNetworking()
+        {
+#if NET472
+            AppContext.SetSwitch("Switch.System.Net.DontEnableSchUseStrongCrypto", false);
+            AppContext.SetSwitch("Switch.System.Net.DontEnableSystemDefaultTlsVersions", false);
+            ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+#endif
         }
 
         /// <summary>

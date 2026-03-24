@@ -14,9 +14,13 @@ pub struct ReadCommand {
     #[serde(default)]
     pub num_rows: Option<u64>,
     #[serde(default)]
+    pub batch_size: Option<usize>,
+    #[serde(default)]
     pub storage_account: Option<String>,
     #[serde(default)]
     pub sas_token: Option<String>,
+    #[serde(default)]
+    pub storage_options: Option<HashMap<String, String>>,
     #[serde(default)]
     pub version: Option<i64>,
 }
@@ -30,9 +34,13 @@ pub struct ReadChangeDataCommand {
     #[serde(default)]
     pub sql: Option<String>,
     #[serde(default)]
+    pub batch_size: Option<usize>,
+    #[serde(default)]
     pub storage_account: Option<String>,
     #[serde(default)]
     pub sas_token: Option<String>,
+    #[serde(default)]
+    pub storage_options: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -43,9 +51,13 @@ pub struct SqlCommand {
     #[serde(default)]
     pub table_name: Option<String>,
     #[serde(default)]
+    pub batch_size: Option<usize>,
+    #[serde(default)]
     pub storage_account: Option<String>,
     #[serde(default)]
     pub sas_token: Option<String>,
+    #[serde(default)]
+    pub storage_options: Option<HashMap<String, String>>,
     #[serde(default)]
     pub version: Option<i64>,
 }
@@ -286,10 +298,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_read_command_with_batch_size() {
+        let cmd = Command::parse(br#"{"path":"/tmp/t","batch_size":2048}"#).unwrap();
+        match cmd {
+            Command::Read(read) => assert_eq!(read.batch_size, Some(2048)),
+            _ => panic!("expected read command"),
+        }
+    }
+
+    #[test]
     fn parse_read_command_with_version() {
         let cmd = Command::parse(br#"{"path":"/tmp/t","version":3}"#).unwrap();
         match cmd {
             Command::Read(read) => assert_eq!(read.version, Some(3)),
+            _ => panic!("expected read command"),
+        }
+    }
+
+    #[test]
+    fn parse_read_command_with_storage_options() {
+        let cmd = Command::parse(
+            br#"{"path":"s3://bucket/table","storage_options":{"aws_region":"westus2"}}"#,
+        )
+        .unwrap();
+        match cmd {
+            Command::Read(read) => assert_eq!(
+                read.storage_options
+                    .as_ref()
+                    .and_then(|opts| opts.get("aws_region"))
+                    .map(String::as_str),
+                Some("westus2")
+            ),
             _ => panic!("expected read command"),
         }
     }
@@ -344,6 +383,36 @@ mod tests {
         .unwrap();
         match cmd {
             Command::Sql(sql) => assert_eq!(sql.version, Some(7)),
+            _ => panic!("expected sql command"),
+        }
+    }
+
+    #[test]
+    fn parse_sql_command_with_storage_options() {
+        let cmd = Command::parse(
+            br#"{"sql":"SELECT * FROM t","table_path":"s3://bucket/table","table_name":"t","storage_options":{"aws_region":"westus2"}}"#,
+        )
+        .unwrap();
+        match cmd {
+            Command::Sql(sql) => assert_eq!(
+                sql.storage_options
+                    .as_ref()
+                    .and_then(|opts| opts.get("aws_region"))
+                    .map(String::as_str),
+                Some("westus2")
+            ),
+            _ => panic!("expected sql command"),
+        }
+    }
+
+    #[test]
+    fn parse_sql_command_with_batch_size() {
+        let cmd = Command::parse(
+            br#"{"sql":"SELECT * FROM t","table_path":"/tmp/t","table_name":"t","batch_size":4096}"#,
+        )
+        .unwrap();
+        match cmd {
+            Command::Sql(sql) => assert_eq!(sql.batch_size, Some(4096)),
             _ => panic!("expected sql command"),
         }
     }

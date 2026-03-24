@@ -67,7 +67,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
         [LibraryImport(LibraryName, EntryPoint = "dts_free_string")]
         internal static partial void FreeString(IntPtr value);
 
-        internal static string PtrToStringUtf8(IntPtr ptr)
+        internal static string? PtrToStringUtf8(IntPtr ptr)
         {
             return ptr == IntPtr.Zero ? null : Marshal.PtrToStringUTF8(ptr);
         }

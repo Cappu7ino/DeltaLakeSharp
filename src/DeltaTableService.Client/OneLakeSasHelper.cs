@@ -192,7 +192,16 @@ namespace Microsoft.DI.DeltaTableService.Client
             request.Content = new StringContent(xmlBody, Encoding.UTF8, "application/xml");
 
             using var response = await SharedHttpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            if (!response.IsSuccessStatusCode)
+            {
+                string responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                string sanitizedBody = SanitizeForDiagnostics(responseBody);
+                string diagnostics = $"OneLake user delegation key request failed. " +
+                    $"Status={(int)response.StatusCode} ({response.ReasonPhrase}), " +
+                    $"Endpoint={requestUri}, Body={sanitizedBody}";
+
+                throw new HttpRequestException(diagnostics);
+            }
 
             using var responseStream = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
             var udkResponse = DeserializeUdkResponse(responseStream);
@@ -205,6 +214,17 @@ namespace Microsoft.DI.DeltaTableService.Client
                 udkResponse.SignedService,
                 udkResponse.SignedVersion,
                 udkResponse.Value);
+        }
+
+        private static string SanitizeForDiagnostics(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "<empty>";
+            }
+
+            string trimmed = value.Trim();
+            return trimmed.Length <= 2000 ? trimmed : trimmed.Substring(0, 2000);
         }
 
         /// <summary>
@@ -238,7 +258,8 @@ namespace Microsoft.DI.DeltaTableService.Client
         private static UdkResponse DeserializeUdkResponse(Stream responseStream)
         {
             var serializer = new XmlSerializer(typeof(UdkResponse));
-            return (UdkResponse)serializer.Deserialize(responseStream)
+            object? deserialized = serializer.Deserialize(responseStream);
+            return deserialized as UdkResponse
                    ?? throw new InvalidOperationException("Failed to deserialize user delegation key response.");
         }
 

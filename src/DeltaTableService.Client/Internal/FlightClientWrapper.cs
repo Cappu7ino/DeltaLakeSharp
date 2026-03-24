@@ -69,11 +69,12 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         public async Task<TableSchema> GetSchemaAsync(
             string path,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? version = null,
             CancellationToken cancellationToken = default)
         {
             var cmd = new Dictionary<string, object> { ["path"] = path };
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, genericStorageOptions);
             if (version.HasValue)
             {
                 cmd["version"] = version.Value;
@@ -87,23 +88,27 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         public IAsyncEnumerable<RecordBatch> ReadTableAsync(
             string path,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? numRows = null,
+            int? batchSize = null,
             long? version = null,
             CancellationToken cancellationToken = default)
         {
-            byte[] commandJson = BuildReadCommand(path, storageConfig, numRows, version);
+            byte[] commandJson = BuildReadCommand(path, storageConfig, genericStorageOptions, numRows, batchSize, version);
             return GetRecordBatchesStreamingAsync(commandJson, cancellationToken);
         }
 
         public async Task<ArrowStreamResult> OpenReadTableStreamAsync(
             string path,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? numRows = null,
+            int? batchSize = null,
             long? version = null,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            byte[] commandJson = BuildReadCommand(path, storageConfig, numRows, version);
+            byte[] commandJson = BuildReadCommand(path, storageConfig, genericStorageOptions, numRows, batchSize, version);
             return await OpenArrowArrayStreamAsync(commandJson, cancellationToken).ConfigureAwait(false);
         }
 
@@ -113,6 +118,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -128,6 +134,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -142,6 +149,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -158,6 +166,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -171,6 +180,8 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             string? tablePath = null,
             string? tableName = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
             long? version = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
@@ -186,7 +197,11 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             {
                 cmd["table_name"] = tableName;
             }
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, genericStorageOptions);
+            if (batchSize.HasValue)
+            {
+                cmd["batch_size"] = batchSize.Value;
+            }
             if (version.HasValue)
             {
                 cmd["version"] = version.Value;
@@ -203,6 +218,8 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             string? tablePath = null,
             string? tableName = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
             long? version = null,
             CancellationToken cancellationToken = default)
         {
@@ -217,7 +234,11 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             {
                 cmd["table_name"] = tableName;
             }
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, genericStorageOptions);
+            if (batchSize.HasValue)
+            {
+                cmd["batch_size"] = batchSize.Value;
+            }
             if (version.HasValue)
             {
                 cmd["version"] = version.Value;
@@ -251,7 +272,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
                 ["path"] = path,
                 ["schema"] = schemaList,
             };
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, null);
             if (configuration != null && configuration.Count > 0)
             {
                 cmd["configuration"] = configuration;
@@ -288,7 +309,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
                 ["path"] = path,
                 ["mode"] = mode,
             };
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, null);
             if (partitionBy != null && partitionBy.Count > 0)
             {
                 cmd["partition_by"] = partitionBy;
@@ -346,10 +367,10 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             var cmd = mergeOptions.ToDictionary();
             cmd["operation"] = "merge";
             cmd["path"] = path;
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, null);
 
             byte[] commandJson = JsonSerializer.SerializeToUtf8Bytes(cmd);
-            byte[] responseBytes = await DoPutStreamingAsync(commandJson, schema, batches, cancellationToken)
+            byte[]? responseBytes = await DoPutStreamingAsync(commandJson, schema, batches, cancellationToken)
                 .ConfigureAwait(false);
 
             if (responseBytes != null && responseBytes.Length > 0)
@@ -379,7 +400,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
                 ["table_path"] = tablePath,
                 ["table_name"] = tableName,
             };
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, null);
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(cmd);
             byte[] resultBytes = await DoActionAsync("execute_dml", body, cancellationToken)
                 .ConfigureAwait(false);
@@ -421,7 +442,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
                 cmd["writer_features"] = writerFeatures;
             }
 
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, null);
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(cmd);
             byte[] resultBytes = await DoActionAsync("upgrade_protocol", body, cancellationToken)
                 .ConfigureAwait(false);
@@ -539,7 +560,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         /// The raw metadata bytes returned by the server after the stream
         /// completes, or <c>null</c> if the server did not send metadata.
         /// </returns>
-        private async Task<byte[]> DoPutStreamingAsync(
+        private async Task<byte[]?> DoPutStreamingAsync(
             byte[] commandJson,
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
@@ -572,16 +593,20 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         //  Helper methods
         // ------------------------------------------------------------------ //
 
-        private static byte[] BuildReadCommand(string path, StorageConfig? storageConfig, long? numRows = null, long? version = null)
+        private static byte[] BuildReadCommand(string path, StorageConfig? storageConfig, GenericStorageOptions? genericStorageOptions, long? numRows = null, int? batchSize = null, long? version = null)
         {
             var cmd = new Dictionary<string, object>
             {
                 ["path"] = path,
             };
-            AddStorageConfig(cmd, storageConfig);
+            AddStorageConfig(cmd, storageConfig, genericStorageOptions);
             if (numRows.HasValue)
             {
                 cmd["num_rows"] = numRows.Value;
+            }
+            if (batchSize.HasValue)
+            {
+                cmd["batch_size"] = batchSize.Value;
             }
             if (version.HasValue)
             {
@@ -590,7 +615,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             return JsonSerializer.SerializeToUtf8Bytes(cmd);
         }
 
-        private static void AddStorageConfig(Dictionary<string, object> cmd, StorageConfig? storageConfig)
+        private static void AddStorageConfig(Dictionary<string, object> cmd, StorageConfig? storageConfig, GenericStorageOptions? genericStorageOptions)
         {
             if (storageConfig != null)
             {
@@ -600,6 +625,17 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
                 {
                     cmd["evict_fs_cache"] = false;
                 }
+            }
+
+            if (genericStorageOptions != null && genericStorageOptions.Options.Count > 0)
+            {
+                var storageOptions = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (KeyValuePair<string, string> option in genericStorageOptions.Options)
+                {
+                    storageOptions[option.Key] = option.Value;
+                }
+
+                cmd["storage_options"] = storageOptions;
             }
         }
 

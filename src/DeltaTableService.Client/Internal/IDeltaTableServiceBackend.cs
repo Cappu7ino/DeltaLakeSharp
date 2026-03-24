@@ -27,6 +27,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         Task<TableSchema> GetSchemaAsync(
             string path,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? version = null,
             CancellationToken cancellationToken = default);
 
@@ -38,14 +39,18 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
         IAsyncEnumerable<RecordBatch> ReadTableAsync(
             string path,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? numRows = null,
+            int? batchSize = null,
             long? version = null,
             CancellationToken cancellationToken = default);
 
         Task<ArrowStreamResult> OpenReadTableStreamAsync(
             string path,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             long? numRows = null,
+            int? batchSize = null,
             long? version = null,
             CancellationToken cancellationToken = default);
 
@@ -58,6 +63,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             CancellationToken cancellationToken = default);
 
         Task<ArrowStreamResult> OpenReadChangeDataStreamAsync(
@@ -65,6 +71,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -77,6 +84,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             CancellationToken cancellationToken = default);
 
         Task<ArrowStreamResult> OpenExecuteChangeDataQueryStreamAsync(
@@ -85,6 +93,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long startingVersion,
             long? endingVersion = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -101,6 +110,8 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             string? tablePath = null,
             string? tableName = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
             long? version = null,
             CancellationToken cancellationToken = default);
 
@@ -109,6 +120,8 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             string? tablePath = null,
             string? tableName = null,
             StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
             long? version = null,
             CancellationToken cancellationToken = default);
 

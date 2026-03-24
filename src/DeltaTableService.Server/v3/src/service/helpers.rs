@@ -10,7 +10,7 @@ use std::fs;
 use std::path::Path;
 
 use datafusion::execution::context::SessionContext;
-use tracing::debug;
+use tracing::{debug, warn};
 use url::Url;
 
 use crate::error::ServiceError;
@@ -36,6 +36,7 @@ pub fn path_to_url(path: &str) -> Result<Url, ServiceError> {
 pub fn storage_options(
     storage_account: Option<&str>,
     sas_token: Option<&str>,
+    additional_storage_options: Option<&HashMap<String, String>>,
 ) -> HashMap<String, String> {
     let mut opts = HashMap::new();
     if let Some(account) = storage_account {
@@ -47,6 +48,22 @@ pub fn storage_options(
     if let Some(token) = sas_token {
         opts.insert("sas_token".to_string(), token.to_string());
     }
+
+    if let Some(extra) = additional_storage_options {
+        for (key, value) in extra {
+            opts.insert(key.clone(), value.clone());
+        }
+    }
+
+    let mut sanitized = opts.clone();
+    if sanitized.contains_key("sas_token") {
+        sanitized.insert("sas_token".to_string(), "REDACTED".to_string());
+    }
+    if sanitized.contains_key("token") {
+        sanitized.insert("token".to_string(), "REDACTED".to_string());
+    }
+    debug!(storage_account = ?storage_account, storage_options = ?sanitized, "Resolved delta-rs storage options");
+
     opts
 }
 
@@ -56,29 +73,62 @@ pub async fn open_delta_table(
     path: &str,
     storage_account: Option<&str>,
     sas_token: Option<&str>,
+    additional_storage_options: Option<&HashMap<String, String>>,
     version: Option<i64>,
 ) -> Result<deltalake::DeltaTable, ServiceError> {
     let url = path_to_url(path)?;
-    let opts = storage_options(storage_account, sas_token);
+    let opts = storage_options(storage_account, sas_token, additional_storage_options);
 
-    debug!(path = %path, version = ?version, "Opening Delta table");
+    debug!(path = %path, url = %url, version = ?version, "Opening Delta table");
     let table = match version {
         Some(v) => {
-            deltalake::DeltaTableBuilder::from_url(url)
+            deltalake::DeltaTableBuilder::from_url(url.clone())
                 .map_err(ServiceError::Delta)?
                 .with_storage_options(opts)
                 .with_version(v)
                 .load()
                 .await
-                .map_err(ServiceError::Delta)?
+                .map_err(|error| {
+                    warn!(path = %path, url = %url, version = v, error = %error, "Failed to open versioned Delta table");
+                    ServiceError::Delta(error)
+                })?
         }
         None => {
-            deltalake::open_table_with_storage_options(url, opts)
+            deltalake::open_table_with_storage_options(url.clone(), opts)
                 .await
-                .map_err(ServiceError::Delta)?
+                .map_err(|error| {
+                    warn!(path = %path, url = %url, error = %error, "Failed to open Delta table");
+                    ServiceError::Delta(error)
+                })?
         }
     };
     debug!(path = %path, version = table.version(), "Delta table opened");
+    Ok(table)
+}
+
+/// Opens a Delta table and registers its object store with a specific
+/// DataFusion session.
+pub async fn open_delta_table_for_datafusion(
+    ctx: &SessionContext,
+    path: &str,
+    storage_account: Option<&str>,
+    sas_token: Option<&str>,
+    additional_storage_options: Option<&HashMap<String, String>>,
+    version: Option<i64>,
+) -> Result<deltalake::DeltaTable, ServiceError> {
+    let table = open_delta_table(
+        path,
+        storage_account,
+        sas_token,
+        additional_storage_options,
+        version,
+    )
+    .await?;
+
+    table
+        .update_datafusion_session(&ctx.state())
+        .map_err(ServiceError::Delta)?;
+
     Ok(table)
 }
 
@@ -93,11 +143,12 @@ pub async fn open_or_initialize_delta_table(
     path: &str,
     storage_account: Option<&str>,
     sas_token: Option<&str>,
+    additional_storage_options: Option<&HashMap<String, String>>,
 ) -> Result<deltalake::DeltaTable, ServiceError> {
     ensure_local_table_directory_exists(path)?;
 
     let url = path_to_url(path)?;
-    let opts = storage_options(storage_account, sas_token);
+    let opts = storage_options(storage_account, sas_token, additional_storage_options);
 
     debug!(path = %path, "Opening Delta table handle for create-on-write");
     deltalake::DeltaTable::try_from_url_with_storage_options(url, opts)
@@ -138,9 +189,18 @@ pub async fn register_delta_table(
     path: &str,
     storage_account: Option<&str>,
     sas_token: Option<&str>,
+    additional_storage_options: Option<&HashMap<String, String>>,
     version: Option<i64>,
 ) -> Result<(), ServiceError> {
-    let table = open_delta_table(path, storage_account, sas_token, version).await?;
+    let table = open_delta_table_for_datafusion(
+        ctx,
+        path,
+        storage_account,
+        sas_token,
+        additional_storage_options,
+        version,
+    )
+    .await?;
     let provider = table
         .table_provider()
         .await
