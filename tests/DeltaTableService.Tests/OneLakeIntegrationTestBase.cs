@@ -81,6 +81,8 @@ namespace Microsoft.DI.DeltaTableService.Tests
         /// <param name="mode">The backend mode (V1_Spark or V2_DataFusion).</param>
         protected static async Task InitializeAsync(ServiceMode mode)
         {
+            FlightIntegrationTestGuards.EnsureArrowFlightSupported();
+
             Initialized = false;
             InitFailureReason = null;
 

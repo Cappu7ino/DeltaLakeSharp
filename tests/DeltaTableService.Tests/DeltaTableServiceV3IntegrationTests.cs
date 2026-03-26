@@ -735,6 +735,52 @@ namespace Microsoft.DI.DeltaTableService.Tests
         }
 
         // ================================================================== //
+        //  Phase 2: Type Widening (checked-in Spark 4 / Delta 4 fixture)
+        // ================================================================== //
+
+        [TestMethod]
+        public async Task V3_ReadTable_TypeWidening_ReturnsWidenedSchemaAndData()
+        {
+            if (FixtureDataDir == null)
+            {
+                Assert.Inconclusive("Fixture data directory not found.");
+                return;
+            }
+
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_type_widening");
+
+            TableSchema schema = await Client.GetSchemaAsync(tablePath);
+            Assert.IsNotNull(schema, "Schema should not be null.");
+            Assert.AreEqual(2, schema.Columns.Count,
+                $"Expected 2 columns, got {schema.Columns.Count}.");
+            Assert.AreEqual("id", schema.Columns[0].Name);
+            Assert.AreEqual("int64", schema.Columns[0].DataType,
+                $"Expected widened id column to be int64, got '{schema.Columns[0].DataType}'.");
+            Assert.AreEqual("name", schema.Columns[1].Name);
+            Assert.AreEqual("string", schema.Columns[1].DataType,
+                $"Expected name column to be string, got '{schema.Columns[1].DataType}'.");
+
+            var rows = new List<(long id, string name)>();
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int64Array)batch.Column(0);
+                IArrowArray nameArray = batch.Column(1);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(nameArray, i)));
+                }
+            }
+
+            rows = rows.OrderBy(x => x.id).ToList();
+            Assert.AreEqual(2, rows.Count, $"Expected 2 rows, got {rows.Count}.");
+            Assert.AreEqual((1L, "Alice"), rows[0]);
+            Assert.AreEqual((2L, "Bob"), rows[1]);
+        }
+
+        // ================================================================== //
         //  Phase 3: Write path — helpers
         // ================================================================== //
 
@@ -790,6 +836,49 @@ namespace Microsoft.DI.DeltaTableService.Tests
             DeltaTableServiceClient client,
             string tablePath) =>
             V3TestHelpers.ReadAllRowsSorted(client, tablePath);
+
+        private static void CopyDirectory(string sourceDir, string destinationDir)
+        {
+            Directory.CreateDirectory(destinationDir);
+
+            foreach (string directory in Directory.GetDirectories(sourceDir, "*", SearchOption.AllDirectories))
+            {
+                string relativePath = GetRelativePathCompat(sourceDir, directory);
+                Directory.CreateDirectory(Path.Combine(destinationDir, relativePath));
+            }
+
+            foreach (string file in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
+            {
+                string relativePath = GetRelativePathCompat(sourceDir, file);
+                string destinationFile = Path.Combine(destinationDir, relativePath);
+                string? destinationFileDir = Path.GetDirectoryName(destinationFile);
+                if (!string.IsNullOrEmpty(destinationFileDir))
+                {
+                    Directory.CreateDirectory(destinationFileDir);
+                }
+
+                File.Copy(file, destinationFile, overwrite: true);
+            }
+        }
+
+        private static string GetRelativePathCompat(string basePath, string fullPath)
+        {
+            Uri baseUri = new Uri(AppendDirectorySeparatorChar(basePath));
+            Uri fullUri = new Uri(fullPath);
+            return Uri.UnescapeDataString(baseUri.MakeRelativeUri(fullUri).ToString())
+                .Replace('/', Path.DirectorySeparatorChar);
+        }
+
+        private static string AppendDirectorySeparatorChar(string path)
+        {
+            if (!path.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal)
+                && !path.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal))
+            {
+                return path + Path.DirectorySeparatorChar;
+            }
+
+            return path;
+        }
 
         // ================================================================== //
         //  Phase 3: CreateTableAsync
@@ -1214,6 +1303,208 @@ namespace Microsoft.DI.DeltaTableService.Tests
             Assert.AreEqual(2, rows.Count, $"Expected original 2 rows to remain, got {rows.Count}.");
             Assert.AreEqual((1, "alice"), (rows[0].id, rows[0].name));
             Assert.AreEqual((2, "bob"), (rows[1].id, rows[1].name));
+        }
+
+        [TestMethod]
+        public async Task V3_CreateTable_WithTypeWideningConfiguration_FailsBecauseDeltaRsWritePathLacksSupport()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var schema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            {
+                await Client.CreateTableAsync(
+                    tablePath,
+                    schema,
+                    configuration: new Dictionary<string, string>
+                    {
+                        ["delta.enableTypeWidening"] = "true",
+                    });
+            });
+
+            V3TestHelpers.AssertNativeFailure(ex);
+            Assert.IsTrue(
+                ex.Message.Contains("delta.enableTypeWidening", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("typewidening", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("Error parsing property", StringComparison.OrdinalIgnoreCase),
+                $"Expected failure to mention unsupported type widening configuration. Actual: {ex.Message}");
+
+            Assert.IsFalse(Directory.Exists(Path.Combine(tablePath, "_delta_log")),
+                "Table should not be created when type widening configuration is rejected.");
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Append_WithWidenedSchema_DoesNotUpgradeExistingSchema()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var initialSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            ExecuteResult createResult = await Client.CreateTableAsync(tablePath, initialSchema);
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema initialArrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2 },
+                new[] { "alice", "bob" });
+            await Client.InsertAsync(
+                tablePath,
+                initialArrowSchema,
+                ToAsyncEnumerable(initialBatch),
+                SaveMode.Append);
+
+            Schema widenedArrowSchema = new Schema.Builder()
+                .Field(new Field("id", Int64Type.Default, nullable: true))
+                .Field(new Field("name", StringType.Default, nullable: true))
+                .Build();
+            RecordBatch widenedBatch = new RecordBatch.Builder()
+                .Append("id", nullable: true, new Int64Array.Builder().AppendRange(new long[] { 3L, 4L }).Build())
+                .Append("name", nullable: true, new StringArray.Builder().AppendRange(new[] { "carol", "david" }).Build())
+                .Build();
+
+            await Client.InsertAsync(
+                tablePath,
+                widenedArrowSchema,
+                ToAsyncEnumerable(widenedBatch),
+                SaveMode.Append,
+                schemaMode: (WriteSchemaMode)0);
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            CollectionAssert.AreEqual(
+                new[] { "id", "name" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+            CollectionAssert.AreEqual(
+                new[] { "int32", "string" },
+                readBackSchema.Columns.Select(c => c.DataType).ToArray(),
+                $"Expected delta-rs write path to leave schema unchanged. Actual: {string.Join(", ", readBackSchema.Columns.Select(c => c.DataType))}");
+
+            var rows = new List<(int id, string name)>();
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int32Array)batch.Column(0);
+                IArrowArray nameArray = batch.Column(1);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(nameArray, i)));
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(4, rows.Count, $"Expected 4 rows after widened append, got {rows.Count}.");
+            Assert.AreEqual((1, "alice"), rows[0]);
+            Assert.AreEqual((2, "bob"), rows[1]);
+            Assert.AreEqual((3, "carol"), rows[2]);
+            Assert.AreEqual((4, "david"), rows[3]);
+        }
+
+        [TestMethod]
+        public async Task V3_ReadTable_V2CheckpointFixture_ReadsBackSuccessfully()
+        {
+            if (FixtureDataDir == null)
+            {
+                Assert.Inconclusive("Fixture data directory not found.");
+                return;
+            }
+
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_v2_checkpoint");
+
+            string deltaLogPath = Path.Combine(tablePath, "_delta_log");
+            string lastCheckpointPath = Path.Combine(deltaLogPath, "_last_checkpoint");
+            Assert.IsTrue(File.Exists(lastCheckpointPath),
+                $"Expected checked-in fixture to contain _last_checkpoint: {lastCheckpointPath}");
+
+            string[] checkpointArtifacts = Directory.GetFiles(deltaLogPath, "*.checkpoint*", SearchOption.TopDirectoryOnly);
+            Assert.IsTrue(checkpointArtifacts.Length > 0,
+                $"Expected checked-in fixture to contain checkpoint artifacts in {deltaLogPath}.");
+
+            string sidecarDir = Path.Combine(deltaLogPath, "_sidecars");
+            Assert.IsTrue(Directory.Exists(sidecarDir),
+                $"Expected checked-in fixture to contain V2 checkpoint sidecars: {sidecarDir}");
+
+            var rows = await ReadAllRowsSorted(Client, tablePath);
+            Assert.AreEqual(11, rows.Count, $"Expected 11 rows in the V2 checkpoint fixture, got {rows.Count}.");
+
+            for (int id = 1; id <= 11; id++)
+            {
+                Assert.AreEqual((id, $"name_{id}"), (rows[id - 1].id, rows[id - 1].name));
+            }
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Append_ExistingTypeWideningTable_FailsBecauseTypeWideningFeatureIsUnsupported()
+        {
+            if (FixtureDataDir == null)
+            {
+                Assert.Inconclusive("Fixture data directory not found.");
+                return;
+            }
+
+            string sourceTablePath = Path.Combine(FixtureDataDir, "delta_test_type_widening");
+            string tablePath = NewWriteTestTablePath();
+            CopyDirectory(sourceTablePath, tablePath);
+
+            Schema widenedArrowSchema = new Schema.Builder()
+                .Field(new Field("id", Int64Type.Default, nullable: true))
+                .Field(new Field("name", StringType.Default, nullable: true))
+                .Build();
+            RecordBatch widenedBatch = new RecordBatch.Builder()
+                .Append("id", nullable: true, new Int64Array.Builder().AppendRange(new long[] { 3L, 4L }).Build())
+                .Append("name", nullable: true, new StringArray.Builder().AppendRange(new[] { "carol", "david" }).Build())
+                .Build();
+
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            {
+                await Client.InsertAsync(
+                    tablePath,
+                    widenedArrowSchema,
+                    ToAsyncEnumerable(widenedBatch),
+                    SaveMode.Append);
+            });
+
+            V3TestHelpers.AssertNativeFailure(ex);
+            Assert.IsTrue(
+                ex.Message.Contains("Unsupported table features required", StringComparison.OrdinalIgnoreCase)
+                || ex.Message.Contains("TypeWidening", StringComparison.OrdinalIgnoreCase),
+                $"Expected failure to mention unsupported TypeWidening feature. Actual: {ex.Message}");
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            CollectionAssert.AreEqual(
+                new[] { "id", "name" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+            CollectionAssert.AreEqual(
+                new[] { "int64", "string" },
+                readBackSchema.Columns.Select(c => c.DataType).ToArray(),
+                $"Expected type-widened fixture schema to remain int64/string. Actual: {string.Join(", ", readBackSchema.Columns.Select(c => c.DataType))}");
+
+            var rows = new List<(long id, string name)>();
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int64Array)batch.Column(0);
+                IArrowArray nameArray = batch.Column(1);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(nameArray, i)));
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(2, rows.Count, $"Expected append to be rejected and original 2 rows to remain, got {rows.Count}.");
+            Assert.AreEqual((1L, "Alice"), rows[0]);
+            Assert.AreEqual((2L, "Bob"), rows[1]);
         }
 
         // ================================================================== //

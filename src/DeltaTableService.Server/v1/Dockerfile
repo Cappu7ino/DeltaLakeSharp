@@ -1,14 +1,14 @@
 # -----------------------------------------------------------
 # DeltaTableService — Arrow Flight server backed by PySpark
 # -----------------------------------------------------------
-# Base image: Apache Spark 3.5.5 with Scala 2.12 and Java 11
-FROM apache/spark:3.5.5-scala2.12-java11-ubuntu
+# Base image: Apache Spark 4.0.1 with Scala 2.13 and Java 17
+FROM apache/spark:4.0.1-scala2.13-java17-ubuntu
 
 ARG RESOURCE_REAPER_SESSION_ID="00000000-0000-0000-0000-000000000000"
 LABEL "org.testcontainers.resource-reaper-session"=$RESOURCE_REAPER_SESSION_ID
 
 # Delta Lake and Python dependency versions
-ENV DELTA_VERSION=3.2.1
+ENV DELTA_VERSION=4.0.0
 ENV FLIGHT_PORT=8815
 
 # Switch to root for package installation
@@ -26,29 +26,28 @@ RUN pip3 install --no-cache-dir -r /tmp/requirements.txt && \
 
 # ---- Download Delta Lake JARs ----
 RUN curl -L \
-    https://repo1.maven.org/maven2/io/delta/delta-spark_2.12/${DELTA_VERSION}/delta-spark_2.12-${DELTA_VERSION}.jar \
-    -o $SPARK_HOME/jars/delta-spark_2.12-${DELTA_VERSION}.jar
+    https://repo1.maven.org/maven2/io/delta/delta-spark_2.13/${DELTA_VERSION}/delta-spark_2.13-${DELTA_VERSION}.jar \
+    -o $SPARK_HOME/jars/delta-spark_2.13-${DELTA_VERSION}.jar
 
 RUN curl -L \
     https://repo1.maven.org/maven2/io/delta/delta-storage/${DELTA_VERSION}/delta-storage-${DELTA_VERSION}.jar \
     -o $SPARK_HOME/jars/delta-storage-${DELTA_VERSION}.jar
 
 RUN curl -L \
-    https://repo1.maven.org/maven2/io/delta/delta-contribs_2.12/${DELTA_VERSION}/delta-contribs_2.12-${DELTA_VERSION}.jar \
-    -o $SPARK_HOME/jars/delta-contribs_2.12-${DELTA_VERSION}.jar
+    https://repo1.maven.org/maven2/io/delta/delta-contribs_2.13/${DELTA_VERSION}/delta-contribs_2.13-${DELTA_VERSION}.jar \
+    -o $SPARK_HOME/jars/delta-contribs_2.13-${DELTA_VERSION}.jar
 
-# ---- Upgrade Hadoop runtime from 3.3.4 → 3.4.1 for ABFSS / OneLake support ----
-# The base image ships Hadoop 3.3.4 JARs, but hadoop-azure 3.4.1 (which contains
-# FixedSASTokenProvider) requires classes from Hadoop 3.4.1 (e.g. BackReference).
-# We replace the four base-image Hadoop JARs with their 3.4.1 counterparts and
-# add the ABFSS connector plus its transitive dependencies.
+# ---- Align Hadoop runtime to 3.4.1 for ABFSS / OneLake support ----
+# Spark 4 already ships a newer Hadoop stack than Spark 3.5, but we still pin
+# the runtime jars that interact with hadoop-azure so the ABFSS connector and
+# its dependencies stay on a single known-good version for OneLake scenarios.
 ENV HADOOP_VERSION=3.4.1
 
-# Remove Hadoop 3.3.4 JARs that shipped with the base image
-RUN rm -f $SPARK_HOME/jars/hadoop-client-api-3.3.4.jar \
-          $SPARK_HOME/jars/hadoop-client-runtime-3.3.4.jar \
-          $SPARK_HOME/jars/hadoop-shaded-guava-1.1.1.jar \
-          $SPARK_HOME/jars/hadoop-yarn-server-web-proxy-3.3.4.jar
+# Remove the base-image Hadoop jars that we replace below.
+RUN rm -f $SPARK_HOME/jars/hadoop-client-api-*.jar \
+          $SPARK_HOME/jars/hadoop-client-runtime-*.jar \
+          $SPARK_HOME/jars/hadoop-shaded-guava-*.jar \
+          $SPARK_HOME/jars/hadoop-yarn-server-web-proxy-*.jar
 
 # Download Hadoop 3.4.1 core runtime JARs
 RUN curl -fL \

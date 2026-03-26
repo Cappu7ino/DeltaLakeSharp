@@ -31,8 +31,13 @@
     <RustCargoProfile Condition="'$(Configuration)' == 'Release'">release</RustCargoProfile>
     <RustCargoProfile Condition="'$(RustCargoProfile)' == ''">debug</RustCargoProfile>
     <RustCargoBuildArg Condition="'$(Configuration)' == 'Release'">--release</RustCargoBuildArg>
+    <RustTargetCpu Condition="'$(RustTargetCpu)' == ''"></RustTargetCpu>
+    <RustTargetCpuStampSegment Condition="'$(RustTargetCpu)' == ''">default</RustTargetCpuStampSegment>
+    <RustTargetCpuStampSegment Condition="'$(RustTargetCpu)' != ''">$(RustTargetCpu)</RustTargetCpuStampSegment>
+    <RustCargoMessageSuffix Condition="'$(RustTargetCpu)' != ''"> with RUSTFLAGS=-C target-cpu=$(RustTargetCpu)</RustCargoMessageSuffix>
+    <RustCargoCommandPrefix Condition="'$(RustTargetCpu)' != ''">set &quot;RUSTFLAGS=-C target-cpu=$(RustTargetCpu)&quot; &amp;&amp; </RustCargoCommandPrefix>
     <RustNativeStampDir>$(BaseIntermediateOutputPath)rust-native</RustNativeStampDir>
-    <RustNativeStampFile>$(RustNativeStampDir)\$(Configuration).stamp</RustNativeStampFile>
+    <RustNativeStampFile>$(RustNativeStampDir)\$(Configuration)-$(RustTargetCpuStampSegment).stamp</RustNativeStampFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -64,16 +69,16 @@
   </ItemGroup>
 
   <Target Name="BuildRustNativeForSingleTargetBuild" BeforeTargets="Build" Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'" Inputs="@(RustNativeInputs)" Outputs="$(RustNativeStampFile)">
-    <Message Importance="high" Text="Building Rust native library for $(Configuration) via cargo build $(RustCargoBuildArg)..." />
+    <Message Importance="high" Text="Building Rust native library for $(Configuration) via cargo build $(RustCargoBuildArg)$(RustCargoMessageSuffix)..." />
     <MakeDir Directories="$(RustNativeStampDir)" />
-    <Exec Command="cargo build $(RustCargoBuildArg)" WorkingDirectory="$(RustV3ProjectDir)" />
+    <Exec Command="$(RustCargoCommandPrefix)cargo build $(RustCargoBuildArg)" WorkingDirectory="$(RustV3ProjectDir)" />
     <Touch Files="$(RustNativeStampFile)" AlwaysCreate="true" />
   </Target>
 
   <Target Name="BuildRustNativeForCrossTargetBuild" BeforeTargets="DispatchToInnerBuilds" Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' == 'true'" Inputs="@(RustNativeInputs)" Outputs="$(RustNativeStampFile)">
-    <Message Importance="high" Text="Building Rust native library for $(Configuration) package via cargo build $(RustCargoBuildArg)..." />
+    <Message Importance="high" Text="Building Rust native library for $(Configuration) package via cargo build $(RustCargoBuildArg)$(RustCargoMessageSuffix)..." />
     <MakeDir Directories="$(RustNativeStampDir)" />
-    <Exec Command="cargo build $(RustCargoBuildArg)" WorkingDirectory="$(RustV3ProjectDir)" />
+    <Exec Command="$(RustCargoCommandPrefix)cargo build $(RustCargoBuildArg)" WorkingDirectory="$(RustV3ProjectDir)" />
     <Touch Files="$(RustNativeStampFile)" AlwaysCreate="true" />
   </Target>
 </Project>

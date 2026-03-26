@@ -48,6 +48,8 @@ namespace Microsoft.DI.DeltaTableService.Tests
         [ClassInitialize]
         public static async Task ClassInitialize(TestContext context)
         {
+            FlightIntegrationTestGuards.EnsureArrowFlightSupported();
+
             _container = new DeltaTableContainer();
             await _container.BuildAndStartAsync(
                 dockerfilePath: DockerfilePath,

@@ -14,6 +14,8 @@
     <RustV3ProjectDir>$(MSBuildThisFileDirectory)..\..\src\DeltaTableService.Server\v3</RustV3ProjectDir>
     <RustCargoProfile Condition="'$(Configuration)' == 'Release'">release</RustCargoProfile>
     <RustCargoProfile Condition="'$(RustCargoProfile)' == ''">debug</RustCargoProfile>
+    <UseNativeRustForBenchmark Condition="'$(UseNativeRustForBenchmark)' == ''">true</UseNativeRustForBenchmark>
+    <RustTargetCpu Condition="'$(Configuration)' == 'Release' and '$(UseNativeRustForBenchmark)' == 'true' and '$(RustTargetCpu)' == ''">native</RustTargetCpu>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,8 +31,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\DeltaTableService.Adbc\DeltaTableService.Adbc.csproj" />
-    <ProjectReference Include="..\..\src\DeltaTableService.Client\DeltaTableService.Client.csproj" />
+    <ProjectReference Include="..\..\src\DeltaTableService.Adbc\DeltaTableService.Adbc.csproj"
+                      AdditionalProperties="RustTargetCpu=$(RustTargetCpu)" />
+    <ProjectReference Include="..\..\src\DeltaTableService.Client\DeltaTableService.Client.csproj"
+                      AdditionalProperties="RustTargetCpu=$(RustTargetCpu)" />
     <ProjectReference Include="..\..\src\DeltaTableService.Testing\Microsoft.DI.DeltaTableService.Testing.csproj" />
   </ItemGroup>
 

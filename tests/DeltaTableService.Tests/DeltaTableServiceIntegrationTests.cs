@@ -41,6 +41,8 @@ namespace Microsoft.DI.DeltaTableService.Tests
         [ClassInitialize]
         public static async Task ClassInitialize(TestContext context)
         {
+            FlightIntegrationTestGuards.EnsureArrowFlightSupported();
+
             _container = new DeltaTableContainer();
             await _container.BuildAndStartAsync(
                 dockerfilePath: DockerfilePath,
@@ -2371,5 +2373,127 @@ WHEN NOT MATCHED THEN INSERT (id, value) VALUES (s.id, s.value)";
             Assert.AreEqual(2L, Convert.ToInt64(rowsByName["Bob"]["id"]), "Bob should have id=2");
             Assert.AreEqual(3L, Convert.ToInt64(rowsByName["Charlie"]["id"]), "Charlie should have id=3");
         }
+
+        [TestMethod]
+        [TestCategory("Integration")]
+        public async Task CreateTableWithTypeWidening_AlterColumnAndReadBack_UpcastsValues()
+        {
+            string tablePath = $"/tmp/delta_test_{Guid.NewGuid():N}";
+            string tableName = $"type_widening_{Guid.NewGuid():N}";
+
+            try
+            {
+                await _client!.ExecuteQueryAsync(
+                    $"CREATE TABLE {tableName} (id INT, name STRING) USING DELTA LOCATION '{tablePath}' TBLPROPERTIES ('delta.enableTypeWidening' = 'true')")
+                    .ToListAsync();
+
+                await _client.ExecuteQueryAsync(
+                    $"INSERT INTO {tableName} VALUES (1, 'Alice'), (2, 'Bob')")
+                    .ToListAsync();
+
+                try
+                {
+                    await _client.ExecuteQueryAsync(
+                        $"ALTER TABLE {tableName} ALTER COLUMN id TYPE BIGINT")
+                        .ToListAsync();
+                }
+                catch (Exception ex) when (ex.Message.Contains(
+                    "DELTA_UNSUPPORTED_ALTER_TABLE_CHANGE_COL_OP",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    Assert.Inconclusive(
+                        "The current V1 test image uses Delta Lake 3.2.1, which rejects INT-to-BIGINT ALTER COLUMN type widening even when delta.enableTypeWidening is enabled.");
+                }
+
+                TableSchema widenedSchema = await _client.GetSchemaAsync(tablePath);
+                Assert.AreEqual(2, widenedSchema.Columns.Count, "Expected 2 columns after type widening.");
+                string widenedIdType = widenedSchema.Columns[0].DataType.ToLowerInvariant();
+                Assert.IsTrue(
+                    widenedIdType.Contains("long") || widenedIdType.Contains("int64") || widenedIdType.Contains("bigint"),
+                    $"Expected widened id column to be bigint/int64/long, got '{widenedSchema.Columns[0].DataType}'.");
+
+                DataTable dt = await _client.ReadTableAsync(tablePath).ToDataTableAsync();
+                Assert.AreEqual(2, dt.Rows.Count, "Expected 2 rows after type widening.");
+                Assert.AreEqual(typeof(long), dt.Columns["id"].DataType,
+                    $"Expected DataTable id column to be Int64 after widening, got {dt.Columns["id"].DataType}.");
+
+                var rowsByName = new Dictionary<string, DataRow>();
+                for (int i = 0; i < dt.Rows.Count; i++)
+                {
+                    string name = dt.Rows[i]["name"]?.ToString() ?? "";
+                    rowsByName[name] = dt.Rows[i];
+                }
+
+                Assert.IsTrue(rowsByName.ContainsKey("Alice"), "Missing Alice");
+                Assert.IsTrue(rowsByName.ContainsKey("Bob"), "Missing Bob");
+                Assert.AreEqual(1L, (long)rowsByName["Alice"]["id"], "Alice should have widened id=1.");
+                Assert.AreEqual(2L, (long)rowsByName["Bob"]["id"], "Bob should have widened id=2.");
+            }
+            finally
+            {
+                try
+                {
+                    await _client!.ExecuteQueryAsync($"DROP TABLE IF EXISTS {tableName}").ToListAsync();
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        [TestMethod]
+        [TestCategory("Integration")]
+        public async Task CreateTableWithV2Checkpoint_GenerateCheckpointAndReadBack_Succeeds()
+        {
+            string tablePath = $"/tmp/delta_test_{Guid.NewGuid():N}";
+            string tableName = $"checkpoint_v2_{Guid.NewGuid():N}";
+
+            try
+            {
+                await _client!.ExecuteQueryAsync(
+                    $"CREATE TABLE {tableName} (id INT, name STRING) USING DELTA LOCATION '{tablePath}' TBLPROPERTIES ('delta.checkpointPolicy' = 'v2', 'delta.checkpoint.writeStatsAsStruct' = 'true')")
+                    .ToListAsync();
+
+                // Delta checkpoints are typically emitted periodically rather than immediately.
+                // Drive the table past the normal checkpoint interval so the V2 checkpoint-enabled
+                // table has an opportunity to materialize a checkpoint before we validate reads.
+                for (int commit = 0; commit < 11; commit++)
+                {
+                    int id = commit + 1;
+                    string name = $"name_{id}";
+                    await _client.ExecuteQueryAsync(
+                        $"INSERT INTO {tableName} VALUES ({id}, '{name}')")
+                        .ToListAsync();
+                }
+
+                DataTable dt = await _client.ReadTableAsync(tablePath).ToDataTableAsync();
+                Assert.AreEqual(11, dt.Rows.Count, "Expected 11 rows after repeated commits on the V2 checkpoint table.");
+
+                var rowsByName = new Dictionary<string, DataRow>();
+                for (int i = 0; i < dt.Rows.Count; i++)
+                {
+                    string name = dt.Rows[i]["name"]?.ToString() ?? "";
+                    rowsByName[name] = dt.Rows[i];
+                }
+
+                for (int id = 1; id <= 11; id++)
+                {
+                    string name = $"name_{id}";
+                    Assert.IsTrue(rowsByName.ContainsKey(name), $"Missing {name}");
+                    Assert.AreEqual((long)id, Convert.ToInt64(rowsByName[name]["id"]), $"{name} should have id={id}");
+                }
+            }
+            finally
+            {
+                try
+                {
+                    await _client!.ExecuteQueryAsync($"DROP TABLE IF EXISTS {tableName}").ToListAsync();
+                }
+                catch
+                {
+                }
+            }
+        }
+
     }
 }

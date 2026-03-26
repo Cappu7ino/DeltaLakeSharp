@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\DeltaTableService.Client\DeltaTableService.Client.csproj" />
+    <ProjectReference Include="..\DeltaTableService.Client\DeltaTableService.Client.csproj"
+                      AdditionalProperties="RustTargetCpu=$(RustTargetCpu)" />
   </ItemGroup>
 </Project>
