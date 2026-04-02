@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
@@ -50,6 +52,35 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
             Assert.AreSame(schema, result);
         }
 
+        [TestMethod]
+        public void ReadPartition_UsesAdapterWithDecodedTokenAndBatchSize()
+        {
+            Schema schema = CreateSampleSchema();
+            using var adapter = new TestAdapter(schema);
+            using var connection = new DeltaAdbcConnection(adapter);
+
+            byte[] descriptorBytes = Encoding.UTF8.GetBytes("{\"Token\":\"opaque-token\",\"BatchSize\":32}");
+            IArrowArrayStream result = connection.ReadPartition(new PartitionDescriptor(descriptorBytes));
+
+            Assert.AreSame(adapter.PartitionStream, result);
+            Assert.AreEqual("opaque-token", adapter.LastPartitionToken);
+            Assert.AreEqual(32, adapter.LastPartitionBatchSize);
+        }
+
+        [TestMethod]
+        public void ReadPartition_WithRawTokenPayload_UsesAdapter()
+        {
+            Schema schema = CreateSampleSchema();
+            using var adapter = new TestAdapter(schema);
+            using var connection = new DeltaAdbcConnection(adapter);
+
+            IArrowArrayStream result = connection.ReadPartition(new PartitionDescriptor(Encoding.UTF8.GetBytes("opaque-token")));
+
+            Assert.AreSame(adapter.PartitionStream, result);
+            Assert.AreEqual("opaque-token", adapter.LastPartitionToken);
+            Assert.IsNull(adapter.LastPartitionBatchSize);
+        }
+
         private static Schema CreateSampleSchema()
         {
             return new Schema.Builder()
@@ -64,18 +95,36 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
             public TestAdapter(Schema schema)
             {
                 _schema = schema;
+                PartitionStream = new TestArrowArrayStream(schema);
             }
+
+            public IArrowArrayStream PartitionStream { get; }
+
+            public string? LastPartitionToken { get; private set; }
+
+            public int? LastPartitionBatchSize { get; private set; }
 
             public void Dispose()
             {
+                PartitionStream.Dispose();
             }
 
-            public Schema GetSchema(CancellationToken cancellationToken)
+            public IReadOnlyList<Client.Models.DeltaReadPartition> GetReadPartitions(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
+            {
+                throw new NotSupportedException();
+            }
+
+            public Task<IReadOnlyList<Client.Models.DeltaReadPartition>> GetReadPartitionsAsync(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
+            {
+                throw new NotSupportedException();
+            }
+
+            public Schema GetSchema(DeltaAdbcStatementOptions? statementOptions, CancellationToken cancellationToken)
             {
                 return _schema;
             }
 
-            public Task<Schema> GetSchemaAsync(CancellationToken cancellationToken)
+            public Task<Schema> GetSchemaAsync(DeltaAdbcStatementOptions? statementOptions, CancellationToken cancellationToken)
             {
                 return Task.FromResult(_schema);
             }
@@ -110,14 +159,47 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
                 throw new NotSupportedException();
             }
 
+            public IArrowArrayStream OpenReadPartitionStream(string partitionToken, int? batchSize, CancellationToken cancellationToken)
+            {
+                LastPartitionToken = partitionToken;
+                LastPartitionBatchSize = batchSize;
+                return PartitionStream;
+            }
+
             public IArrowArrayStream OpenReadTableStream(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
             {
                 throw new NotSupportedException();
             }
 
+            public Task<IArrowArrayStream> OpenReadPartitionStreamAsync(string partitionToken, int? batchSize, CancellationToken cancellationToken)
+            {
+                LastPartitionToken = partitionToken;
+                LastPartitionBatchSize = batchSize;
+                return Task.FromResult(PartitionStream);
+            }
+
             public Task<IArrowArrayStream> OpenReadTableStreamAsync(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
             {
                 throw new NotSupportedException();
+            }
+
+            private sealed class TestArrowArrayStream : IArrowArrayStream
+            {
+                public TestArrowArrayStream(Schema schema)
+                {
+                    Schema = schema;
+                }
+
+                public Schema Schema { get; }
+
+                public void Dispose()
+                {
+                }
+
+                public ValueTask<RecordBatch?> ReadNextRecordBatchAsync(CancellationToken cancellationToken = default)
+                {
+                    return new ValueTask<RecordBatch?>((RecordBatch?)null);
+                }
             }
         }
     }

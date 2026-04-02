@@ -1,0 +1,126 @@
+{
+  "format-version" : 2,
+  "table-uuid" : "d45d3b75-d342-4a6e-8030-58938564feb1",
+  "location" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_partitioned_deletion_vector",
+  "last-sequence-number" : 2,
+  "last-updated-ms" : 1775027511149,
+  "last-column-id" : 3,
+  "current-schema-id" : 1,
+  "schemas" : [ {
+    "type" : "struct",
+    "schema-id" : 0,
+    "fields" : [ ]
+  }, {
+    "type" : "struct",
+    "schema-id" : 1,
+    "fields" : [ {
+      "id" : 1,
+      "name" : "id",
+      "required" : false,
+      "type" : "long"
+    }, {
+      "id" : 2,
+      "name" : "value",
+      "required" : false,
+      "type" : "string"
+    }, {
+      "id" : 3,
+      "name" : "region",
+      "required" : false,
+      "type" : "string"
+    } ]
+  } ],
+  "default-spec-id" : 1,
+  "partition-specs" : [ {
+    "spec-id" : 0,
+    "fields" : [ ]
+  }, {
+    "spec-id" : 1,
+    "fields" : [ {
+      "name" : "region",
+      "transform" : "identity",
+      "source-id" : 3,
+      "field-id" : 1000
+    } ]
+  } ],
+  "last-partition-id" : 1000,
+  "default-sort-order-id" : 0,
+  "sort-orders" : [ {
+    "order-id" : 0,
+    "fields" : [ ]
+  } ],
+  "properties" : {
+    "schema.name-mapping.default" : "[ {\n  \"field-id\" : 1,\n  \"names\" : [ \"id\" ]\n}, {\n  \"field-id\" : 2,\n  \"names\" : [ \"value\" ]\n}, {\n  \"field-id\" : 3,\n  \"names\" : [ \"region\" ]\n} ]",
+    "write.metadata.delete-after-commit.enabled" : "true",
+    "write.data.path" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_partitioned_deletion_vector",
+    "XTABLE_METADATA" : "{\"lastInstantSynced\":\"2026-04-01T07:05:00Z\",\"instantsToConsiderForNextSync\":[],\"version\":0,\"sourceTableFormat\":\"DELTA\",\"sourceIdentifier\":\"1\"}",
+    "write.parquet.compression-codec" : "zstd"
+  },
+  "current-snapshot-id" : 4939871102576032276,
+  "refs" : {
+    "main" : {
+      "snapshot-id" : 4939871102576032276,
+      "type" : "branch"
+    }
+  },
+  "snapshots" : [ {
+    "sequence-number" : 1,
+    "snapshot-id" : 7567163196289838914,
+    "timestamp-ms" : 1775027094116,
+    "summary" : {
+      "operation" : "overwrite",
+      "XTABLE_METADATA" : "{\"lastInstantSynced\":\"2026-04-01T07:04:24Z\",\"instantsToConsiderForNextSync\":[],\"version\":0,\"sourceTableFormat\":\"DELTA\",\"sourceIdentifier\":\"0\"}",
+      "added-data-files" : "3",
+      "added-records" : "5",
+      "added-files-size" : "3757",
+      "changed-partition-count" : "3",
+      "total-records" : "5",
+      "total-files-size" : "3757",
+      "total-data-files" : "3",
+      "total-delete-files" : "0",
+      "total-position-deletes" : "0",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_partitioned_deletion_vector/metadata/snap-7567163196289838914-1-5a9befb6-cbd4-4ee6-89df-03bdcd394067.avro",
+    "schema-id" : 1
+  }, {
+    "sequence-number" : 2,
+    "snapshot-id" : 4939871102576032276,
+    "parent-snapshot-id" : 7567163196289838914,
+    "timestamp-ms" : 1775027511149,
+    "summary" : {
+      "operation" : "overwrite",
+      "added-position-delete-files" : "1",
+      "added-delete-files" : "1",
+      "added-files-size" : "2146",
+      "added-position-deletes" : "1",
+      "changed-partition-count" : "1",
+      "total-records" : "5",
+      "total-files-size" : "5903",
+      "total-data-files" : "3",
+      "total-delete-files" : "1",
+      "total-position-deletes" : "1",
+      "total-equality-deletes" : "0"
+    },
+    "manifest-list" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_partitioned_deletion_vector/metadata/snap-4939871102576032276-1-0212c83a-e9c3-4bf5-b6e9-4a665a5234c2.avro",
+    "schema-id" : 1
+  } ],
+  "statistics" : [ ],
+  "snapshot-log" : [ {
+    "timestamp-ms" : 1775027094116,
+    "snapshot-id" : 7567163196289838914
+  }, {
+    "timestamp-ms" : 1775027511149,
+    "snapshot-id" : 4939871102576032276
+  } ],
+  "metadata-log" : [ {
+    "timestamp-ms" : 1775027091934,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_partitioned_deletion_vector/metadata/v1.metadata.json"
+  }, {
+    "timestamp-ms" : 1775027092715,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_partitioned_deletion_vector/metadata/v2.metadata.json"
+  }, {
+    "timestamp-ms" : 1775027094116,
+    "metadata-file" : "abfs://882a9e47-88c5-42c8-9a0f-ada2892b05eb@msit-onelake.dfs.fabric.microsoft.com/16d76589-d699-43c1-8a92-eb87eb126caf/Tables/delta_test_partitioned_deletion_vector/metadata/v3.metadata.json"
+  } ]
+}

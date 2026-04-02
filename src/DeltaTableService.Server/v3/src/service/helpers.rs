@@ -8,8 +8,11 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-
+use std::sync::Arc;
 use datafusion::execution::context::SessionContext;
+use deltalake::kernel::Add;
+use deltalake::kernel::Protocol;
+use deltalake::kernel::scalars::ScalarExt;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -206,6 +209,101 @@ pub async fn register_delta_table(
         .await
         .map_err(ServiceError::DataFusion)?;
     ctx.register_table(table_name, provider)
+        .map_err(ServiceError::DataFusion)?;
+    Ok(())
+}
+
+pub async fn get_active_add_actions(
+    path: &str,
+    storage_account: Option<&str>,
+    sas_token: Option<&str>,
+    additional_storage_options: Option<&HashMap<String, String>>,
+    version: Option<i64>,
+) -> Result<(deltalake::DeltaTable, Vec<Add>), ServiceError> {
+    let table = open_delta_table(
+        path,
+        storage_account,
+        sas_token,
+        additional_storage_options,
+        version,
+    )
+    .await?;
+
+    let adds = table
+        .snapshot()
+        .map_err(ServiceError::Delta)?
+        .log_data()
+        .into_iter()
+        .map(|file| Add {
+            path: file.path().to_string(),
+            partition_values: file
+                .partition_values()
+                .map(|data| {
+                    data.fields()
+                        .iter()
+                        .zip(data.values().iter())
+                        .map(|(field, value)| {
+                            (
+                                field.name().to_string(),
+                                if value.is_null() {
+                                    None
+                                } else {
+                                    Some(value.serialize())
+                                },
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            size: file.size(),
+            modification_time: file.modification_time(),
+            // This reconstructed Add is used only as a read descriptor for subset scans.
+            // Snapshot file views do not preserve the original log action's dataChange bit,
+            // and delta-rs's own file_view.add_action() helper also hard-codes true here.
+            data_change: true,
+            stats: file.stats(),
+            tags: None,
+            deletion_vector: file.deletion_vector_descriptor(),
+            base_row_id: None,
+            default_row_commit_version: None,
+            clustering_provider: None,
+        })
+        .collect::<Vec<_>>();
+
+    Ok((table, adds))
+}
+
+pub fn table_protocol(table: &deltalake::DeltaTable) -> Result<Protocol, ServiceError> {
+    Ok(table
+        .snapshot()
+        .map_err(ServiceError::Delta)?
+        .protocol()
+        .clone())
+}
+
+pub fn has_reader_feature(protocol: &Protocol, feature_name: &str) -> bool {
+    format!("{protocol:?}").contains(feature_name)
+}
+
+pub async fn register_delta_table_with_files(
+    ctx: &SessionContext,
+    table_name: &str,
+    table: &deltalake::DeltaTable,
+    files: Vec<Add>,
+) -> Result<(), ServiceError> {
+    table
+        .update_datafusion_session(&ctx.state())
+        .map_err(ServiceError::Delta)?;
+
+    let provider = deltalake::delta_datafusion::DeltaTableProvider::try_new(
+        table.snapshot().map_err(ServiceError::Delta)?.snapshot().clone(),
+        table.log_store(),
+        deltalake::delta_datafusion::DeltaScanConfig::new_from_session(&ctx.state()),
+    )
+    .map_err(ServiceError::Delta)?
+    .with_files(files);
+
+    ctx.register_table(table_name, Arc::new(provider))
         .map_err(ServiceError::DataFusion)?;
     Ok(())
 }

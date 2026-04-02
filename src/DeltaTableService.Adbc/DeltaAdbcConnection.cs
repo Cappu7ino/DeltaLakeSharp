@@ -45,7 +45,7 @@ namespace Microsoft.DI.DeltaTableService.Adbc
         public override Schema GetTableSchema(string? catalog, string? dbSchema, string tableName)
         {
             ValidateLogicalTable(catalog, dbSchema, tableName);
-            return _adapter.GetSchema(default);
+            return _adapter.GetSchema(statementOptions: null, default);
         }
 
         /// <summary>
@@ -76,13 +76,19 @@ namespace Microsoft.DI.DeltaTableService.Adbc
             string? columnNamePattern)
         {
             return DeltaAdbcMetadataBuilder.CreateGetObjectsStream(
-                _adapter.GetSchema(default),
+                _adapter.GetSchema(statementOptions: null, default),
                 depth,
                 catalogPattern,
                 dbSchemaPattern,
                 tableNamePattern,
                 tableTypes,
                 columnNamePattern);
+        }
+
+        public override IArrowArrayStream ReadPartition(PartitionDescriptor partition)
+        {
+            AdbcPartitionDescriptorCodec.DecodedPartitionDescriptor decoded = AdbcPartitionDescriptorCodec.Decode(partition);
+            return _adapter.OpenReadPartitionStream(decoded.Token, decoded.BatchSize, default);
         }
 
         public override bool ReadOnly

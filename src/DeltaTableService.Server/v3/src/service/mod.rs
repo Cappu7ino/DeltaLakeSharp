@@ -50,6 +50,10 @@ impl DeltaService {
         Ok(schema.as_ref().clone())
     }
 
+    pub async fn plan_read_partitions(&self, body: &[u8]) -> Result<serde_json::Value, ServiceError> {
+        self::read::plan_read_partitions_from_command_bytes(body).await
+    }
+
     /// Resolves a command payload into a streaming batch reader suitable for the
     /// Arrow C Stream interface.
     pub async fn read_batches(

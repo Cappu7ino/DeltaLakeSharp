@@ -233,6 +233,154 @@ namespace Microsoft.DI.DeltaTableService.Client
         }
 
         /// <summary>
+        /// Plans a full-table read into concurrent opaque partitions for a pinned Delta snapshot.
+        /// </summary>
+        public Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            return _backend.GetReadPartitionsAsync(path, storageConfig, genericStorageOptions, version, cancellationToken);
+        }
+
+        /// <summary>
+        /// Reads a single opaque partition descriptor returned by <see cref="GetReadPartitionsAsync"/>.
+        /// </summary>
+        public async IAsyncEnumerable<RecordBatch> ReadTablePartitionAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (partition == null)
+            {
+                throw new ArgumentNullException(nameof(partition));
+            }
+
+            ValidateBatchSize(batchSize);
+
+            await foreach (RecordBatch batch in _backend.ReadTablePartitionAsync(
+                path,
+                partition,
+                storageConfig,
+                genericStorageOptions,
+                batchSize,
+                cancellationToken).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+        }
+
+        public async IAsyncEnumerable<RecordBatch> ReadTablePartitionByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (partitionToken == null)
+            {
+                throw new ArgumentNullException(nameof(partitionToken));
+            }
+
+            ValidateBatchSize(batchSize);
+
+            await foreach (RecordBatch batch in _backend.ReadTablePartitionByTokenAsync(
+                path,
+                partitionToken,
+                storageConfig,
+                genericStorageOptions,
+                batchSize,
+                cancellationToken).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+        }
+
+        /// <summary>
+        /// Reads a single opaque partition descriptor as an Arrow stream.
+        /// </summary>
+        public async Task<IArrowArrayStream> ReadTablePartitionAsArrowStreamAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (partition == null)
+            {
+                throw new ArgumentNullException(nameof(partition));
+            }
+
+            ValidateBatchSize(batchSize);
+
+            ArrowStreamResult streamResult = await _backend.OpenReadTablePartitionStreamAsync(
+                path,
+                partition,
+                storageConfig,
+                genericStorageOptions,
+                batchSize,
+                cancellationToken).ConfigureAwait(false);
+            return streamResult.Stream;
+        }
+
+        public async Task<IArrowArrayStream> ReadTablePartitionAsArrowStreamByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (path == null)
+            {
+                throw new ArgumentNullException(nameof(path));
+            }
+
+            if (partitionToken == null)
+            {
+                throw new ArgumentNullException(nameof(partitionToken));
+            }
+
+            ValidateBatchSize(batchSize);
+
+            ArrowStreamResult streamResult = await _backend.OpenReadTablePartitionStreamByTokenAsync(
+                path,
+                partitionToken,
+                storageConfig,
+                genericStorageOptions,
+                batchSize,
+                cancellationToken).ConfigureAwait(false);
+            return streamResult.Stream;
+        }
+
+        /// <summary>
         /// Reads Change Data Feed rows from a Delta table and streams them as
         /// Arrow <see cref="RecordBatch"/> objects.
         /// </summary>

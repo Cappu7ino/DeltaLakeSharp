@@ -249,6 +249,52 @@ pub extern "C" fn dts_read_table(
     .unwrap_or(0)
 }
 
+/// Plans opaque read partitions for a pinned Delta snapshot and returns the JSON
+/// result payload as an owned UTF-8 string.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_plan_read_partitions(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+) -> *mut c_char {
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
+        let result = match engine_ref.block_on(engine_ref.service.plan_read_partitions(command)) {
+            Ok(result) => result,
+            Err(error) => {
+                engine_ref.set_last_error_message(error.to_string());
+                return ptr::null_mut();
+            }
+        };
+
+        match CString::new(result.to_string()) {
+            Ok(result) => result.into_raw(),
+            Err(error) => {
+                engine_ref.set_last_error_message(error.to_string());
+                ptr::null_mut()
+            }
+        }
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+/// Resolves a partition-scoped read command and exports the resulting batch
+/// stream via the Arrow C Stream interface.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_table_partition(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> i32 {
+    dts_read_table(engine, command_json, out_stream)
+}
+
 /// Resolves a SQL/read command and exports the resulting batch stream via the
 /// Arrow C Stream interface.
 #[unsafe(no_mangle)]
@@ -728,6 +774,7 @@ mod tests {
 
         dts_destroy_engine(engine);
     }
+
 
     #[test]
     fn execute_query_exports_arrow_array_stream() {

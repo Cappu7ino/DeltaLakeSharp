@@ -29,12 +29,13 @@ tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 
 # Delta Lake + query engine
-deltalake = { version = "0.31", features = ["datafusion", "azure"] }
+deltalake = { version = "0.31.1", features = ["datafusion", "azure"] }
 datafusion = "52"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }

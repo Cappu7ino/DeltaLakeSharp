@@ -40,6 +40,13 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int ReadTable(IntPtr engine, string commandJson, CArrowArrayStream* stream);
 
+        [LibraryImport(LibraryName, EntryPoint = "dts_plan_read_partitions", StringMarshalling = StringMarshalling.Utf8)]
+        internal static partial IntPtr PlanReadPartitions(IntPtr engine, string commandJson);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_read_table_partition", StringMarshalling = StringMarshalling.Utf8)]
+        [return: MarshalAs(UnmanagedType.I4)]
+        internal static unsafe partial int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream);
+
         [LibraryImport(LibraryName, EntryPoint = "dts_read_change_data", StringMarshalling = StringMarshalling.Utf8)]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int ReadChangeData(IntPtr engine, string commandJson, CArrowArrayStream* stream);

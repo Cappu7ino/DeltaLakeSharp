@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use arrow::datatypes::DataType;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 pub struct ReadCommand {
@@ -23,6 +23,52 @@ pub struct ReadCommand {
     pub storage_options: Option<HashMap<String, String>>,
     #[serde(default)]
     pub version: Option<i64>,
+    #[serde(default)]
+    pub partition_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartitionPredicateKey {
+    pub values: HashMap<String, Option<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode")]
+pub enum PartitionDescriptorMode {
+    FileSubset {
+        /// Exact set of active file paths selected for this partition at `version`.
+        ///
+        /// These are snapshot-relative Add paths, not a durable table identity. The
+        /// token is therefore an opaque execution descriptor, not a long-lived ID.
+        file_paths: Vec<String>,
+    },
+    PartitionPredicate {
+        /// One or more Delta partition key tuples that should be OR'ed together.
+        /// Each tuple contains the partition-column name/value pairs that identify
+        /// one logical Delta partition in the pinned snapshot.
+        keys: Vec<PartitionPredicateKey>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartitionDescriptorPayload {
+    /// Pinned Delta table version the partition plan was generated from.
+    ///
+    /// Partition reads reopen this exact snapshot so the token continues to
+    /// describe a stable slice even if the table later advances.
+    pub version: i64,
+    /// Zero-based ordinal of this planned partition within the planning result.
+    ///
+    /// This is planner metadata for diagnostics and client display; execution is
+    /// driven by `version` plus `file_paths`.
+    pub ordinal: usize,
+    /// Total number of partitions returned by the original planning operation.
+    ///
+    /// This is included so clients can reason about progress/completeness
+    /// without needing separate side-channel metadata.
+    pub total_partitions: usize,
+    #[serde(flatten)]
+    pub mode: PartitionDescriptorMode,
 }
 
 #[derive(Debug, Deserialize)]

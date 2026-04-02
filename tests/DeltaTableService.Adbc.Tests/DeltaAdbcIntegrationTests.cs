@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using Apache.Arrow;
 using Apache.Arrow.Adbc;
+using Apache.Arrow.Ipc;
 using Apache.Arrow.Types;
 using Microsoft.DI.DeltaTableService.Adbc.Internal;
 using Microsoft.DI.DeltaTableService.Client;
@@ -236,6 +238,223 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
                     {
                         readStream.Dispose();
                     }
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecutePartitioned_AndReadPartitions_ReturnsAllRowsForPartitionedFixture()
+        {
+            using OpenedConnection opened = OpenConnectionWithPartitionedData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    PartitionedResult result = statement.ExecutePartitioned();
+
+                    Assert.AreEqual(3, result.Schema.FieldsList.Count);
+                    Assert.AreEqual("region", result.Schema.FieldsList[2].Name);
+                    Assert.IsTrue(result.PartitionDescriptors.Count >= 1);
+
+                    var rows = new List<Dictionary<string, object?>>();
+                    foreach (PartitionDescriptor descriptor in result.PartitionDescriptors)
+                    {
+                        using IArrowArrayStream partitionStream = connection.ReadPartition(descriptor);
+                        rows.AddRange(ReadAllDictionaryRows(partitionStream));
+                    }
+
+                    Assert.AreEqual(5, rows.Count);
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 1) && Equals(row["region"], "us")));
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 2) && Equals(row["region"], "eu")));
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 5) && Equals(row["region"], "apac")));
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecutePartitioned_AndReadPartitions_ReturnsAllRowsForNonPartitionedFixture()
+        {
+            using OpenedConnection opened = OpenConnectionWithSimpleData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    PartitionedResult result = statement.ExecutePartitioned();
+
+                    Assert.AreEqual(2, result.Schema.FieldsList.Count);
+                    Assert.AreEqual("name", result.Schema.FieldsList[1].Name);
+                    Assert.IsTrue(result.PartitionDescriptors.Count >= 1);
+
+                    var rows = new List<Dictionary<string, object?>>();
+                    foreach (PartitionDescriptor descriptor in result.PartitionDescriptors)
+                    {
+                        using IArrowArrayStream partitionStream = connection.ReadPartition(descriptor);
+                        rows.AddRange(ReadAllDictionaryRows(partitionStream));
+                    }
+
+                    Assert.AreEqual(3, rows.Count);
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 1) && Equals(row["name"], "a")));
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 2) && Equals(row["name"], "b")));
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 3) && Equals(row["name"], "c")));
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecutePartitioned_AndReadPartitions_ForNonPartitionedMultiFileTable_SplitsAndReturnsAllRows()
+        {
+            using OpenedConnection opened = OpenConnectionWithMultiFileSimpleData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    PartitionedResult result = statement.ExecutePartitioned();
+
+                    Assert.AreEqual(2, result.Schema.FieldsList.Count);
+                    Assert.AreEqual("name", result.Schema.FieldsList[1].Name);
+                    Assert.IsTrue(result.PartitionDescriptors.Count > 1, "Expected multiple planned partitions.");
+
+                    List<(int id, string name)> rows = new();
+                    foreach (PartitionDescriptor descriptor in result.PartitionDescriptors)
+                    {
+                        using IArrowArrayStream partitionStream = connection.ReadPartition(descriptor);
+                        rows.AddRange(ReadAllRowsSorted(partitionStream));
+                    }
+
+                    rows = rows.OrderBy(row => row.id).ToList();
+                    Assert.AreEqual(8, rows.Count);
+                    Assert.AreEqual((1, "row_1"), rows[0]);
+                    Assert.AreEqual((8, "row_8"), rows[7]);
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecutePartitioned_OnDeletionVectorFixture_FailsFast()
+        {
+            using OpenedConnection opened = OpenConnectionToExistingFixture("delta_test_deletion_vector");
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    Exception exception = Assert.ThrowsException<InvalidOperationException>(() => statement.ExecutePartitioned());
+                    StringAssert.Contains(exception.Message, "partitioned reads are not yet supported");
+                    StringAssert.Contains(exception.Message, "deletion vectors");
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecutePartitioned_AndReadPartitions_OnPartitionedDeletionVectorFixture_ReturnsDeletionVectorCorrectRows()
+        {
+            using OpenedConnection opened = OpenConnectionToExistingFixture("delta_test_partitioned_deletion_vector");
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    PartitionedResult result = statement.ExecutePartitioned();
+
+                    Assert.AreEqual(3, result.Schema.FieldsList.Count);
+                    Assert.AreEqual("region", result.Schema.FieldsList[2].Name);
+                    Assert.IsTrue(result.PartitionDescriptors.Count >= 1);
+
+                    var rows = new List<Dictionary<string, object?>>();
+                    foreach (PartitionDescriptor descriptor in result.PartitionDescriptors)
+                    {
+                        using IArrowArrayStream partitionStream = connection.ReadPartition(descriptor);
+                        rows.AddRange(ReadAllDictionaryRows(partitionStream));
+                    }
+
+                    Assert.AreEqual(4, rows.Count);
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 1L) && Equals(row["region"], "us")));
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 2L) && Equals(row["region"], "eu")));
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 4L) && Equals(row["region"], "eu")));
+                    Assert.IsTrue(rows.Exists(row => Equals(row["id"], 5L) && Equals(row["region"], "apac")));
+                    Assert.IsFalse(rows.Exists(row => Equals(row["id"], 3L)), "Deleted DV row should not be returned.");
+                }
+                finally
+                {
+                    statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ExecutePartitioned_OnChangeDataFeedTable_FailsFast()
+        {
+            using OpenedConnection opened = OpenConnectionWithChangeData();
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                var statement = connection.CreateStatement();
+                try
+                {
+                    statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
+
+                    AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecutePartitioned());
+
+                    Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
+                    StringAssert.Contains(exception.Message, "Change Data Feed");
                 }
                 finally
                 {
@@ -925,6 +1144,80 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
             return new OpenedConnection(driver, database, connection);
         }
 
+        private OpenedConnection OpenConnectionWithPartitionedData(IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            string? binaryPath = FindRustFixtureBinary();
+            if (binaryPath == null)
+            {
+                Assert.Inconclusive(
+                    "Rust fixture binary not found. Build it first: cd src/DeltaTableService.Server/v3 && cargo build");
+            }
+
+            _tempDir = Path.Combine(Path.GetTempPath(), $"adbc_v3_partitioned_{Guid.NewGuid():N}");
+            string tablePath = Path.Combine(_tempDir, "test_table");
+            CreateTestDeltaTable(binaryPath!, tablePath, fixtureType: "partitioned");
+
+            return OpenConnectionForTablePath(tablePath, extraOptions);
+        }
+
+        private OpenedConnection OpenConnectionWithSimpleData(IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            string? binaryPath = FindRustFixtureBinary();
+            if (binaryPath == null)
+            {
+                Assert.Inconclusive(
+                    "Rust fixture binary not found. Build it first: cd src/DeltaTableService.Server/v3 && cargo build");
+            }
+
+            _tempDir = Path.Combine(Path.GetTempPath(), $"adbc_v3_simple_{Guid.NewGuid():N}");
+            string tablePath = Path.Combine(_tempDir, "test_table");
+            CreateTestDeltaTable(binaryPath!, tablePath, fixtureType: "basic");
+
+            return OpenConnectionForTablePath(tablePath, extraOptions);
+        }
+
+        private OpenedConnection OpenConnectionWithMultiFileSimpleData(IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            _tempDir = Path.Combine(Path.GetTempPath(), $"adbc_v3_multifile_{Guid.NewGuid():N}");
+            string tablePath = Path.Combine(_tempDir, "test_table");
+            CreateMultiFileSimpleDeltaTable(tablePath);
+
+            return OpenConnectionForTablePath(tablePath, extraOptions);
+        }
+
+        private OpenedConnection OpenConnectionToExistingFixture(string fixtureName, IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            string? fixturePath = FindRepoFixturePath(fixtureName);
+            if (fixturePath == null)
+            {
+                Assert.Inconclusive($"Fixture '{fixtureName}' was not found in the repo.");
+            }
+
+            return OpenConnectionForTablePath(fixturePath!, extraOptions);
+        }
+
+        private static OpenedConnection OpenConnectionForTablePath(string tablePath, IReadOnlyDictionary<string, string>? extraOptions)
+        {
+            var options = new Dictionary<string, string>
+            {
+                [DeltaAdbcConnectOptions.TableUriKey] = tablePath,
+            };
+
+            if (extraOptions != null)
+            {
+                foreach (KeyValuePair<string, string> option in extraOptions)
+                {
+                    options[option.Key] = option.Value;
+                }
+            }
+
+            var driver = new DeltaAdbcDriver();
+            var database = driver.Open(options);
+            var connection = database.Connect(null);
+
+            return new OpenedConnection(driver, database, connection);
+        }
+
         private static void CreateChangeDataDeltaTable(string tablePath)
         {
             var tableSchema = new Microsoft.DI.DeltaTableService.Client.Models.TableSchema(new List<Microsoft.DI.DeltaTableService.Client.Models.ColumnDefinition>
@@ -966,6 +1259,36 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
                 .GetAwaiter().GetResult();
         }
 
+        private static void CreateMultiFileSimpleDeltaTable(string tablePath)
+        {
+            var tableSchema = new Microsoft.DI.DeltaTableService.Client.Models.TableSchema(new List<Microsoft.DI.DeltaTableService.Client.Models.ColumnDefinition>
+            {
+                new Microsoft.DI.DeltaTableService.Client.Models.ColumnDefinition("id", "int32"),
+                new Microsoft.DI.DeltaTableService.Client.Models.ColumnDefinition("name", "string"),
+            });
+
+            using var client = new Microsoft.DI.DeltaTableService.Client.DeltaTableServiceClient(Microsoft.DI.DeltaTableService.Client.ServiceMode.V3_Rust);
+
+            Microsoft.DI.DeltaTableService.Client.Models.ExecuteResult createResult = client.CreateTableAsync(tablePath, tableSchema)
+                .GetAwaiter().GetResult();
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            for (int i = 1; i <= 8; i++)
+            {
+                Apache.Arrow.RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { i, $"row_{i}" },
+                }, tableSchema);
+
+                client.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    Microsoft.DI.DeltaTableService.Client.Models.SaveMode.Append)
+                    .GetAwaiter().GetResult();
+            }
+        }
+
         private static string? FindRustFixtureBinary()
         {
             string? dir = AppContext.BaseDirectory;
@@ -983,6 +1306,24 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
                         "debug",
                         "delta-table-service-v3-fixture.exe");
                     return File.Exists(binaryPath) ? binaryPath : null;
+                }
+
+                dir = Path.GetDirectoryName(dir);
+            }
+
+            return null;
+        }
+
+        private static string? FindRepoFixturePath(string fixtureName)
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null)
+            {
+                string solutionFile = Path.Combine(dir, "DeltaTableService.sln");
+                if (File.Exists(solutionFile))
+                {
+                    string fixturePath = Path.Combine(dir, "tests", "DeltaTableService.Tests", "data", fixtureName);
+                    return Directory.Exists(fixturePath) ? fixturePath : null;
                 }
 
                 dir = Path.GetDirectoryName(dir);

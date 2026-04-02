@@ -10,6 +10,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using Apache.Arrow;
+using Apache.Arrow.Arrays;
 using Apache.Arrow.Types;
 using Microsoft.DI.DeltaTableService.Client.Models;
 
@@ -313,6 +314,8 @@ namespace Microsoft.DI.DeltaTableService.Client
                     return bin.GetBytes(index).ToArray();
                 case LargeBinaryArray lbin:
                     return lbin.GetBytes(index).ToArray();
+                case DictionaryArray dictionaryArray:
+                    return ReadDictionaryValue(dictionaryArray, index);
                 default:
                     // Fallback: convert to string representation.
                     return array.GetType()
@@ -320,6 +323,33 @@ namespace Microsoft.DI.DeltaTableService.Client
                         ?.Invoke(array, new object[] { index })
                         ?.ToString();
             }
+        }
+
+        private static object? ReadDictionaryValue(DictionaryArray array, int index)
+        {
+            object? dictionaryIndex = ReadDictionaryIndexValue(array.Indices, index);
+            if (dictionaryIndex == null)
+            {
+                return null;
+            }
+
+            return GetValue(array.Dictionary, Convert.ToInt32(dictionaryIndex, CultureInfo.InvariantCulture));
+        }
+
+        private static object? ReadDictionaryIndexValue(IArrowArray array, int index)
+        {
+            return array switch
+            {
+                Int8Array a => a.GetValue(index),
+                Int16Array a => a.GetValue(index),
+                Int32Array a => a.GetValue(index),
+                Int64Array a => a.GetValue(index),
+                UInt8Array a => a.GetValue(index),
+                UInt16Array a => a.GetValue(index),
+                UInt32Array a => a.GetValue(index),
+                UInt64Array a => a.GetValue(index),
+                _ => throw new NotSupportedException($"Unsupported dictionary index array type: {array.GetType().FullName}"),
+            };
         }
 
         /// <summary>

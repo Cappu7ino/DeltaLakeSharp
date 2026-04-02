@@ -112,6 +112,76 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             return await OpenArrowArrayStreamAsync(commandJson, cancellationToken).ConfigureAwait(false);
         }
 
+        public Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "Partitioned reads are supported only by the V3 native Rust backend.");
+        }
+
+        public async IAsyncEnumerable<RecordBatch> ReadTablePartitionAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "Partitioned reads are supported only by the V3 native Rust backend.");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+
+        public async IAsyncEnumerable<RecordBatch> ReadTablePartitionByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "Partitioned reads are supported only by the V3 native Rust backend.");
+#pragma warning disable CS0162
+            yield break;
+#pragma warning restore CS0162
+        }
+
+        public Task<ArrowStreamResult> OpenReadTablePartitionStreamAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "Partitioned reads are supported only by the V3 native Rust backend.");
+        }
+
+        public Task<ArrowStreamResult> OpenReadTablePartitionStreamByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw new NotSupportedException(
+                "Partitioned reads are supported only by the V3 native Rust backend.");
+        }
+
         /// <inheritdoc />
         public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
             string path,

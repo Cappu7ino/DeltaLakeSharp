@@ -54,6 +54,45 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long? version = null,
             CancellationToken cancellationToken = default);
 
+        Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default);
+
+        IAsyncEnumerable<RecordBatch> ReadTablePartitionAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default);
+
+        IAsyncEnumerable<RecordBatch> ReadTablePartitionByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default);
+
+        Task<ArrowStreamResult> OpenReadTablePartitionStreamAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default);
+
+        Task<ArrowStreamResult> OpenReadTablePartitionStreamByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default);
+
         /// <summary>
         /// Reads Change Data Feed rows from a Delta table, streaming Arrow
         /// RecordBatches for the requested version range.

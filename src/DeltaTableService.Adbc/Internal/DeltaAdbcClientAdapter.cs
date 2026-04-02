@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
@@ -22,6 +23,20 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Internal
 
         public DeltaAdbcConnectOptions Options { get; }
 
+        public Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
+        {
+            return _client.GetReadPartitionsAsync(
+                Options.TableUri,
+                genericStorageOptions: Options.StorageOptions ?? null,
+                version: statementOptions.Version,
+                cancellationToken: cancellationToken);
+        }
+
+        public IReadOnlyList<DeltaReadPartition> GetReadPartitions(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
+        {
+            return RunSynchronously(GetReadPartitionsAsync(statementOptions, cancellationToken));
+        }
+
         public Task<IArrowArrayStream> OpenReadTableStreamAsync(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
         {
             return _client.ReadTableAsArrowStreamAsync(
@@ -36,6 +51,21 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Internal
         public IArrowArrayStream OpenReadTableStream(DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
         {
             return RunSynchronously(OpenReadTableStreamAsync(statementOptions, cancellationToken));
+        }
+
+        public Task<IArrowArrayStream> OpenReadPartitionStreamAsync(string partitionToken, int? batchSize, CancellationToken cancellationToken)
+        {
+            return _client.ReadTablePartitionAsArrowStreamByTokenAsync(
+                Options.TableUri,
+                partitionToken,
+                genericStorageOptions: Options.StorageOptions ?? null,
+                batchSize: batchSize,
+                cancellationToken: cancellationToken);
+        }
+
+        public IArrowArrayStream OpenReadPartitionStream(string partitionToken, int? batchSize, CancellationToken cancellationToken)
+        {
+            return RunSynchronously(OpenReadPartitionStreamAsync(partitionToken, batchSize, cancellationToken));
         }
 
         public Task<IArrowArrayStream> OpenQueryStreamAsync(string sql, DeltaAdbcStatementOptions statementOptions, CancellationToken cancellationToken)
@@ -86,9 +116,10 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Internal
             return RunSynchronously(OpenQueryStreamAsync(sql, statementOptions, cancellationToken));
         }
 
-        public async Task<Schema> GetSchemaAsync(CancellationToken cancellationToken)
+        public async Task<Schema> GetSchemaAsync(DeltaAdbcStatementOptions? statementOptions, CancellationToken cancellationToken)
         {
-            IArrowArrayStream streamResult = await OpenReadTableStreamAsync(new DeltaAdbcStatementOptions(), cancellationToken).ConfigureAwait(false);
+            DeltaAdbcStatementOptions effectiveOptions = statementOptions?.Clone() ?? new DeltaAdbcStatementOptions();
+            IArrowArrayStream streamResult = await OpenReadTableStreamAsync(effectiveOptions, cancellationToken).ConfigureAwait(false);
             try
             {
                 return streamResult.Schema;
@@ -99,9 +130,9 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Internal
             }
         }
 
-        public Schema GetSchema(CancellationToken cancellationToken)
+        public Schema GetSchema(DeltaAdbcStatementOptions? statementOptions, CancellationToken cancellationToken)
         {
-            return RunSynchronously(GetSchemaAsync(cancellationToken));
+            return RunSynchronously(GetSchemaAsync(statementOptions, cancellationToken));
         }
 
         public void Dispose()
@@ -114,5 +145,6 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Internal
             // The public .NET ADBC driver surface is synchronous here, so this is the single sync-over-async bridge for the adapter.
             return operation.ConfigureAwait(false).GetAwaiter().GetResult();
         }
+
     }
 }

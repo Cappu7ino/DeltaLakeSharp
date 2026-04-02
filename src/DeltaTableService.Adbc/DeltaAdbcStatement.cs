@@ -2,8 +2,10 @@
 // Licensed under the MIT License.
 
 using System;
+using System.Collections.Generic;
 using Apache.Arrow.Adbc;
 using Microsoft.DI.DeltaTableService.Adbc.Internal;
+using Microsoft.DI.DeltaTableService.Client.Models;
 
 namespace Microsoft.DI.DeltaTableService.Adbc
 {
@@ -26,12 +28,7 @@ namespace Microsoft.DI.DeltaTableService.Adbc
         /// </summary>
         public override QueryResult ExecuteQuery()
         {
-            if (_options.CdfEndingVersion.HasValue && !_options.CdfStartingVersion.HasValue)
-            {
-                throw new AdbcException(
-                    $"Statement option '{DeltaAdbcStatementOptions.CdfEndingVersionOptionKey}' requires '{DeltaAdbcStatementOptions.CdfStartingVersionOptionKey}'.",
-                    AdbcStatusCode.InvalidArgument);
-            }
+            ValidateCdfRange();
 
             if (string.IsNullOrWhiteSpace(SqlQuery))
             {
@@ -69,6 +66,35 @@ namespace Microsoft.DI.DeltaTableService.Adbc
             return new QueryResult(-1, _adapter.OpenQueryStream(SqlQuery!, _options, default));
         }
 
+        public override PartitionedResult ExecutePartitioned()
+        {
+            ValidateCdfRange();
+
+            if (!string.IsNullOrWhiteSpace(SqlQuery))
+            {
+                throw new AdbcException("Partitioned execution is supported only for direct Delta table reads.", AdbcStatusCode.InvalidArgument);
+            }
+
+            if (_options.IsChangeDataFeedRead)
+            {
+                throw new AdbcException("Partitioned execution is not supported for Change Data Feed reads.", AdbcStatusCode.InvalidArgument);
+            }
+
+            if (_options.MaxRows.HasValue)
+            {
+                throw new AdbcException($"Statement option '{DeltaAdbcStatementOptions.MaxRowsOptionKey}' is not supported for partitioned reads.", AdbcStatusCode.InvalidArgument);
+            }
+
+            IReadOnlyList<DeltaReadPartition> partitions = _adapter.GetReadPartitions(_options, default);
+            var descriptors = new List<PartitionDescriptor>(partitions.Count);
+            foreach (DeltaReadPartition partition in partitions)
+            {
+                descriptors.Add(new PartitionDescriptor(AdbcPartitionDescriptorCodec.Encode(partition.Token, _options.BatchSize)));
+            }
+
+            return new PartitionedResult(_adapter.GetSchema(_options, default), -1, descriptors);
+        }
+
         public override UpdateResult ExecuteUpdate()
         {
             throw AdbcException.NotImplemented("Delta ADBC driver currently supports read semantics only.");
@@ -82,6 +108,16 @@ namespace Microsoft.DI.DeltaTableService.Adbc
         public override void SetOption(string key, string value)
         {
             _options.SetOption(key, value);
+        }
+
+        private void ValidateCdfRange()
+        {
+            if (_options.CdfEndingVersion.HasValue && !_options.CdfStartingVersion.HasValue)
+            {
+                throw new AdbcException(
+                    $"Statement option '{DeltaAdbcStatementOptions.CdfEndingVersionOptionKey}' requires '{DeltaAdbcStatementOptions.CdfStartingVersionOptionKey}'.",
+                    AdbcStatusCode.InvalidArgument);
+            }
         }
     }
 }

@@ -34,6 +34,12 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
         [DllImport(LibraryName, EntryPoint = "dts_read_table", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe int ReadTableNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
 
+        [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr PlanReadPartitionsNative(IntPtr engine, IntPtr commandJson);
+
+        [DllImport(LibraryName, EntryPoint = "dts_read_table_partition", CallingConvention = CallingConvention.Cdecl)]
+        private static extern unsafe int ReadTablePartitionNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
+
         [DllImport(LibraryName, EntryPoint = "dts_read_change_data", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe int ReadChangeDataNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
 
@@ -66,6 +72,16 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal.Native
         internal static unsafe int ReadTable(IntPtr engine, string commandJson, CArrowArrayStream* stream)
         {
             return WithUtf8String(commandJson, ptr => ReadTableNative(engine, ptr, stream));
+        }
+
+        internal static IntPtr PlanReadPartitions(IntPtr engine, string commandJson)
+        {
+            return WithUtf8String(commandJson, ptr => PlanReadPartitionsNative(engine, ptr));
+        }
+
+        internal static unsafe int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream)
+        {
+            return WithUtf8String(commandJson, ptr => ReadTablePartitionNative(engine, ptr, stream));
         }
 
         internal static unsafe int ReadChangeData(IntPtr engine, string commandJson, CArrowArrayStream* stream)

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using Apache.Arrow;
+using Apache.Arrow.Arrays;
 using Apache.Arrow.Types;
 using Microsoft.DI.DeltaTableService.Client;
 using Microsoft.DI.DeltaTableService.Client.Models;
@@ -601,6 +602,31 @@ namespace Microsoft.DI.DeltaTableService.Tests
             Assert.AreEqual(30, result[0]["age"]);
             Assert.AreEqual("Bob", result[1]["name"]);
             Assert.AreEqual(25, result[1]["age"]);
+        }
+
+        [TestMethod]
+        public void ToDictionaryList_DictionaryEncodedStringColumn_DecodesValues()
+        {
+            IArrowArray dictionary = new StringArray.Builder()
+                .AppendRange(new[] { "us", "eu", "apac" })
+                .Build();
+            IArrowArray indices = new Int32Array.Builder()
+                .AppendRange(new[] { 0, 1, 2 })
+                .Build();
+            var dictionaryType = new DictionaryType(Int32Type.Default, StringType.Default, ordered: false);
+            IArrowArray encoded = new DictionaryArray(dictionaryType, indices, dictionary);
+
+            RecordBatch batch = new RecordBatch.Builder()
+                .Append("region", nullable: true, encoded)
+                .Build();
+
+            List<Dictionary<string, object>> result =
+                ArrowConverter.ToDictionaryList(new List<RecordBatch> { batch });
+
+            Assert.AreEqual(3, result.Count);
+            Assert.AreEqual("us", result[0]["region"]);
+            Assert.AreEqual("eu", result[1]["region"]);
+            Assert.AreEqual("apac", result[2]["region"]);
         }
 
         // ================================================================== //

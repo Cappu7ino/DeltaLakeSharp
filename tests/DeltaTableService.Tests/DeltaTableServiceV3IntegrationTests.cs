@@ -354,6 +354,116 @@ namespace Microsoft.DI.DeltaTableService.Tests
             Assert.AreEqual(3, ids[1]);
         }
 
+        [TestMethod]
+        public async Task V3_ReadTablePartition_Partitioned_CanReadPlannedPartitions()
+        {
+            IReadOnlyList<DeltaReadPartition> partitions = await Client.GetReadPartitionsAsync(PartitionedTablePath);
+            Assert.IsTrue(partitions.Count >= 1, "Expected at least one planned partition.");
+
+            var rows = new List<(int id, string region, string name)>();
+            foreach (DeltaReadPartition partition in partitions)
+            {
+                await foreach (RecordBatch batch in Client.ReadTablePartitionAsync(PartitionedTablePath, partition))
+                {
+                    var idArray = (Int32Array)batch.Column(0);
+                    IArrowArray nameArray = batch.Column(1);
+                    IArrowArray regionArray = batch.Column(2);
+
+                    for (int i = 0; i < batch.Length; i++)
+                    {
+                        rows.Add((
+                            idArray.GetValue(i) ?? -1,
+                            V3TestHelpers.ReadStringValue(regionArray, i),
+                            V3TestHelpers.ReadStringValue(nameArray, i)));
+                    }
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(5, rows.Count, $"Expected 5 rows across planned partitions, got {rows.Count}.");
+            Assert.AreEqual((1, "us", "a"), rows[0]);
+            Assert.AreEqual((2, "eu", "b"), rows[1]);
+            Assert.AreEqual((3, "us", "c"), rows[2]);
+            Assert.AreEqual((4, "eu", "d"), rows[3]);
+            Assert.AreEqual((5, "apac", "e"), rows[4]);
+        }
+
+        [TestMethod]
+        public async Task V3_ReadTablePartition_NonPartitioned_CanReadPlannedPartitions()
+        {
+            IReadOnlyList<DeltaReadPartition> partitions = await Client.GetReadPartitionsAsync(TestTablePath);
+            Assert.IsTrue(partitions.Count >= 1, "Expected at least one planned partition.");
+
+            var rows = new List<(int id, string name)>();
+            foreach (DeltaReadPartition partition in partitions)
+            {
+                await foreach (RecordBatch batch in Client.ReadTablePartitionAsync(TestTablePath, partition))
+                {
+                    var idArray = (Int32Array)batch.Column(0);
+                    IArrowArray nameArray = batch.Column(1);
+
+                    for (int i = 0; i < batch.Length; i++)
+                    {
+                        rows.Add((
+                            idArray.GetValue(i) ?? -1,
+                            V3TestHelpers.ReadStringValue(nameArray, i)));
+                    }
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(3, rows.Count, $"Expected 3 rows across planned partitions, got {rows.Count}.");
+            Assert.AreEqual((1, "a"), rows[0]);
+            Assert.AreEqual((2, "b"), rows[1]);
+            Assert.AreEqual((3, "c"), rows[2]);
+        }
+
+        [TestMethod]
+        public async Task V3_ReadTablePartition_NonPartitionedMultiFile_SplitsAndReadsAllRows()
+        {
+            string tablePath = NewWriteTestTablePath();
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            ExecuteResult createResult = await Client.CreateTableAsync(tablePath, tableSchema);
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            Schema arrowSchema = BuildIdNameSchema();
+            for (int i = 1; i <= 8; i++)
+            {
+                RecordBatch batch = BuildIdNameBatch(new[] { i }, new[] { $"row_{i}" });
+                await Client.InsertAsync(tablePath, arrowSchema, ToAsyncEnumerable(batch), SaveMode.Append);
+            }
+
+            IReadOnlyList<DeltaReadPartition> partitions = await Client.GetReadPartitionsAsync(tablePath);
+            Assert.IsTrue(partitions.Count > 1, "Expected multiple planned partitions for multi-file non-partitioned table.");
+
+            var rows = new List<(int id, string name)>();
+            foreach (DeltaReadPartition partition in partitions)
+            {
+                await foreach (RecordBatch batch in Client.ReadTablePartitionAsync(tablePath, partition))
+                {
+                    var idArray = (Int32Array)batch.Column(0);
+                    IArrowArray nameArray = batch.Column(1);
+
+                    for (int i = 0; i < batch.Length; i++)
+                    {
+                        rows.Add((
+                            idArray.GetValue(i) ?? -1,
+                            V3TestHelpers.ReadStringValue(nameArray, i)));
+                    }
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(8, rows.Count, $"Expected 8 rows across planned partitions, got {rows.Count}.");
+            Assert.AreEqual((1, "row_1"), rows[0]);
+            Assert.AreEqual((8, "row_8"), rows[7]);
+        }
+
         // ================================================================== //
         //  Phase 2: Time travel
         // ================================================================== //
@@ -732,6 +842,47 @@ namespace Microsoft.DI.DeltaTableService.Tests
                 $"Expected 2 rows for id > 2 (id=3 deleted), got {ids.Count}.");
             Assert.AreEqual(4, ids[0]);
             Assert.AreEqual(5, ids[1]);
+        }
+
+        [TestMethod]
+        public async Task V3_ReadTablePartition_PartitionedDeletionVector_CanReadPlannedPartitions()
+        {
+            if (FixtureDataDir == null)
+            {
+                Assert.Inconclusive("Fixture data directory not found.");
+                return;
+            }
+
+            string tablePath = Path.Combine(FixtureDataDir, "delta_test_partitioned_deletion_vector");
+            IReadOnlyList<DeltaReadPartition> partitions = await Client.GetReadPartitionsAsync(tablePath);
+            Assert.IsTrue(partitions.Count >= 1, "Expected at least one planned partition.");
+
+            var rows = new List<(long id, string region, string value)>();
+            foreach (DeltaReadPartition partition in partitions)
+            {
+                await foreach (RecordBatch batch in Client.ReadTablePartitionAsync(tablePath, partition))
+                {
+                    IArrowArray idArray = batch.Column(0);
+                    IArrowArray valueArray = batch.Column(1);
+                    IArrowArray regionArray = batch.Column(2);
+
+                    for (int i = 0; i < batch.Length; i++)
+                    {
+                        rows.Add((
+                            Convert.ToInt64(V3TestHelpers.ReadValue(idArray, i)! ),
+                            V3TestHelpers.ReadStringValue(regionArray, i),
+                            V3TestHelpers.ReadStringValue(valueArray, i)));
+                    }
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(4, rows.Count, $"Expected 4 rows across planned partitions, got {rows.Count}.");
+            Assert.AreEqual((1L, "us", "one"), rows[0]);
+            Assert.AreEqual((2L, "eu", "two"), rows[1]);
+            Assert.AreEqual((4L, "eu", "four"), rows[2]);
+            Assert.AreEqual((5L, "apac", "five"), rows[3]);
+            Assert.IsFalse(rows.Any(r => r.id == 3), "id=3 should be excluded by deletion vector.");
         }
 
         // ================================================================== //
@@ -1256,6 +1407,76 @@ namespace Microsoft.DI.DeltaTableService.Tests
             Assert.AreEqual(2, rows.Count, $"Expected 2 rows after schema overwrite, got {rows.Count}.");
             Assert.AreEqual((10, "Seattle", true), rows[0]);
             Assert.AreEqual((20, "Portland", false), rows[1]);
+        }
+
+        [TestMethod]
+        public async Task V3_Insert_Append_WithSchemaModeMerge_AddsColumnsAndPreservesExistingRows()
+        {
+            string tablePath = NewWriteTestTablePath();
+
+            var initialSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            await Client.CreateTableAsync(tablePath, initialSchema);
+
+            Schema initialArrowSchema = BuildIdNameSchema();
+            RecordBatch initialBatch = BuildIdNameBatch(
+                new[] { 1, 2 },
+                new[] { "alice", "bob" });
+            await Client.InsertAsync(
+                tablePath,
+                initialArrowSchema,
+                ToAsyncEnumerable(initialBatch),
+                SaveMode.Append);
+
+            Schema mergedSchema = BuildIdCityActiveSchema();
+            RecordBatch mergedBatch = BuildIdCityActiveBatch(
+                new[] { 3, 4 },
+                new[] { "Seattle", "Portland" },
+                new[] { true, false });
+            await Client.InsertAsync(
+                tablePath,
+                mergedSchema,
+                ToAsyncEnumerable(mergedBatch),
+                SaveMode.Append,
+                schemaMode: WriteSchemaMode.Merge);
+
+            TableSchema readBackSchema = await Client.GetSchemaAsync(tablePath);
+            Assert.AreEqual(4, readBackSchema.Columns.Count,
+                $"Expected 4 columns after schema merge, got {readBackSchema.Columns.Count}.");
+            CollectionAssert.AreEqual(
+                new[] { "id", "name", "city", "active" },
+                readBackSchema.Columns.Select(c => c.Name).ToArray());
+            CollectionAssert.AreEqual(
+                new[] { "int32", "string", "string", "boolean" },
+                readBackSchema.Columns.Select(c => c.DataType).ToArray());
+
+            var rows = new List<(int id, string name, string city, bool? active)>();
+            await foreach (RecordBatch batch in Client.ReadTableAsync(tablePath))
+            {
+                var idArray = (Int32Array)batch.Column(0);
+                IArrowArray nameArray = batch.Column(1);
+                IArrowArray cityArray = batch.Column(2);
+                var activeArray = (BooleanArray)batch.Column(3);
+
+                for (int i = 0; i < batch.Length; i++)
+                {
+                    rows.Add((
+                        idArray.GetValue(i)!.Value,
+                        V3TestHelpers.ReadStringValue(nameArray, i),
+                        V3TestHelpers.ReadStringValue(cityArray, i),
+                        activeArray.GetValue(i)));
+                }
+            }
+
+            rows = rows.OrderBy(r => r.id).ToList();
+            Assert.AreEqual(4, rows.Count, $"Expected 4 rows after schema merge, got {rows.Count}.");
+            Assert.AreEqual((1, "alice", string.Empty, (bool?)null), rows[0]);
+            Assert.AreEqual((2, "bob", string.Empty, (bool?)null), rows[1]);
+            Assert.AreEqual((3, string.Empty, "Seattle", (bool?)true), rows[2]);
+            Assert.AreEqual((4, string.Empty, "Portland", (bool?)false), rows[3]);
         }
 
         [TestMethod]

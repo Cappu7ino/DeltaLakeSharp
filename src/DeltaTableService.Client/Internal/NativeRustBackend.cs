@@ -13,6 +13,7 @@ using Microsoft.DI.DeltaTableService.Client.Internal.Native;
 using Microsoft.DI.DeltaTableService.Client.Models;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text;
 
 namespace Microsoft.DI.DeltaTableService.Client.Internal
 {
@@ -128,6 +129,131 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildReadTableCommandJson(path, storageConfig, genericStorageOptions, numRows, batchSize, version);
             IArrowArrayStream stream = OpenReadTableStream(commandJson);
+            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+        }
+
+        public Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = path,
+            };
+
+            AddStorageConfig(command, storageConfig, genericStorageOptions);
+            if (version.HasValue)
+            {
+                command["version"] = version.Value;
+            }
+
+            string commandJson = JsonSerializer.Serialize(command);
+            IntPtr resultPtr = NativeMethods.PlanReadPartitions(_engine.DangerousGetHandle(), commandJson);
+            if (resultPtr == IntPtr.Zero)
+            {
+                throw CreateNativeOperationFailedException(nameof(GetReadPartitionsAsync));
+            }
+
+            try
+            {
+                string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
+                    ?? throw new InvalidOperationException("Native plan_read_partitions returned null JSON.");
+                return Task.FromResult(ParseReadPartitions(resultJson));
+            }
+            finally
+            {
+                NativeMethods.FreeString(resultPtr);
+            }
+        }
+
+        public async IAsyncEnumerable<RecordBatch> ReadTablePartitionAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            using ArrowStreamResult streamResult = await OpenReadTablePartitionStreamAsync(
+                path,
+                partition,
+                storageConfig,
+                genericStorageOptions,
+                batchSize,
+                cancellationToken).ConfigureAwait(false);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RecordBatch? batch = await streamResult.Stream.ReadNextRecordBatchAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (batch == null)
+                {
+                    yield break;
+                }
+
+                yield return batch;
+            }
+        }
+
+        public async IAsyncEnumerable<RecordBatch> ReadTablePartitionByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            using ArrowStreamResult streamResult = await OpenReadTablePartitionStreamByTokenAsync(
+                path,
+                partitionToken,
+                storageConfig,
+                genericStorageOptions,
+                batchSize,
+                cancellationToken).ConfigureAwait(false);
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                RecordBatch? batch = await streamResult.Stream.ReadNextRecordBatchAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                if (batch == null)
+                {
+                    yield break;
+                }
+
+                yield return batch;
+            }
+        }
+
+        public Task<ArrowStreamResult> OpenReadTablePartitionStreamAsync(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildReadTablePartitionCommandJson(path, partition, storageConfig, genericStorageOptions, batchSize);
+            IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
+            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+        }
+
+        public Task<ArrowStreamResult> OpenReadTablePartitionStreamByTokenAsync(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            int? batchSize = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildReadTablePartitionCommandJson(path, partitionToken, storageConfig, genericStorageOptions, batchSize);
+            IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
             return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
 
@@ -507,6 +633,32 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             }
         }
 
+        private unsafe IArrowArrayStream OpenReadTablePartitionStream(string commandJson)
+        {
+            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            try
+            {
+                int result = NativeMethods.ReadTablePartition(
+                    _engine.DangerousGetHandle(),
+                    commandJson,
+                    streamPtr);
+
+                if (result != 1)
+                {
+                    throw CreateNativeOperationFailedException(nameof(ReadTablePartitionAsync));
+                }
+
+                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
+                CArrowArrayStream.Free(streamPtr);
+                return stream;
+            }
+            catch
+            {
+                CArrowArrayStream.Free(streamPtr);
+                throw;
+            }
+        }
+
         /// <summary>
         /// Imports the result stream for a SQL/read query from the native backend.
         /// The logic mirrors <see cref="OpenReadTableStream"/> so both table reads
@@ -802,6 +954,77 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             }
 
             return JsonSerializer.Serialize(command);
+        }
+
+        private static string BuildReadTablePartitionCommandJson(
+            string path,
+            DeltaReadPartition partition,
+            StorageConfig? storageConfig,
+            GenericStorageOptions? genericStorageOptions,
+            int? batchSize)
+        {
+            return BuildReadTablePartitionCommandJson(path, partition.Token, storageConfig, genericStorageOptions, batchSize);
+        }
+
+        private static string BuildReadTablePartitionCommandJson(
+            string path,
+            string partitionToken,
+            StorageConfig? storageConfig,
+            GenericStorageOptions? genericStorageOptions,
+            int? batchSize)
+        {
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = path,
+                ["partition_token"] = partitionToken,
+            };
+
+            AddStorageConfig(command, storageConfig, genericStorageOptions);
+            if (batchSize.HasValue)
+            {
+                command["batch_size"] = batchSize.Value;
+            }
+
+            return JsonSerializer.Serialize(command);
+        }
+
+        private static IReadOnlyList<DeltaReadPartition> ParseReadPartitions(string json)
+        {
+            JsonNode root = JsonNode.Parse(json)
+                ?? throw new InvalidOperationException("Native backend returned invalid JSON for partition planning.");
+
+            if (!(root["success"]?.GetValue<bool>() ?? false))
+            {
+                string message = root["message"]?.GetValue<string>() ?? "Partition planning failed.";
+                throw new InvalidOperationException(message);
+            }
+
+            var partitions = new List<DeltaReadPartition>();
+            if (root["result"] is JsonArray resultArray)
+            {
+                foreach (JsonNode? item in resultArray)
+                {
+                    if (item is not JsonObject obj)
+                    {
+                        continue;
+                    }
+
+                    string token = obj["token"]?.GetValue<string>()
+                        ?? throw new InvalidOperationException("Partition result is missing token.");
+                    long version = obj["version"]?.GetValue<long>()
+                        ?? throw new InvalidOperationException("Partition result is missing version.");
+                    int ordinal = obj["ordinal"]?.GetValue<int>()
+                        ?? throw new InvalidOperationException("Partition result is missing ordinal.");
+                    int totalPartitions = obj["totalPartitions"]?.GetValue<int>()
+                        ?? throw new InvalidOperationException("Partition result is missing totalPartitions.");
+                    int fileCount = obj["fileCount"]?.GetValue<int>()
+                        ?? throw new InvalidOperationException("Partition result is missing fileCount.");
+
+                    partitions.Add(new DeltaReadPartition(token, version, ordinal, totalPartitions, fileCount));
+                }
+            }
+
+            return partitions;
         }
 
         private Task<ArrowStreamResult> OpenChangeDataCoreStreamAsync(

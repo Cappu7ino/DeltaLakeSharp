@@ -51,6 +51,7 @@ namespace Microsoft.DI.DeltaTableService.Tests
         public async Task NativeBackend_HealthCheck_ReturnsTrue()
         {
             using var backend = new NativeRustBackend();
+            
 
             bool healthy = await backend.HealthCheckAsync();
 
