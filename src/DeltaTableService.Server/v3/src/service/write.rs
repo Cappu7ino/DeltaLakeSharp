@@ -7,11 +7,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
+use arrow::ffi_stream::ArrowArrayStreamReader;
 use arrow::record_batch::RecordBatch;
 use datafusion::datasource::MemTable;
-use datafusion::execution::context::SessionContext;
+use datafusion::prelude::SessionContext;
+use deltalake::delta_datafusion::create_session;
 use deltalake::kernel::engine::arrow_conversion::TryIntoKernel;
-use deltalake::operations::write::SchemaMode;
+use deltalake::operations::write::{SchemaMode, WriteBuilder};
 use tracing::{debug, info};
 
 use super::helpers::{
@@ -22,6 +24,7 @@ use super::request::{
     arrow_type_from_str, CreateTableCommand, ExecuteDmlCommand, WriteCommand,
     UpgradeProtocolCommand,
 };
+use super::write_stream::build_streaming_input_plan;
 use crate::error::ServiceError;
 
 // ========================================================================== //
@@ -542,12 +545,25 @@ async fn write_batches(
     )
     .await?;
 
+    let write_builder = apply_write_builder_options(table.write(batches), &cmd)?;
+
+    // write() consumes self and returns DeltaTable.
+    let _table = write_builder.await.map_err(ServiceError::Delta)?;
+
+    let msg = format!("Wrote batches to {}.", cmd.path);
+    info!("{}", msg);
+    Ok(success_response(&msg))
+}
+
+fn apply_write_builder_options(
+    mut write_builder: WriteBuilder,
+    cmd: &WriteCommand,
+) -> Result<WriteBuilder, ServiceError> {
     let save_mode = match cmd.mode.as_str() {
         "append" => deltalake::protocol::SaveMode::Append,
         _ => deltalake::protocol::SaveMode::Overwrite,
     };
-
-    let mut write_builder = table.write(batches).with_save_mode(save_mode);
+    write_builder = write_builder.with_save_mode(save_mode);
 
     if let Some(schema_mode) = cmd.schema_mode.as_deref() {
         let schema_mode = match schema_mode {
@@ -577,11 +593,39 @@ async fn write_batches(
         write_builder = write_builder.with_configuration(config_pairs);
     }
 
-    // write() consumes self and returns DeltaTable.
-    let _table = write_builder.await.map_err(ServiceError::Delta)?;
+    Ok(write_builder)
+}
+
+async fn write_reader(
+    cmd: WriteCommand,
+    reader: ArrowArrayStreamReader,
+) -> Result<serde_json::Value, ServiceError> {
+    let table = open_or_initialize_delta_table(
+        &cmd.path,
+        cmd.storage_account.as_deref(),
+        cmd.sas_token.as_deref(),
+        None,
+    )
+    .await?;
+    let ctx = create_session().into_inner();
+    table
+        .update_datafusion_session(&ctx.state())
+        .map_err(ServiceError::Delta)?;
+
+    let input = build_streaming_input_plan(&ctx, reader)?;
+    let write_builder = WriteBuilder::new(
+        table.log_store(),
+        table.snapshot().ok().map(|state| state.snapshot().clone()),
+    )
+    .with_input_plan(input)
+    .with_session_state(Arc::new(ctx.state()));
+
+    let _table = apply_write_builder_options(write_builder, &cmd)?
+        .await
+        .map_err(ServiceError::Delta)?;
 
     let msg = format!("Wrote batches to {}.", cmd.path);
-    info!("{}", msg);
+    info!(path = %cmd.path, mode = %cmd.mode, "Wrote imported Arrow stream to Delta table");
     Ok(success_response(&msg))
 }
 
@@ -591,6 +635,13 @@ pub async fn handle_native_insert(
     batches: Vec<RecordBatch>,
 ) -> Result<serde_json::Value, ServiceError> {
     write_batches(cmd, batches).await
+}
+
+pub async fn handle_native_insert_reader(
+    cmd: WriteCommand,
+    reader: ArrowArrayStreamReader,
+) -> Result<serde_json::Value, ServiceError> {
+    write_reader(cmd, reader).await
 }
 
 /// Transport-neutral merge entrypoint used by the native in-process backend.
@@ -776,8 +827,12 @@ async fn merge_batches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::write_stream::{NativeWritePartitionStream, NativeWriteStreamState};
     use arrow::array::{Int32Array, StringArray};
+    use arrow::ffi_stream::FFI_ArrowArrayStream;
     use arrow::datatypes::{DataType, Field};
+    use datafusion::physical_plan::streaming::PartitionStream;
+    use futures::StreamExt;
     use url::Url;
 
     /// Creates a temp directory and returns (path_string, _temp_dir_guard).
@@ -1250,6 +1305,114 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(count, 5);
+    }
+
+    #[tokio::test]
+    async fn handle_native_insert_reader_consumes_stream_once() {
+        let (path, _tmp) = temp_table_path();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        let cmd = WriteCommand {
+            path: path.clone(),
+            mode: "overwrite".to_string(),
+            schema_mode: None,
+            operation: "write".to_string(),
+            storage_account: None,
+            sas_token: None,
+            configuration: None,
+            partition_by: None,
+            predicate: None,
+            source_alias: None,
+            target_alias: None,
+            when_matched_update_all: None,
+            when_matched_update_set: None,
+            when_matched_delete_predicate: None,
+            when_not_matched_insert_all: None,
+            when_not_matched_insert_set: None,
+            when_not_matched_by_source_delete_predicate: None,
+            when_not_matched_by_source_update_set: None,
+            when_not_matched_by_source_update_predicate: None,
+        };
+
+        let reader = Box::new(arrow::record_batch::RecordBatchIterator::new(
+            vec![Ok(source_batch)].into_iter(),
+            schema,
+        ));
+        let mut ffi_stream = FFI_ArrowArrayStream::new(reader);
+        let imported = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }.unwrap();
+
+        let result = handle_native_insert_reader(cmd, imported).await.unwrap();
+        assert_eq!(result["success"], true);
+
+        let table = open_delta_table(&path, None, None, None, None).await.unwrap();
+        let ctx = SessionContext::new();
+        let provider = table.table_provider().await.unwrap();
+        ctx.register_table("t", provider).unwrap();
+        let df = ctx.sql("SELECT COUNT(*) AS cnt FROM t").await.unwrap();
+        let batches = df.collect().await.unwrap();
+        let count = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(count, 3);
+    }
+
+    #[tokio::test]
+    async fn native_write_partition_stream_second_execute_returns_error_batch() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let source_batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec!["a"])),
+            ],
+        )
+        .unwrap();
+
+        let reader = Box::new(arrow::record_batch::RecordBatchIterator::new(
+            vec![Ok(source_batch)].into_iter(),
+            Arc::clone(&schema),
+        ));
+        let mut ffi_stream = FFI_ArrowArrayStream::new(reader);
+        let imported = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }.unwrap();
+        let partition = NativeWritePartitionStream::new(
+            Arc::clone(&schema),
+            Arc::new(std::sync::Mutex::new(NativeWriteStreamState::new(imported))),
+        );
+
+        let first_stream = partition.execute(SessionContext::new().task_ctx());
+        let first_batches: Vec<_> = first_stream.collect().await;
+        assert_eq!(first_batches.len(), 1);
+        assert!(first_batches[0].is_ok());
+
+        let second_stream = partition.execute(SessionContext::new().task_ctx());
+        let second_batches: Vec<_> = second_stream.collect().await;
+        assert_eq!(second_batches.len(), 1);
+        let error_message = second_batches[0]
+            .as_ref()
+            .expect_err("second execute should fail")
+            .to_string();
+        assert!(
+            error_message.contains("can only be consumed once"),
+            "unexpected second-scan error: {error_message}"
+        );
     }
 
     // ------------------------------------------------------------------ //

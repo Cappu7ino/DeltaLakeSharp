@@ -16,6 +16,7 @@ pub mod helpers;
 pub mod read;
 pub mod request;
 pub mod write;
+pub mod write_stream;
 
 /// Stateless facade over the V3 behavior.
 #[derive(Debug, Default, Clone)]
@@ -96,14 +97,10 @@ impl DeltaService {
     pub async fn insert_reader(
         &self,
         body: &[u8],
-        mut reader: ArrowArrayStreamReader,
+        reader: ArrowArrayStreamReader,
     ) -> Result<serde_json::Value, ServiceError> {
         let cmd = serde_json::from_slice::<WriteCommand>(body).map_err(ServiceError::Json)?;
-        let batches = reader
-            .by_ref()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(ServiceError::Arrow)?;
-        self::write::handle_native_insert(cmd, batches).await
+        self::write::handle_native_insert_reader(cmd, reader).await
     }
 
     /// Consumes an imported Arrow C Stream reader and merges it into the target

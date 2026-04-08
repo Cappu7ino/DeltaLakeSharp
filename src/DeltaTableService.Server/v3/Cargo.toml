@@ -27,6 +27,7 @@ prost = "0.13"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
+async-trait = "0.1"
 
 # Delta Lake + query engine
 deltalake = { version = "0.31.1", features = ["datafusion", "azure"] }
