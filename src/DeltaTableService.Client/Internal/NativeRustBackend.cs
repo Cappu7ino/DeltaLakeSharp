@@ -46,6 +46,33 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long? version = null,
             CancellationToken cancellationToken = default)
         {
+            Schema arrowSchema = GetArrowSchema(
+                path,
+                storageConfig,
+                genericStorageOptions,
+                version,
+                cancellationToken);
+
+            return Task.FromResult(ArrowConverter.ToTableSchema(arrowSchema));
+        }
+
+        public Task<Schema> GetArrowSchemaAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(GetArrowSchema(path, storageConfig, genericStorageOptions, version, cancellationToken));
+        }
+
+        private Schema GetArrowSchema(
+            string path,
+            StorageConfig? storageConfig,
+            GenericStorageOptions? genericStorageOptions,
+            long? version,
+            CancellationToken cancellationToken)
+        {
             cancellationToken.ThrowIfCancellationRequested();
 
             var command = new Dictionary<string, object>
@@ -77,7 +104,7 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
                     }
 
                     Schema schema = CArrowSchemaImporter.ImportSchema(schemaPtr);
-                    return Task.FromResult(ArrowConverter.ToTableSchema(schema));
+                    return schema;
                 }
                 finally
                 {

@@ -84,6 +84,24 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             return ArrowConverter.ToTableSchema(arrowSchema);
         }
 
+        public Task<Schema> GetArrowSchemaAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            var cmd = new Dictionary<string, object> { ["path"] = path };
+            AddStorageConfig(cmd, storageConfig, genericStorageOptions);
+            if (version.HasValue)
+            {
+                cmd["version"] = version.Value;
+            }
+
+            byte[] commandJson = JsonSerializer.SerializeToUtf8Bytes(cmd);
+            return GetArrowSchemaAsync(commandJson);
+        }
+
         /// <inheritdoc />
         public IAsyncEnumerable<RecordBatch> ReadTableAsync(
             string path,

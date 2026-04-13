@@ -52,8 +52,8 @@ namespace Microsoft.DI.DeltaTableService.Client
         private readonly IDeltaTableServiceBackend _backend;
 
         /// <summary>
-        /// Gets the service mode this client is using.
-        /// </summary>
+         /// Gets the service mode this client is using.
+         /// </summary>
         public ServiceMode Mode { get; }
 
         /// <summary>
@@ -87,8 +87,8 @@ namespace Microsoft.DI.DeltaTableService.Client
         }
 
         /// <summary>
-        /// Initializes a new client that connects to the server at the given URI
-        /// using the specified backend protocol.
+         /// Initializes a new client that connects to the server at the given URI
+         /// using the specified backend protocol.
         /// </summary>
         /// <param name="serverUri">
         /// The base URI of the server.
@@ -674,6 +674,16 @@ namespace Microsoft.DI.DeltaTableService.Client
             CancellationToken cancellationToken = default)
         {
             return _backend.GetSchemaAsync(path, storageConfig, genericStorageOptions, version, cancellationToken);
+        }
+
+        internal Task<Schema> GetArrowSchemaAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default)
+        {
+            return _backend.GetArrowSchemaAsync(path, storageConfig, genericStorageOptions, version, cancellationToken);
         }
 
         // ------------------------------------------------------------------ //

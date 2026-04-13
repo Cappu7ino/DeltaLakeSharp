@@ -9,6 +9,7 @@ using Apache.Arrow.Ipc;
 using Apache.Arrow.Types;
 using Microsoft.DI.DeltaTableService.Adbc.Internal;
 using Microsoft.DI.DeltaTableService.Client;
+using Microsoft.DI.DeltaTableService.Client.Models;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 namespace Microsoft.DI.DeltaTableService.Adbc.Tests
@@ -242,6 +243,131 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
                 finally
                 {
                     statement.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetTableSchema_WithConnectionVersion_ReturnsHistoricalSchema()
+        {
+            using OpenedConnection opened = OpenConnectionWithSchemaEvolution(new Dictionary<string, string>
+            {
+                [DeltaAdbcStatementOptions.VersionOptionKey] = "1",
+            });
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                Schema schema = connection.GetTableSchema(null, null, DeltaAdbcConnectOptions.LogicalTableName);
+
+                Assert.AreEqual(2, schema.FieldsList.Count);
+                Assert.AreEqual("id", schema.FieldsList[0].Name);
+                Assert.AreEqual("name", schema.FieldsList[1].Name);
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_GetObjects_WithConnectionVersion_ReturnsHistoricalColumns()
+        {
+            using OpenedConnection opened = OpenConnectionWithSchemaEvolution(new Dictionary<string, string>
+            {
+                [DeltaAdbcStatementOptions.VersionOptionKey] = "1",
+            });
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var stream = connection.GetObjects(
+                    AdbcConnection.GetObjectsDepth.All,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null);
+                RecordBatch? batch = stream.ReadNextRecordBatchAsync().AsTask().GetAwaiter().GetResult();
+
+                Assert.IsNotNull(batch);
+
+                StructArray columnValues = GetColumnStructArray(batch!);
+                var columnNames = (StringArray)columnValues.Fields[0];
+
+                Assert.AreEqual(2, columnValues.Length);
+                Assert.AreEqual("id", columnNames.GetString(0));
+                Assert.AreEqual("name", columnNames.GetString(1));
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_ConnectionVersion_DefaultsStatementReadsToHistoricalSnapshot()
+        {
+            using OpenedConnection opened = OpenConnectionWithSchemaEvolution(new Dictionary<string, string>
+            {
+                [DeltaAdbcStatementOptions.VersionOptionKey] = "1",
+            });
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var statement = connection.CreateStatement();
+                QueryResult readResult = statement.ExecuteQuery();
+                var readStream = readResult.Stream ?? throw new AssertFailedException("Read stream should not be null.");
+                try
+                {
+                    List<(int id, string name)> rows = ReadAllRowsSorted(readStream);
+                    Assert.AreEqual(2, rows.Count);
+                    Assert.AreEqual((1, "alice"), rows[0]);
+                    Assert.AreEqual((2, "bob"), rows[1]);
+                }
+                finally
+                {
+                    readStream.Dispose();
+                }
+            }
+            finally
+            {
+                connection.Dispose();
+            }
+        }
+
+        [TestMethod]
+        public void Driver_StatementVersion_OverridesConnectionVersion_ForSchemaEvolutionFixture()
+        {
+            using OpenedConnection opened = OpenConnectionWithSchemaEvolution(new Dictionary<string, string>
+            {
+                [DeltaAdbcStatementOptions.VersionOptionKey] = "1",
+            });
+            AdbcConnection connection = opened.Connection;
+
+            try
+            {
+                using var statement = connection.CreateStatement();
+                statement.SetOption(DeltaAdbcStatementOptions.VersionOptionKey, "2");
+                QueryResult readResult = statement.ExecuteQuery();
+                var readStream = readResult.Stream ?? throw new AssertFailedException("Read stream should not be null.");
+                try
+                {
+                    var rows = ReadAllDictionaryRows(readStream).OrderBy(row => Convert.ToInt32(row["id"])).ToList();
+                    Assert.AreEqual(2, rows.Count);
+                    Assert.IsTrue(rows.All(row => row.ContainsKey("city")));
+                    Assert.IsTrue(rows.All(row => row.ContainsKey("active")));
+                    Assert.AreEqual("Seattle", rows[0]["city"]);
+                    Assert.AreEqual(true, rows[0]["active"]);
+                }
+                finally
+                {
+                    readStream.Dispose();
                 }
             }
             finally
@@ -1144,6 +1270,15 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
             return new OpenedConnection(driver, database, connection);
         }
 
+        private OpenedConnection OpenConnectionWithSchemaEvolution(IReadOnlyDictionary<string, string>? extraOptions = null)
+        {
+            _tempDir = Path.Combine(Path.GetTempPath(), $"adbc_v3_schema_evolution_{Guid.NewGuid():N}");
+            string tablePath = Path.Combine(_tempDir, "test_table");
+            CreateSchemaEvolutionDeltaTable(tablePath);
+
+            return OpenConnectionForTablePath(tablePath, extraOptions);
+        }
+
         private OpenedConnection OpenConnectionWithPartitionedData(IReadOnlyDictionary<string, string>? extraOptions = null)
         {
             string? binaryPath = FindRustFixtureBinary();
@@ -1287,6 +1422,54 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
                     Microsoft.DI.DeltaTableService.Client.Models.SaveMode.Append)
                     .GetAwaiter().GetResult();
             }
+        }
+
+        private static void CreateSchemaEvolutionDeltaTable(string tablePath)
+        {
+            var initialSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+
+            ExecuteResult createResult = client.CreateTableAsync(tablePath, initialSchema).GetAwaiter().GetResult();
+            Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+            RecordBatch initialBatch = ArrowConverter.FromRows(new[]
+            {
+                new object[] { 1, "alice" },
+                new object[] { 2, "bob" },
+            }, initialSchema);
+
+            client.InsertAsync(
+                tablePath,
+                initialBatch.Schema,
+                ArrowConverter.ToAsyncEnumerable(initialBatch),
+                SaveMode.Append)
+                .GetAwaiter().GetResult();
+
+            var replacementSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("city", "string"),
+                new ColumnDefinition("active", "boolean"),
+            });
+
+            RecordBatch replacementBatch = ArrowConverter.FromRows(new[]
+            {
+                new object[] { 10, "Seattle", true },
+                new object[] { 20, "Portland", false },
+            }, replacementSchema);
+
+            client.InsertAsync(
+                tablePath,
+                replacementBatch.Schema,
+                ArrowConverter.ToAsyncEnumerable(replacementBatch),
+                SaveMode.Overwrite,
+                schemaMode: WriteSchemaMode.Overwrite)
+                .GetAwaiter().GetResult();
         }
 
         private static string? FindRustFixtureBinary()

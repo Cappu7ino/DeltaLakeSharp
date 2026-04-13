@@ -31,8 +31,15 @@ namespace Microsoft.DI.DeltaTableService.Client.Internal
             long? version = null,
             CancellationToken cancellationToken = default);
 
+        Task<Schema> GetArrowSchemaAsync(
+            string path,
+            StorageConfig? storageConfig = null,
+            GenericStorageOptions? genericStorageOptions = null,
+            long? version = null,
+            CancellationToken cancellationToken = default);
+
         /// <summary>
-        /// Reads rows from a Delta table, streaming Arrow RecordBatches as
+         /// Reads rows from a Delta table, streaming Arrow RecordBatches as
         /// they arrive. Optionally limits the number of rows returned and/or
         /// reads a specific historical version.
         /// </summary>

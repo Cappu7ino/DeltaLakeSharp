@@ -3,6 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
+using Apache.Arrow.Adbc;
+using Microsoft.DI.DeltaTableService.Adbc.Internal;
 using Microsoft.DI.DeltaTableService.Client.Models;
 
 namespace Microsoft.DI.DeltaTableService.Adbc
@@ -19,6 +22,8 @@ namespace Microsoft.DI.DeltaTableService.Adbc
 
         public string TableUri { get; private set; } = string.Empty;
 
+        public long? Version { get; private set; }
+
         public GenericStorageOptions? StorageOptions { get; private set; }
 
         public IReadOnlyDictionary<string, string> ToParameterDictionary()
@@ -27,6 +32,11 @@ namespace Microsoft.DI.DeltaTableService.Adbc
             {
                 [TableUriKey] = TableUri,
             };
+
+            if (Version.HasValue)
+            {
+                parameters[DeltaAdbcStatementOptions.VersionOptionKey] = Version.Value.ToString(CultureInfo.InvariantCulture);
+            }
 
             if (StorageOptions != null)
             {
@@ -57,6 +67,20 @@ namespace Microsoft.DI.DeltaTableService.Adbc
                 if (string.Equals(pair.Key, TableUriKey, StringComparison.OrdinalIgnoreCase))
                 {
                     options.TableUri = pair.Value;
+                }
+                else if (string.Equals(pair.Key, DeltaAdbcStatementOptions.VersionOptionKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!long.TryParse(pair.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long version))
+                    {
+                        throw new ArgumentException($"Connection option '{DeltaAdbcStatementOptions.VersionOptionKey}' has an invalid value '{pair.Value}'.", nameof(parameters));
+                    }
+
+                    if (version < 0)
+                    {
+                        throw new ArgumentException($"Connection option '{DeltaAdbcStatementOptions.VersionOptionKey}' must be greater than or equal to zero.", nameof(parameters));
+                    }
+
+                    options.Version = version;
                 }
                 else if (string.Equals(pair.Key, AzureStorageAccountKey, StringComparison.OrdinalIgnoreCase))
                 {

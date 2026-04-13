@@ -52,5 +52,41 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Tests
             Assert.AreEqual("abc", parameters[DeltaAdbcConnectOptions.StorageOptionPrefix + DeltaAdbcConnectOptions.BearerTokenStorageOptionKey]);
             Assert.AreEqual("true", parameters[DeltaAdbcConnectOptions.StorageOptionPrefix + "use_fabric_endpoint"]);
         }
+
+        [TestMethod]
+        public void Parse_WithVersion_StoresHistoricalSnapshotVersion()
+        {
+            DeltaAdbcConnectOptions options = DeltaAdbcConnectOptions.Parse(new Dictionary<string, string>
+            {
+                [DeltaAdbcConnectOptions.TableUriKey] = "C:/tables/foo",
+                [DeltaAdbcStatementOptions.VersionOptionKey] = "7",
+            });
+
+            Assert.AreEqual(7L, options.Version);
+        }
+
+        [TestMethod]
+        public void ToParameterDictionary_RoundTripsVersion()
+        {
+            DeltaAdbcConnectOptions options = DeltaAdbcConnectOptions.Parse(new Dictionary<string, string>
+            {
+                [DeltaAdbcConnectOptions.TableUriKey] = "C:/tables/foo",
+                [DeltaAdbcStatementOptions.VersionOptionKey] = "3",
+            });
+
+            IReadOnlyDictionary<string, string> parameters = options.ToParameterDictionary();
+
+            Assert.AreEqual("3", parameters[DeltaAdbcStatementOptions.VersionOptionKey]);
+        }
+
+        [TestMethod]
+        public void Parse_WithNegativeVersion_ThrowsArgumentException()
+        {
+            Assert.ThrowsException<ArgumentException>(() => DeltaAdbcConnectOptions.Parse(new Dictionary<string, string>
+            {
+                [DeltaAdbcConnectOptions.TableUriKey] = "C:/tables/foo",
+                [DeltaAdbcStatementOptions.VersionOptionKey] = "-1",
+            }));
+        }
     }
 }

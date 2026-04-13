@@ -119,15 +119,12 @@ namespace Microsoft.DI.DeltaTableService.Adbc.Internal
         public async Task<Schema> GetSchemaAsync(DeltaAdbcStatementOptions? statementOptions, CancellationToken cancellationToken)
         {
             DeltaAdbcStatementOptions effectiveOptions = statementOptions?.Clone() ?? new DeltaAdbcStatementOptions();
-            IArrowArrayStream streamResult = await OpenReadTableStreamAsync(effectiveOptions, cancellationToken).ConfigureAwait(false);
-            try
-            {
-                return streamResult.Schema;
-            }
-            finally
-            {
-                streamResult.Dispose();
-            }
+
+            return await _client.GetArrowSchemaAsync(
+                Options.TableUri,
+                genericStorageOptions: Options.StorageOptions ?? null,
+                version: effectiveOptions.Version,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
         public Schema GetSchema(DeltaAdbcStatementOptions? statementOptions, CancellationToken cancellationToken)

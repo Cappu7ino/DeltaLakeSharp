@@ -24,6 +24,12 @@ namespace Microsoft.DI.DeltaTableService.Adbc
             _options = options;
         }
 
+        internal DeltaAdbcConnection(DeltaAdbcConnectOptions options, IDeltaAdbcClientAdapter adapter)
+        {
+            _options = options;
+            _adapter = adapter;
+        }
+
         internal DeltaAdbcConnection(IDeltaAdbcClientAdapter adapter)
         {
             _adapter = adapter;
@@ -36,7 +42,7 @@ namespace Microsoft.DI.DeltaTableService.Adbc
         /// </summary>
         public override AdbcStatement CreateStatement()
         {
-            return new DeltaAdbcStatement(_adapter);
+            return new DeltaAdbcStatement(_adapter, CreateDefaultStatementOptions());
         }
 
         /// <summary>
@@ -45,7 +51,7 @@ namespace Microsoft.DI.DeltaTableService.Adbc
         public override Schema GetTableSchema(string? catalog, string? dbSchema, string tableName)
         {
             ValidateLogicalTable(catalog, dbSchema, tableName);
-            return _adapter.GetSchema(statementOptions: null, default);
+            return _adapter.GetSchema(CreateDefaultStatementOptions(), default);
         }
 
         /// <summary>
@@ -76,7 +82,7 @@ namespace Microsoft.DI.DeltaTableService.Adbc
             string? columnNamePattern)
         {
             return DeltaAdbcMetadataBuilder.CreateGetObjectsStream(
-                _adapter.GetSchema(statementOptions: null, default),
+                _adapter.GetSchema(CreateDefaultStatementOptions(), default),
                 depth,
                 catalogPattern,
                 dbSchemaPattern,
@@ -101,6 +107,14 @@ namespace Microsoft.DI.DeltaTableService.Adbc
         {
             _adapter.Dispose();
             base.Dispose();
+        }
+
+        private DeltaAdbcStatementOptions CreateDefaultStatementOptions()
+        {
+            return new DeltaAdbcStatementOptions().WithDefaults(
+                version: _options?.Version,
+                maxRows: null,
+                batchSize: null);
         }
 
         private static void ValidateLogicalTable(string? catalog, string? dbSchema, string tableName)
