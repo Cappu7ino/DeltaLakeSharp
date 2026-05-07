@@ -756,7 +756,7 @@ namespace Microsoft.DI.DeltaTableService.Tests
 
                 string resultText = string.Join(" ", upgradeResult.Result[0].Values);
                 Assert.IsTrue(
-                    resultText.Contains("changeDataFeed", StringComparison.OrdinalIgnoreCase),
+                    resultText.IndexOf("changeDataFeed", StringComparison.OrdinalIgnoreCase) >= 0,
                     $"Expected protocol result to mention changeDataFeed. Actual: {resultText}");
             }
             finally

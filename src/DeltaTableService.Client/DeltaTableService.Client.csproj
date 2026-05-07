@@ -2,7 +2,7 @@
   <PropertyGroup>
     <RootNamespace>Microsoft.DI.DeltaTableService.Client</RootNamespace>
     <AssemblyName>Microsoft.DI.DeltaTableService.Client</AssemblyName>
-    <TargetFrameworks>net8.0;net472</TargetFrameworks>
+    <TargetFrameworks>net8.0;net472;netstandard2.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -38,6 +38,8 @@
     <RustCargoCommandPrefix Condition="'$(RustTargetCpu)' != ''">set &quot;RUSTFLAGS=-C target-cpu=$(RustTargetCpu)&quot; &amp;&amp; </RustCargoCommandPrefix>
     <RustNativeStampDir>$(BaseIntermediateOutputPath)rust-native</RustNativeStampDir>
     <RustNativeStampFile>$(RustNativeStampDir)\$(Configuration)-$(RustTargetCpuStampSegment).stamp</RustNativeStampFile>
+    <!-- Compatibility tests can compile target framework assets without rebuilding the native Rust library. -->
+    <SkipRustBuild Condition="'$(SkipRustBuild)' == ''">false</SkipRustBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -51,7 +53,7 @@
     <PackageReference Include="Microsoft.SourceLink.AzureRepos.Git" Version="8.0.0" PrivateAssets="All" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+  <ItemGroup Condition="'$(TargetFramework)' == 'net472' Or '$(TargetFramework)' == 'netstandard2.0'">
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
     <PackageReference Include="System.Text.Json" Version="8.0.5" />
     <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.0" />
@@ -68,14 +70,14 @@
     <RustNativeInputs Include="$(RustV3ProjectDir)\src\**\*.rs" />
   </ItemGroup>
 
-  <Target Name="BuildRustNativeForSingleTargetBuild" BeforeTargets="Build" Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'" Inputs="@(RustNativeInputs)" Outputs="$(RustNativeStampFile)">
+  <Target Name="BuildRustNativeForSingleTargetBuild" BeforeTargets="Build" Condition="'$(DesignTimeBuild)' != 'true' and '$(SkipRustBuild)' != 'true' and '$(IsCrossTargetingBuild)' != 'true'" Inputs="@(RustNativeInputs)" Outputs="$(RustNativeStampFile)">
     <Message Importance="high" Text="Building Rust native library for $(Configuration) via cargo build $(RustCargoBuildArg)$(RustCargoMessageSuffix)..." />
     <MakeDir Directories="$(RustNativeStampDir)" />
     <Exec Command="$(RustCargoCommandPrefix)cargo build $(RustCargoBuildArg)" WorkingDirectory="$(RustV3ProjectDir)" />
     <Touch Files="$(RustNativeStampFile)" AlwaysCreate="true" />
   </Target>
 
-  <Target Name="BuildRustNativeForCrossTargetBuild" BeforeTargets="DispatchToInnerBuilds" Condition="'$(DesignTimeBuild)' != 'true' and '$(IsCrossTargetingBuild)' == 'true'" Inputs="@(RustNativeInputs)" Outputs="$(RustNativeStampFile)">
+  <Target Name="BuildRustNativeForCrossTargetBuild" BeforeTargets="DispatchToInnerBuilds" Condition="'$(DesignTimeBuild)' != 'true' and '$(SkipRustBuild)' != 'true' and '$(IsCrossTargetingBuild)' == 'true'" Inputs="@(RustNativeInputs)" Outputs="$(RustNativeStampFile)">
     <Message Importance="high" Text="Building Rust native library for $(Configuration) package via cargo build $(RustCargoBuildArg)$(RustCargoMessageSuffix)..." />
     <MakeDir Directories="$(RustNativeStampDir)" />
     <Exec Command="$(RustCargoCommandPrefix)cargo build $(RustCargoBuildArg)" WorkingDirectory="$(RustV3ProjectDir)" />

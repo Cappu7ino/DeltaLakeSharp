@@ -1,7 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#if !NET472
+#if NET8_0_OR_GREATER
 using System;
 using System.IO;
 using System.Reflection;
