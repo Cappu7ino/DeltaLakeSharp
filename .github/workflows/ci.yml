@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore
+        run: dotnet restore DeltaLakeSharp.sln
+
+      - name: Test Rust V3 runtime
+        working-directory: src/DeltaLakeSharp.Server/v3
+        run: cargo test
+
+      - name: Build solution
+        run: dotnet build DeltaLakeSharp.sln --configuration Release --no-restore /p:SkipRustBuild=true -m:1
+
+      - name: Build client example
+        run: dotnet build examples\DeltaLakeSharp.Client.Examples\DeltaLakeSharp.Client.Examples.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+
+      - name: Run compatibility tests
+        run: dotnet test tests\DeltaLakeSharp.Client.Compatibility.Tests\DeltaLakeSharp.Client.Compatibility.Tests.csproj --configuration Release --no-build

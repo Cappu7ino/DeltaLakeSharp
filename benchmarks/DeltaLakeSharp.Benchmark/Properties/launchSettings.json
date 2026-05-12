@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DeltaLakeSharp.Benchmark": {
+      "commandName": "Project",
+      "commandLineArgs": "sanity-check-delta"
+    }
+  }
+}

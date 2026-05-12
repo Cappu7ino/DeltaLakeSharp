@@ -1,4 +1,4 @@
-# DeltaTableService Limitations
+# DeltaLakeSharp Limitations
 
 This file is intentionally direct. Use it to prevent incorrect SDK integrations and overconfident agent-generated code.
 

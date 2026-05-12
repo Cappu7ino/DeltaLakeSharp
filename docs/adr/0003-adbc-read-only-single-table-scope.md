@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-`Microsoft.DI.DeltaTableService.Adbc` exposes Delta tables to ADBC consumers. The implementation is backed by the V3 Rust path and maps one Delta table path to a synthetic logical table.
+`DeltaLakeSharp.Adbc` exposes Delta tables to ADBC consumers. The implementation is backed by the V3 Rust path and maps one Delta table path to a synthetic logical table.
 
 ## Problem
 

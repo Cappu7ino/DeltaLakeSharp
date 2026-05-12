@@ -1,8 +1,16 @@
-# Delta Table Service
+# DeltaLakeSharp
 
-A batteries-included Delta Lake client library for .NET with streaming Arrow reads and writes, SQL operations, merge support, protocol upgrades, and interchangeable Spark, Flight, and native Rust backends.
+DeltaLakeSharp is an experimental, incubating Delta Lake SDK for .NET with streaming Arrow reads and writes, SQL operations, merge support, protocol upgrades, and interchangeable Spark, Flight, and native Rust backends.
 
-The library is designed for application code, data tooling, automation, and integration scenarios. The container-based harnesses and test projects in this repository are supporting assets, not the primary purpose of the library.
+The library is designed for application code, data tooling, automation, and integration scenarios. The V3 native Rust runtime is the recommended path for external SDK and ADBC consumers. The container-based harnesses and test projects in this repository are supporting assets, not the primary purpose of the library.
+
+Planned public package family:
+
+- `DeltaLakeSharp.Client` - primary C# SDK for Delta table reads, writes, SQL, DML, CDF, partitioned reads, schema operations, and protocol upgrades.
+- `DeltaLakeSharp.Adbc` - read-only Arrow Database Connectivity driver backed by the V3 native Rust path.
+- `DeltaLakeSharp.Testing` - test harness support for repository and downstream validation scenarios.
+
+The planned public repository location is `https://github.com/Cappu7ino/DeltaLakeSharp`.
 
 ## Target Frameworks
 
@@ -16,15 +24,15 @@ The native `V3_Rust` backend is supported when the V3 native runtime asset is av
 
 ## Examples And AI Integration Docs
 
-Compileable SDK consumer examples are available in [examples/DeltaTableService.Client.Examples](examples/DeltaTableService.Client.Examples). The example project is a `net8.0` host that intentionally references the client library's `netstandard2.0` asset, which helps keep generated and copied integration code compatible with the broadest public client surface.
+Compileable SDK consumer examples are available in [examples/DeltaLakeSharp.Client.Examples](examples/DeltaLakeSharp.Client.Examples). The example project is a `net8.0` host that intentionally references the client library's `netstandard2.0` asset, which helps keep generated and copied integration code compatible with the broadest public client surface.
 
 AI-friendly integration artifacts are indexed in [docs/ai/README.md](docs/ai/README.md). They include capability matrices, common patterns, anti-patterns, architecture notes, how-to guides, ADRs, and semantic public API metadata for downstream retrieval and agentic coding workflows.
 
-Executable V3 SDK scenario tests live in [tests/DeltaTableService.Tests/IntegrationScenarios](tests/DeltaTableService.Tests/IntegrationScenarios). They cover the recommended native client path across streaming Arrow reads, `DbDataReader`, SQL queries, partition planning, and Change Data Feed.
+Executable V3 SDK scenario tests live in [tests/DeltaLakeSharp.Tests/IntegrationScenarios](tests/DeltaLakeSharp.Tests/IntegrationScenarios). They cover the recommended native client path across streaming Arrow reads, `DbDataReader`, SQL queries, partition planning, and Change Data Feed.
 
 ## Architecture
 
-The service ships with **three interchangeable backends**, each exposing the same C# client API:
+The repository ships with **three interchangeable backends**, each exposing the same C# client API:
 
 | Backend | Engine | Protocol | Dockerfile | Base Image |
 |---------|--------|----------|------------|------------|
@@ -32,7 +40,7 @@ The service ships with **three interchangeable backends**, each exposing the sam
 | **V2** | DataFusion + delta-rs | Arrow Flight (port 8815) | `v2/Dockerfile` | `python:3.11-slim` |
 | **V3** | Native Rust + delta-rs | In-process native interop | N/A | N/A |
 
-All backends are accessed through the same `DeltaTableServiceClient` class.
+All backends are accessed through the same `DeltaTableServiceClient` class in the `DeltaLakeSharp.Client` namespace.
 The backend is selected at construction time via the `ServiceMode` enum and is
 transparent to the caller.
 
@@ -41,6 +49,9 @@ transparent to the caller.
 ### Quick Start
 
 ```csharp
+using DeltaLakeSharp.Client;
+using DeltaLakeSharp.Client.Models;
+
 // 1. Create a client. V3 native mode runs in-process and does not require a server URI.
 using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
 
@@ -86,11 +97,11 @@ ExecuteResult mergeResult = await client.MergeDataAsync(
     mergeOptions);
 ```
 
-For V1 and V2 containerized backends, `Microsoft.DI.DeltaTableService.Testing.DeltaTableContainer` remains available as a convenience for local development, compatibility testing, and integration scenarios.
+For V1 and V2 containerized backends, `DeltaLakeSharp.Testing.DeltaTableContainer` remains available as a convenience for local development, compatibility testing, and integration scenarios.
 
 ### DeltaTableServiceClient
 
-The public entry point. Wraps all Arrow/gRPC protocol details behind standard
+The primary public SDK entry point. Wraps Arrow, Flight, and native runtime details behind standard
 .NET types (`DataTable`, `IAsyncEnumerable<RecordBatch>`, etc.).
 
 | Method | Returns | Description |
@@ -272,7 +283,7 @@ The generator uses the native V3 client to create and populate local Delta table
 ### CLI Usage
 
 ```bash
-dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind <full-read|full-cdf> --output <path> [options]
+dotnet run --project benchmarks/DeltaLakeSharp.Benchmark --framework net8.0 -- generate-dataset --kind <full-read|full-cdf> --output <path> [options]
 ```
 
 Options:
@@ -290,34 +301,34 @@ Options:
 Generate the default snapshot dataset matrix used by the benchmark project:
 
 ```powershell
-pwsh -NoLogo -NoProfile -File benchmarks/DeltaTableService.Benchmark/Generate-BenchmarkDatasets.ps1 -Overwrite
+pwsh -NoLogo -NoProfile -File benchmarks/DeltaLakeSharp.Benchmark/Generate-BenchmarkDatasets.ps1 -Overwrite
 ```
 
 This creates:
 
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/1m`
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/2m`
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/5m`
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read/10m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read/1m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read/2m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read/5m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read/10m`
 
 Generate the decimal snapshot matrix plus decimal CDF dataset:
 
 ```powershell
-pwsh -NoLogo -NoProfile -File benchmarks/DeltaTableService.Benchmark/Generate-DecimalBenchmarkDatasets.ps1 -Overwrite
+pwsh -NoLogo -NoProfile -File benchmarks/DeltaLakeSharp.Benchmark/Generate-DecimalBenchmarkDatasets.ps1 -Overwrite
 ```
 
 This creates:
 
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/1m`
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/2m`
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/5m`
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-read-decimal/10m`
-- `benchmarks/DeltaTableService.Benchmark/TestData/delta-full-cdf-decimal`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read-decimal/1m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read-decimal/2m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read-decimal/5m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-read-decimal/10m`
+- `benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-cdf-decimal`
 
 To generate a default CDF dataset directly with the CLI:
 
 ```bash
-dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-cdf --schema default --output benchmarks/DeltaTableService.Benchmark/TestData/delta-full-cdf --rows 1000000 --batch-size 250000 --versions 20 --rows-per-version 50000 --overwrite
+dotnet run --project benchmarks/DeltaLakeSharp.Benchmark --framework net8.0 -- generate-dataset --kind full-cdf --schema default --output benchmarks/DeltaLakeSharp.Benchmark/TestData/delta-full-cdf --rows 1000000 --batch-size 250000 --versions 20 --rows-per-version 50000 --overwrite
 ```
 
 ### Examples
@@ -325,19 +336,19 @@ dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -
 Generate a full-read dataset:
 
 ```bash
-dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-read --schema default --output C:\data\delta-full-read --rows 10000000 --batch-size 250000 --overwrite
+dotnet run --project benchmarks/DeltaLakeSharp.Benchmark --framework net8.0 -- generate-dataset --kind full-read --schema default --output C:\data\delta-full-read --rows 10000000 --batch-size 250000 --overwrite
 ```
 
 Generate a full-CDF dataset with version history:
 
 ```bash
-dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-cdf --schema default --output C:\data\delta-full-cdf --rows 5000000 --batch-size 100000 --versions 24 --rows-per-version 25000 --overwrite
+dotnet run --project benchmarks/DeltaLakeSharp.Benchmark --framework net8.0 -- generate-dataset --kind full-cdf --schema default --output C:\data\delta-full-cdf --rows 5000000 --batch-size 100000 --versions 24 --rows-per-version 25000 --overwrite
 ```
 
 Generate a decimal full-read dataset:
 
 ```bash
-dotnet run --project benchmarks/DeltaTableService.Benchmark --framework net8.0 -- generate-dataset --kind full-read --schema decimal --output C:\data\delta-full-read-decimal --rows 2000000 --batch-size 500000 --overwrite
+dotnet run --project benchmarks/DeltaLakeSharp.Benchmark --framework net8.0 -- generate-dataset --kind full-read --schema decimal --output C:\data\delta-full-read-decimal --rows 2000000 --batch-size 500000 --overwrite
 ```
 
 Notes:
@@ -347,25 +358,14 @@ Notes:
 - `decimal` adds a `unit_price decimal(18,2)` column to the benchmark table schema
 - the generator requires the native V3 backend to be available on the local machine
 
-### Benchmark Results Reference
-
-The persisted benchmark summary for the current benchmark matrix lives at:
-
-- `benchmarks/DeltaTableService.Benchmark/BenchmarkExecutionSummary.md`
-
-Use that file to inspect:
-
-- dataset schemas used for benchmark generation
-- dataset dimensions for default and decimal benchmark data
-- measured non-decimal and decimal benchmark timings
-- managed allocation comparisons and reduction percentages
+Benchmark datasets and BenchmarkDotNet result reports are generated locally and are not tracked in public HEAD. Regenerate them from the scripts above when collecting fresh performance data.
 
 ## Project Structure
 
 ```
-DeltaLakeExperimental/
+DeltaLakeSharp/
   src/
-    DeltaTableService.Server/       # Python servers (Docker build context)
+    DeltaLakeSharp.Server/       # Python servers (Docker build context)
       app/                           # Shared Python package root
         __init__.py
         config.py                    # Shared config (ports, hosts)
@@ -387,11 +387,11 @@ DeltaLakeExperimental/
         src/
       requirements.txt               # V1 Python deps
       requirements_v2.txt            # V2 Python deps
-    DeltaTableService.Client/        # Primary .NET Delta Lake client library
+    DeltaLakeSharp.Client/        # Primary .NET Delta Lake client library
   tests/
-    DeltaTableService.Tests/         # MSTest unit + integration coverage
+    DeltaLakeSharp.Tests/         # MSTest unit + integration coverage
   benchmarks/
-    DeltaTableService.Benchmark/     # BenchmarkDotNet performance coverage
+    DeltaLakeSharp.Benchmark/     # BenchmarkDotNet performance coverage
 ```
 
 ## Building
@@ -399,34 +399,36 @@ DeltaLakeExperimental/
 From the repository root:
 
 ```bash
-dotnet build DeltaTableService.sln
+dotnet build DeltaLakeSharp.sln /p:SkipRustBuild=true -m:1
 ```
 
 ## Running Tests
 
 ```bash
 # Unit tests only (no Docker required)
-dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filter "TestCategory!=Integration"
+dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --filter "TestCategory!=Integration"
 
 # Integration tests for a specific backend
-dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filter "TestCategory=V1"
-dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filter "TestCategory=V2"
+dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --filter "TestCategory=V1"
+dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --filter "TestCategory=V2"
 
 # Focused V3/native test suites
-dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj --filter "FullyQualifiedName~DeltaTableServiceV3IntegrationTests|FullyQualifiedName~NativeRustBackendTests"
+dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --filter "FullyQualifiedName~DeltaLakeSharpV3IntegrationTests|FullyQualifiedName~NativeRustBackendTests"
 
 # All tests
-dotnet test tests/DeltaTableService.Tests/DeltaTableService.Tests.csproj
+dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj
 ```
 
-Container-based integration tests require Docker Desktop to be running. The focused native V3 test suites run in-process without Docker. Each containerized backend image is built automatically by `Microsoft.DI.DeltaTableService.Testing.DeltaTableContainer.BuildAndStartAsync` when those compatibility/integration paths are used.
+Container-based integration tests require Docker Desktop to be running. The focused native V3 test suites run in-process without Docker. Each containerized backend image is built automatically by `DeltaLakeSharp.Testing.DeltaTableContainer.BuildAndStartAsync` when those compatibility/integration paths are used.
+
+Fabric and OneLake integration tests are opt-in and read their environment-specific values from environment variables rather than checked-in constants. Set the relevant `DELTALAKESHARP_ONELAKE_*` and `DELTALAKESHARP_SQL_ENDPOINT_*` variables before running `TestCategory=OneLake`, `TestCategory=Fabric`, or `TestCategory=SqlEndpoint` suites.
 
 ## Docker Images
 
-Each Dockerfile uses `DeltaTableService.Server/` as the build context. These images are optional and primarily used for the containerized compatibility/integration backends. To build manually:
+Each Dockerfile uses `DeltaLakeSharp.Server/` as the build context. These images are optional and primarily used for the containerized compatibility/integration backends. To build manually:
 
 ```bash
-cd src/DeltaTableService.Server
+cd src/DeltaLakeSharp.Server
 
 # V1 (PySpark + Arrow Flight)
 docker build -f v1/Dockerfile -t delta-table-service:test .

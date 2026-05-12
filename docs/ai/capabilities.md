@@ -1,4 +1,4 @@
-# DeltaTableService Capabilities
+# DeltaLakeSharp Capabilities
 
 ## Runtime Positioning
 

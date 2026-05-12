@@ -20,7 +20,7 @@ Client APIs:
 - `ExecuteChangeDataQueryAsDataReaderAsync`
 - `ExecuteChangeDataQueryAsArrowStreamAsync`
 
-Source: [../../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../../src/DeltaTableService.Client/DeltaTableServiceClient.cs)
+Source: [../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs)
 
 Constraints:
 
@@ -54,7 +54,7 @@ Client APIs:
 - `ReadTablePartitionByTokenAsync`
 - Arrow stream partition variants
 
-Model: [../../src/DeltaTableService.Client/Models/DeltaReadPartition.cs](../../src/DeltaTableService.Client/Models/DeltaReadPartition.cs)
+Model: [../../src/DeltaLakeSharp.Client/Models/DeltaReadPartition.cs](../../src/DeltaLakeSharp.Client/Models/DeltaReadPartition.cs)
 
 Descriptor fields:
 

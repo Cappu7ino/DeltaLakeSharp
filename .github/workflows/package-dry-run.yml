@@ -1,0 +1,41 @@
+name: Package Dry Run
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    name: Pack NuGet artifacts
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore
+        run: dotnet restore DeltaLakeSharp.sln
+
+      - name: Build native runtime
+        working-directory: src/DeltaLakeSharp.Server/v3
+        run: cargo build --release
+
+      - name: Pack client
+        run: dotnet pack src\DeltaLakeSharp.Client\DeltaLakeSharp.Client.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+
+      - name: Pack ADBC
+        run: dotnet pack src\DeltaLakeSharp.Adbc\DeltaLakeSharp.Adbc.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+
+      - name: List packages
+        shell: pwsh
+        run: Get-ChildItem -Recurse -Filter *.nupkg | Select-Object FullName, Length

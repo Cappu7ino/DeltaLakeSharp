@@ -2,14 +2,14 @@
 
 ## Goal
 
-Reference `Microsoft.DI.DeltaTableService.Client` from a .NET application and choose the correct runtime path.
+Reference `DeltaLakeSharp.Client` from a .NET application and choose the correct runtime path.
 
 ## Choose Runtime
 
 For new external NuGet integrations, prefer V3:
 
 ```csharp
-using Microsoft.DI.DeltaTableService.Client;
+using DeltaLakeSharp.Client;
 
 using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
 ```

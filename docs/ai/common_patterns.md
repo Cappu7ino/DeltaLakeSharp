@@ -1,6 +1,6 @@
 # Common Integration Patterns
 
-Use these patterns when generating code or guidance for consumers of `Microsoft.DI.DeltaTableService.Client` and `Microsoft.DI.DeltaTableService.Adbc`.
+Use these patterns when generating code or guidance for consumers of `DeltaLakeSharp.Client` and `DeltaLakeSharp.Adbc`.
 
 ## Choose V3 For New SDK Consumers
 
@@ -13,7 +13,7 @@ Purpose:
 Pattern:
 
 ```csharp
-using Microsoft.DI.DeltaTableService.Client;
+using DeltaLakeSharp.Client;
 
 using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
 ```

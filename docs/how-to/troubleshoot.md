@@ -16,8 +16,8 @@ Checks:
 
 Relevant source:
 
-- [../../src/DeltaTableService.Client/Internal/Native/NativeMethods.cs](../../src/DeltaTableService.Client/Internal/Native/NativeMethods.cs)
-- [../../src/DeltaTableService.Client/Internal/Native/NativeEngineHandle.cs](../../src/DeltaTableService.Client/Internal/Native/NativeEngineHandle.cs)
+- [../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.cs)
+- [../../src/DeltaLakeSharp.Client/Internal/Native/NativeEngineHandle.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeEngineHandle.cs)
 
 ## `NotSupportedException` From V1 Or V2
 

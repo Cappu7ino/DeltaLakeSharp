@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
-  "repository": "DeltaLakeExperimental",
-  "primaryPackage": "Microsoft.DI.DeltaTableService.Client",
+  "repository": "DeltaLakeSharp",
+  "primaryPackage": "DeltaLakeSharp.Client",
   "entries": [
     {
       "id": "DeltaTableServiceClient",
       "type": "class",
-      "namespace": "Microsoft.DI.DeltaTableService.Client",
+      "namespace": "DeltaLakeSharp.Client",
       "capabilities": ["read", "sql", "write", "dml", "cdf", "partitioned-read", "schema", "protocol-upgrade"],
       "intendedUsage": "Primary SDK entry point for Delta table operations. Prefer V3_Rust for new external NuGet integrations unless an existing V1/V2 Flight service is required.",
       "limitations": ["Backend capabilities differ by ServiceMode", "V1/V2 are service-backed compatibility paths", "Dispose after use", "Large result materialization can be expensive"],
@@ -18,7 +18,7 @@
     {
       "id": "ServiceMode",
       "type": "enum",
-      "namespace": "Microsoft.DI.DeltaTableService.Client",
+      "namespace": "DeltaLakeSharp.Client",
       "capabilities": ["backend-selection"],
       "intendedUsage": "Select V1 Spark Flight, V2 DataFusion Flight, or V3 native Rust execution. V3 is the preferred SDK runtime; V1/V2 remain public compatibility modes for service-backed scenarios.",
       "limitations": ["Modes are not feature-equivalent", "V1/V2 require reachable Flight services", "V3 is required for ADBC-backed behavior"],
@@ -30,7 +30,7 @@
     {
       "id": "StorageConfig",
       "type": "class",
-      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["storage-auth", "onelake", "sas"],
       "intendedUsage": "Provide storage account and SAS-token settings per request.",
       "limitations": ["Contains secret material", "EvictFileSystemCache is mainly V1-oriented"],
@@ -42,7 +42,7 @@
     {
       "id": "GenericStorageOptions",
       "type": "class",
-      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["storage-auth", "object-store-options", "delta-rs"],
       "intendedUsage": "Pass backend-specific object-store options, especially for delta-rs/native paths.",
       "limitations": ["Keys are backend-specific", "May contain secret values"],
@@ -54,7 +54,7 @@
     {
       "id": "DeltaDataReaderOptions",
       "type": "class",
-      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["data-reader", "decimal-handling"],
       "intendedUsage": "Configure how DbDataReader exposes high-precision decimal values.",
       "limitations": ["Default behavior may not match downstream decimal expectations"],
@@ -66,7 +66,7 @@
     {
       "id": "DeltaReadPartition",
       "type": "class",
-      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["partitioned-read", "parallel-read"],
       "intendedUsage": "Opaque descriptor returned by V3 partition planning and consumed by partition read APIs.",
       "limitations": ["V3-only through public client", "Do not construct tokens manually", "Not a long-term stable identifier"],
@@ -78,7 +78,7 @@
     {
       "id": "WriteSchemaMode",
       "type": "enum",
-      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["schema-evolution", "write"],
       "intendedUsage": "Control schema merge or schema overwrite behavior during writes where supported.",
       "limitations": ["V3-only through current public wrapper behavior"],
@@ -90,7 +90,7 @@
     {
       "id": "MergeOptions",
       "type": "class",
-      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["merge", "dml", "streaming-write"],
       "intendedUsage": "Configure streaming MergeDataAsync predicates, aliases, and matched/not-matched actions.",
       "limitations": ["Requires correct source/target predicate", "Different from raw SQL MERGE text"],
@@ -102,7 +102,7 @@
     {
       "id": "DeltaAdbcDriver",
       "type": "class",
-      "namespace": "Microsoft.DI.DeltaTableService.Adbc",
+      "namespace": "DeltaLakeSharp.Adbc",
       "capabilities": ["adbc", "read", "sql", "metadata", "partitioned-read", "cdf"],
       "intendedUsage": "Expose a path-scoped Delta table to Arrow Database Connectivity consumers through the V3 Rust path.",
       "limitations": ["Read-only", "No prepared statements", "No transactions", "Synthetic single-table catalog"],

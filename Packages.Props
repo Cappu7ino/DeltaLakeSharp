@@ -1,5 +1,5 @@
 <!--
-  This file manages versions of PackageReference items for the DeltaLakeExperimental repository.
+  This file manages versions of PackageReference items for the DeltaLakeSharp repository.
 -->
 <Project>
   <ItemGroup Label="Package Versions used by this repository">

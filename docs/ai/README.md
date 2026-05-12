@@ -1,6 +1,6 @@
 # AI Integration Docs
 
-These files help humans and coding agents integrate the DeltaTableService SDK correctly. They are intentionally concise, retrieval-friendly, and limitation-forward.
+These files help humans and coding agents integrate the DeltaLakeSharp SDK correctly. They are intentionally concise, retrieval-friendly, and limitation-forward.
 
 ## Read Order
 
@@ -15,8 +15,8 @@ These files help humans and coding agents integrate the DeltaTableService SDK co
 | [api_ergonomics.md](api_ergonomics.md) | API surfaces that are easy for agents to misuse and future redesign recommendations. |
 | [../../api/public-api.md](../../api/public-api.md) | Semantic public API inventory for the NuGet-facing surface. |
 | [../../api/semantic-index.json](../../api/semantic-index.json) | Machine-readable API and capability metadata for retrieval systems. |
-| [../../examples/DeltaTableService.Client.Examples/README.md](../../examples/DeltaTableService.Client.Examples/README.md) | Compileable SDK consumer example that references the client `netstandard2.0` asset. |
-| [../../tests/DeltaTableService.Tests/IntegrationScenarios/V3ClientSdkScenarioTests.cs](../../tests/DeltaTableService.Tests/IntegrationScenarios/V3ClientSdkScenarioTests.cs) | Executable V3 integration scenarios for streaming reads, SQL, partitions, and CDF. |
+| [../../examples/DeltaLakeSharp.Client.Examples/README.md](../../examples/DeltaLakeSharp.Client.Examples/README.md) | Compileable SDK consumer example that references the client `netstandard2.0` asset. |
+| [../../tests/DeltaLakeSharp.Tests/IntegrationScenarios/V3ClientSdkScenarioTests.cs](../../tests/DeltaLakeSharp.Tests/IntegrationScenarios/V3ClientSdkScenarioTests.cs) | Executable V3 integration scenarios for streaming reads, SQL, partitions, and CDF. |
 
 ## Focused Architecture Docs
 
@@ -51,13 +51,13 @@ These files help humans and coding agents integrate the DeltaTableService SDK co
 
 Prefer source and tests over prose when behavior is ambiguous:
 
-- Client package surface: [../../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../../src/DeltaTableService.Client/DeltaTableServiceClient.cs)
-- Backend contract: [../../src/DeltaTableService.Client/Internal/IDeltaTableServiceBackend.cs](../../src/DeltaTableService.Client/Internal/IDeltaTableServiceBackend.cs)
-- Flight backend wrapper: [../../src/DeltaTableService.Client/Internal/FlightClientWrapper.cs](../../src/DeltaTableService.Client/Internal/FlightClientWrapper.cs)
-- Native Rust backend wrapper: [../../src/DeltaTableService.Client/Internal/NativeRustBackend.cs](../../src/DeltaTableService.Client/Internal/NativeRustBackend.cs)
-- ADBC package surface: [../../src/DeltaTableService.Adbc/README.md](../../src/DeltaTableService.Adbc/README.md)
-- Integration behavior: [../../tests/DeltaTableService.Tests](../../tests/DeltaTableService.Tests)
-- ADBC behavior: [../../tests/DeltaTableService.Adbc.Tests](../../tests/DeltaTableService.Adbc.Tests)
+- Client package surface: [../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs)
+- Backend contract: [../../src/DeltaLakeSharp.Client/Internal/IDeltaLakeBackend.cs](../../src/DeltaLakeSharp.Client/Internal/IDeltaLakeBackend.cs)
+- Flight backend wrapper: [../../src/DeltaLakeSharp.Client/Internal/FlightClientWrapper.cs](../../src/DeltaLakeSharp.Client/Internal/FlightClientWrapper.cs)
+- Native Rust backend wrapper: [../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs](../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs)
+- ADBC package surface: [../../src/DeltaLakeSharp.Adbc/README.md](../../src/DeltaLakeSharp.Adbc/README.md)
+- Integration behavior: [../../tests/DeltaLakeSharp.Tests](../../tests/DeltaLakeSharp.Tests)
+- ADBC behavior: [../../tests/DeltaLakeSharp.Adbc.Tests](../../tests/DeltaLakeSharp.Adbc.Tests)
 
 ## Current Artifact Scope
 

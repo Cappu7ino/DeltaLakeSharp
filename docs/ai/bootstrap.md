@@ -1,10 +1,10 @@
-# AI Bootstrap For DeltaTableService SDK Integration
+# AI Bootstrap For DeltaLakeSharp SDK Integration
 
 ## Repository Identity
 
 - Primary deliverable: .NET NuGet packages for Delta Lake access.
-- Main package: `Microsoft.DI.DeltaTableService.Client`.
-- Secondary package: `Microsoft.DI.DeltaTableService.Adbc` for read-only Arrow Database Connectivity.
+- Main package: `DeltaLakeSharp.Client`.
+- Secondary package: `DeltaLakeSharp.Adbc` for read-only Arrow Database Connectivity.
 - Data model: Apache Arrow batches and streams first; row APIs are adapters.
 
 ## Backend Selection Rules

@@ -8,10 +8,10 @@ The V3 backend runs the Delta engine inside the .NET process through a native Ru
 
 Managed V3 execution flows through:
 
-- [../../src/DeltaTableService.Client/Internal/NativeRustBackend.cs](../../src/DeltaTableService.Client/Internal/NativeRustBackend.cs)
-- [../../src/DeltaTableService.Client/Internal/Native/NativeEngineHandle.cs](../../src/DeltaTableService.Client/Internal/Native/NativeEngineHandle.cs)
-- [../../src/DeltaTableService.Client/Internal/Native/NativeMethods.net8.cs](../../src/DeltaTableService.Client/Internal/Native/NativeMethods.net8.cs)
-- [../../src/DeltaTableService.Client/Internal/Native/NativeMethods.net472.cs](../../src/DeltaTableService.Client/Internal/Native/NativeMethods.net472.cs)
+- [../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs](../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs)
+- [../../src/DeltaLakeSharp.Client/Internal/Native/NativeEngineHandle.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeEngineHandle.cs)
+- [../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net8.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net8.cs)
+- [../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net472.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net472.cs)
 
 ## Framework-Specific Interop
 

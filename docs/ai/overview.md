@@ -1,12 +1,12 @@
-# DeltaTableService AI Overview
+# DeltaLakeSharp AI Overview
 
 ## Repository Purpose
 
-DeltaTableService is a .NET SDK repository for interacting with Delta Lake tables from C# consumers. The primary deliverables are NuGet packages that expose:
+DeltaLakeSharp is a .NET SDK repository for interacting with Delta Lake tables from C# consumers. The primary deliverables are NuGet packages that expose:
 
-- `Microsoft.DI.DeltaTableService.Client`: a high-level Delta table client for reads, SQL queries, writes, DML, schema operations, CDF, partitioned reads, and native Rust execution.
-- `Microsoft.DI.DeltaTableService.Adbc`: a read-only ADBC driver that exposes one Delta table through Arrow-native APIs.
-- `Microsoft.DI.DeltaTableService.Testing`: test infrastructure used by the repository's integration tests.
+- `DeltaLakeSharp.Client`: a high-level Delta table client for reads, SQL queries, writes, DML, schema operations, CDF, partitioned reads, and native Rust execution.
+- `DeltaLakeSharp.Adbc`: a read-only ADBC driver that exposes one Delta table through Arrow-native APIs.
+- `DeltaLakeSharp.Testing`: test infrastructure used by the repository's integration tests.
 
 The repository also contains backend implementations used by the client:
 
@@ -20,14 +20,14 @@ V3 Rust is the preferred and de-facto runtime for external client SDK consumptio
 
 | Abstraction | Role | Source |
 | --- | --- | --- |
-| `DeltaTableServiceClient` | Primary SDK entry point and backend selector. | [../../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../../src/DeltaTableService.Client/DeltaTableServiceClient.cs) |
-| `ServiceMode` | Selects V1 Spark, V2 DataFusion, or V3 Rust execution. | [../../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../../src/DeltaTableService.Client/DeltaTableServiceClient.cs) |
-| `IDeltaTableServiceBackend` | Internal contract shared by Flight and native backends. | [../../src/DeltaTableService.Client/Internal/IDeltaTableServiceBackend.cs](../../src/DeltaTableService.Client/Internal/IDeltaTableServiceBackend.cs) |
-| `StorageConfig` | Legacy per-request storage account and SAS configuration. | [../../src/DeltaTableService.Client/Models/StorageConfig.cs](../../src/DeltaTableService.Client/Models/StorageConfig.cs) |
-| `GenericStorageOptions` | Dictionary-based storage options for delta-rs/native scenarios. | [../../src/DeltaTableService.Client/Models/GenericStorageOptions.cs](../../src/DeltaTableService.Client/Models/GenericStorageOptions.cs) |
-| `RecordBatch` / `IArrowArrayStream` | Arrow-native data exchange formats. | [../../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../../src/DeltaTableService.Client/DeltaTableServiceClient.cs) |
-| `DbDataReader` | Row-oriented consumption surface for .NET callers. | [../../src/DeltaTableService.Client/Internal/ArrowStreamDataReader.cs](../../src/DeltaTableService.Client/Internal/ArrowStreamDataReader.cs) |
-| `DeltaAdbcDriver` | ADBC driver entry point for read-only Arrow consumers. | [../../src/DeltaTableService.Adbc/DeltaAdbcDriver.cs](../../src/DeltaTableService.Adbc/DeltaAdbcDriver.cs) |
+| `DeltaTableServiceClient` | Primary SDK entry point and backend selector. | [../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs) |
+| `ServiceMode` | Selects V1 Spark, V2 DataFusion, or V3 Rust execution. | [../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs) |
+| `IDeltaLakeBackend` | Internal contract shared by Flight and native backends. | [../../src/DeltaLakeSharp.Client/Internal/IDeltaLakeBackend.cs](../../src/DeltaLakeSharp.Client/Internal/IDeltaLakeBackend.cs) |
+| `StorageConfig` | Legacy per-request storage account and SAS configuration. | [../../src/DeltaLakeSharp.Client/Models/StorageConfig.cs](../../src/DeltaLakeSharp.Client/Models/StorageConfig.cs) |
+| `GenericStorageOptions` | Dictionary-based storage options for delta-rs/native scenarios. | [../../src/DeltaLakeSharp.Client/Models/GenericStorageOptions.cs](../../src/DeltaLakeSharp.Client/Models/GenericStorageOptions.cs) |
+| `RecordBatch` / `IArrowArrayStream` | Arrow-native data exchange formats. | [../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs) |
+| `DbDataReader` | Row-oriented consumption surface for .NET callers. | [../../src/DeltaLakeSharp.Client/Internal/ArrowStreamDataReader.cs](../../src/DeltaLakeSharp.Client/Internal/ArrowStreamDataReader.cs) |
+| `DeltaAdbcDriver` | ADBC driver entry point for read-only Arrow consumers. | [../../src/DeltaLakeSharp.Adbc/DeltaAdbcDriver.cs](../../src/DeltaLakeSharp.Adbc/DeltaAdbcDriver.cs) |
 
 ## Architectural Philosophy
 

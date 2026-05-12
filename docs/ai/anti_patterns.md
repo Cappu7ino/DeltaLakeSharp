@@ -119,7 +119,7 @@ Correct alternative:
 
 Incorrect:
 
-- Generate `ExecuteUpdate` write workflows for `Microsoft.DI.DeltaTableService.Adbc`.
+- Generate `ExecuteUpdate` write workflows for `DeltaLakeSharp.Adbc`.
 - Expect prepared statements, transactions, or parameter binding.
 
 Why it is wrong:

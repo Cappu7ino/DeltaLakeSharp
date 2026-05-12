@@ -1,4 +1,4 @@
-# DeltaTableService Semantic Public API Inventory
+# DeltaLakeSharp Semantic Public API Inventory
 
 This inventory explains API intent and usage semantics. It is not a signature dump.
 
@@ -6,13 +6,13 @@ This inventory explains API intent and usage semantics. It is not a signature du
 
 | Package | Purpose | Primary Consumers |
 | --- | --- | --- |
-| `Microsoft.DI.DeltaTableService.Client` | High-level C# SDK for Delta table reads, SQL, writes, DML, CDF, partitions, and native execution. V3 Rust is the preferred external NuGet runtime; V1/V2 remain public service-backed compatibility modes. | .NET applications, services, tests, data tools. |
-| `Microsoft.DI.DeltaTableService.Adbc` | Read-only ADBC driver over Delta tables backed by the V3 Rust path. | Arrow-native query engines and ADBC consumers. |
-| `Microsoft.DI.DeltaTableService.Testing` | Testcontainers/native test support. | Repository tests and downstream validation infrastructure. |
+| `DeltaLakeSharp.Client` | High-level C# SDK for Delta table reads, SQL, writes, DML, CDF, partitions, and native execution. V3 Rust is the preferred external NuGet runtime; V1/V2 remain public service-backed compatibility modes. | .NET applications, services, tests, data tools. |
+| `DeltaLakeSharp.Adbc` | Read-only ADBC driver over Delta tables backed by the V3 Rust path. | Arrow-native query engines and ADBC consumers. |
+| `DeltaLakeSharp.Testing` | Testcontainers/native test support. | Repository tests and downstream validation infrastructure. |
 
 ## `DeltaTableServiceClient`
 
-Source: [../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../src/DeltaTableService.Client/DeltaTableServiceClient.cs)
+Source: [../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs)
 
 Responsibility:
 
@@ -183,7 +183,7 @@ Common pitfalls:
 
 ## `StorageConfig`
 
-Source: [../src/DeltaTableService.Client/Models/StorageConfig.cs](../src/DeltaTableService.Client/Models/StorageConfig.cs)
+Source: [../src/DeltaLakeSharp.Client/Models/StorageConfig.cs](../src/DeltaLakeSharp.Client/Models/StorageConfig.cs)
 
 Responsibility:
 
@@ -200,7 +200,7 @@ Common pitfalls:
 
 ## `GenericStorageOptions`
 
-Source: [../src/DeltaTableService.Client/Models/GenericStorageOptions.cs](../src/DeltaTableService.Client/Models/GenericStorageOptions.cs)
+Source: [../src/DeltaLakeSharp.Client/Models/GenericStorageOptions.cs](../src/DeltaLakeSharp.Client/Models/GenericStorageOptions.cs)
 
 Responsibility:
 
@@ -218,7 +218,7 @@ Common pitfalls:
 
 ## `DeltaDataReaderOptions`
 
-Source: [../src/DeltaTableService.Client/Models/DeltaDataReaderOptions.cs](../src/DeltaTableService.Client/Models/DeltaDataReaderOptions.cs)
+Source: [../src/DeltaLakeSharp.Client/Models/DeltaDataReaderOptions.cs](../src/DeltaLakeSharp.Client/Models/DeltaDataReaderOptions.cs)
 
 Responsibility:
 
@@ -259,7 +259,7 @@ Common pitfalls:
 
 ## `MergeOptions`
 
-Source: [../src/DeltaTableService.Client/Models/MergeOptions.cs](../src/DeltaTableService.Client/Models/MergeOptions.cs)
+Source: [../src/DeltaLakeSharp.Client/Models/MergeOptions.cs](../src/DeltaLakeSharp.Client/Models/MergeOptions.cs)
 
 Responsibility:
 

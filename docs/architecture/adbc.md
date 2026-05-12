@@ -2,7 +2,7 @@
 
 ## Summary
 
-`Microsoft.DI.DeltaTableService.Adbc` is a read-only, path-scoped ADBC driver backed by the V3 Rust client path. It is optimized for Arrow-native read consumers, not database administration or write orchestration.
+`DeltaLakeSharp.Adbc` is a read-only, path-scoped ADBC driver backed by the V3 Rust client path. It is optimized for Arrow-native read consumers, not database administration or write orchestration.
 
 ## Main Types
 
@@ -17,10 +17,10 @@
 
 Sources:
 
-- [../../src/DeltaTableService.Adbc/DeltaAdbcDriver.cs](../../src/DeltaTableService.Adbc/DeltaAdbcDriver.cs)
-- [../../src/DeltaTableService.Adbc/DeltaAdbcConnection.cs](../../src/DeltaTableService.Adbc/DeltaAdbcConnection.cs)
-- [../../src/DeltaTableService.Adbc/DeltaAdbcStatement.cs](../../src/DeltaTableService.Adbc/DeltaAdbcStatement.cs)
-- [../../src/DeltaTableService.Adbc/Internal/DeltaAdbcClientAdapter.cs](../../src/DeltaTableService.Adbc/Internal/DeltaAdbcClientAdapter.cs)
+- [../../src/DeltaLakeSharp.Adbc/DeltaAdbcDriver.cs](../../src/DeltaLakeSharp.Adbc/DeltaAdbcDriver.cs)
+- [../../src/DeltaLakeSharp.Adbc/DeltaAdbcConnection.cs](../../src/DeltaLakeSharp.Adbc/DeltaAdbcConnection.cs)
+- [../../src/DeltaLakeSharp.Adbc/DeltaAdbcStatement.cs](../../src/DeltaLakeSharp.Adbc/DeltaAdbcStatement.cs)
+- [../../src/DeltaLakeSharp.Adbc/Internal/DeltaAdbcClientAdapter.cs](../../src/DeltaLakeSharp.Adbc/Internal/DeltaAdbcClientAdapter.cs)
 
 ## Runtime Dependency
 

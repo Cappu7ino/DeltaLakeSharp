@@ -2,7 +2,7 @@
 
 ## Summary
 
-DeltaTableService passes storage credentials and object-store options per operation. This avoids global mutable credential state and supports multiple storage scopes in one process.
+DeltaLakeSharp passes storage credentials and object-store options per operation. This avoids global mutable credential state and supports multiple storage scopes in one process.
 
 ## Storage Option Types
 
@@ -14,9 +14,9 @@ DeltaTableService passes storage credentials and object-store options per operat
 
 Sources:
 
-- [../../src/DeltaTableService.Client/Models/StorageConfig.cs](../../src/DeltaTableService.Client/Models/StorageConfig.cs)
-- [../../src/DeltaTableService.Client/Models/GenericStorageOptions.cs](../../src/DeltaTableService.Client/Models/GenericStorageOptions.cs)
-- [../../src/DeltaTableService.Adbc/DeltaAdbcConnectOptions.cs](../../src/DeltaTableService.Adbc/DeltaAdbcConnectOptions.cs)
+- [../../src/DeltaLakeSharp.Client/Models/StorageConfig.cs](../../src/DeltaLakeSharp.Client/Models/StorageConfig.cs)
+- [../../src/DeltaLakeSharp.Client/Models/GenericStorageOptions.cs](../../src/DeltaLakeSharp.Client/Models/GenericStorageOptions.cs)
+- [../../src/DeltaLakeSharp.Adbc/DeltaAdbcConnectOptions.cs](../../src/DeltaLakeSharp.Adbc/DeltaAdbcConnectOptions.cs)
 
 ## Per-Request Pattern
 

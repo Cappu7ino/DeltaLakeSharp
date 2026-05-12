@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DeltaLakeSharp.Client.Compatibility.Tests</RootNamespace>
+    <AssemblyName>DeltaLakeSharp.Client.Compatibility.Tests</AssemblyName>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="16.5.0" />
+    <PackageReference Include="MSTest.TestAdapter" Version="2.1.1" />
+    <PackageReference Include="MSTest.TestFramework" Version="2.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DeltaLakeSharp.Client\DeltaLakeSharp.Client.csproj"
+                      SetTargetFramework="TargetFramework=netstandard2.0"
+                      AdditionalProperties="SkipRustBuild=true" />
+  </ItemGroup>
+</Project>

@@ -2,7 +2,7 @@
 
 ## Summary
 
-DeltaTableService exposes one C# client shape over three backend execution modes. The public package can connect to service-backed Flight endpoints or run the V3 native Rust engine in process.
+DeltaLakeSharp exposes one C# client shape over three backend execution modes. The public package can connect to service-backed Flight endpoints or run the V3 native Rust engine in process.
 
 ## Backend Selection
 
@@ -12,7 +12,7 @@ DeltaTableService exposes one C# client shape over three backend execution modes
 | `V2_DataFusion` | External service/container | Caller or test harness | DataFusion/delta-rs service-backed compatibility. |
 | `V3_Rust` | In-process native DLL | `DeltaTableServiceClient` | Preferred SDK runtime and required ADBC runtime. |
 
-Source: [../../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../../src/DeltaTableService.Client/DeltaTableServiceClient.cs)
+Source: [../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs)
 
 ## Client Lifecycle
 
@@ -23,9 +23,9 @@ Source: [../../src/DeltaTableService.Client/DeltaTableServiceClient.cs](../../sr
 
 ## Backend Contract
 
-`IDeltaTableServiceBackend` is the internal abstraction shared by `FlightClientWrapper` and `NativeRustBackend`.
+`IDeltaLakeBackend` is the internal abstraction shared by `FlightClientWrapper` and `NativeRustBackend`.
 
-Source: [../../src/DeltaTableService.Client/Internal/IDeltaTableServiceBackend.cs](../../src/DeltaTableService.Client/Internal/IDeltaTableServiceBackend.cs)
+Source: [../../src/DeltaLakeSharp.Client/Internal/IDeltaLakeBackend.cs](../../src/DeltaLakeSharp.Client/Internal/IDeltaLakeBackend.cs)
 
 The contract covers:
 
@@ -43,7 +43,7 @@ The contract covers:
 
 V1 and V2 use `FlightClientWrapper`.
 
-Source: [../../src/DeltaTableService.Client/Internal/FlightClientWrapper.cs](../../src/DeltaTableService.Client/Internal/FlightClientWrapper.cs)
+Source: [../../src/DeltaLakeSharp.Client/Internal/FlightClientWrapper.cs](../../src/DeltaLakeSharp.Client/Internal/FlightClientWrapper.cs)
 
 Properties:
 
@@ -57,7 +57,7 @@ Properties:
 
 V3 uses `NativeRustBackend`.
 
-Source: [../../src/DeltaTableService.Client/Internal/NativeRustBackend.cs](../../src/DeltaTableService.Client/Internal/NativeRustBackend.cs)
+Source: [../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs](../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs)
 
 Properties:
 

@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-DeltaTableService exposes V1 Spark, V2 DataFusion, and V3 Rust execution modes through `ServiceMode`. V1 and V2 require Arrow Flight services. V3 runs in process through native Rust interop.
+DeltaLakeSharp exposes V1 Spark, V2 DataFusion, and V3 Rust execution modes through `ServiceMode`. V1 and V2 require Arrow Flight services. V3 runs in process through native Rust interop.
 
 ADBC is implemented on top of the V3 path, and the advanced SDK surfaces such as CDF and partitioned reads are V3-oriented.
 

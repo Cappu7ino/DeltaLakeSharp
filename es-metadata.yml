@@ -1,8 +1,0 @@
-schemaVersion: 0.0.1
-isProduction: false
-accountableOwners:
-  service: be843032-68ed-46bf-bb85-803b58fd1235
-routing:
-  defaultAreaPath:
-    org: msdata
-    path: Azure Data Movement\Azure Data Movement
