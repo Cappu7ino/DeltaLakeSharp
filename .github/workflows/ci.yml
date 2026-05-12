@@ -35,6 +35,10 @@ jobs:
         working-directory: src/DeltaLakeSharp.Server/v3
         run: cargo test
 
+      - name: Build native runtime
+        working-directory: src/DeltaLakeSharp.Server/v3
+        run: cargo build --release
+
       - name: Build solution
         run: dotnet build DeltaLakeSharp.sln --configuration Release --no-restore /p:SkipRustBuild=true -m:1
 
