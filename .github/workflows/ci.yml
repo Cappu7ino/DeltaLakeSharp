@@ -35,11 +35,21 @@ jobs:
         working-directory: src/DeltaLakeSharp.Server/v3
         run: cargo test
 
+      - name: Build native runtime
+        working-directory: src/DeltaLakeSharp.Server/v3
+        run: cargo build --release
+
       - name: Build solution
         run: dotnet build DeltaLakeSharp.sln --configuration Release --no-restore /p:SkipRustBuild=true -m:1
 
       - name: Build client example
         run: dotnet build examples\DeltaLakeSharp.Client.Examples\DeltaLakeSharp.Client.Examples.csproj --configuration Release --no-restore /p:SkipRustBuild=true
 
+      - name: Run SDK non-integration tests
+        run: dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+
+      - name: Run ADBC non-integration tests
+        run: dotnet test tests\DeltaLakeSharp.Adbc.Tests\DeltaLakeSharp.Adbc.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+
       - name: Run compatibility tests
-        run: dotnet test tests\DeltaLakeSharp.Client.Compatibility.Tests\DeltaLakeSharp.Client.Compatibility.Tests.csproj --configuration Release --no-build
+        run: dotnet test tests\DeltaLakeSharp.Client.Compatibility.Tests\DeltaLakeSharp.Client.Compatibility.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
