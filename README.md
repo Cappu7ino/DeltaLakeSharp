@@ -10,8 +10,17 @@ The client library currently targets:
 
 - `net8.0`
 - `net472`
+- `netstandard2.0`
 
-The native `V3_Rust` backend is supported on both target frameworks. The `net472` target is validated with focused native V3 smoke and integration coverage, while the Docker-backed V1/V2 test paths still depend on local Docker/Testcontainers availability.
+The native `V3_Rust` backend is supported when the V3 native runtime asset is available to the host application. The `net472` and `netstandard2.0` targets are validated with focused compatibility coverage, while the Docker-backed V1/V2 test paths still depend on local Docker/Testcontainers availability.
+
+## Examples And AI Integration Docs
+
+Compileable SDK consumer examples are available in [examples/DeltaTableService.Client.Examples](examples/DeltaTableService.Client.Examples). The example project is a `net8.0` host that intentionally references the client library's `netstandard2.0` asset, which helps keep generated and copied integration code compatible with the broadest public client surface.
+
+AI-friendly integration artifacts are indexed in [docs/ai/README.md](docs/ai/README.md). They include capability matrices, common patterns, anti-patterns, architecture notes, how-to guides, ADRs, and semantic public API metadata for downstream retrieval and agentic coding workflows.
+
+Executable V3 SDK scenario tests live in [tests/DeltaTableService.Tests/IntegrationScenarios](tests/DeltaTableService.Tests/IntegrationScenarios). They cover the recommended native client path across streaming Arrow reads, `DbDataReader`, SQL queries, partition planning, and Change Data Feed.
 
 ## Architecture
 
@@ -144,11 +153,12 @@ Used by `InsertAsync` to control how schema differences are handled during write
 ```csharp
 public enum WriteSchemaMode
 {
-    Overwrite,  // Replace existing table schema during overwrite writes
+  Merge,      // Merge incoming columns into the existing table schema
+  Overwrite,  // Replace the existing table schema during overwrite writes
 }
 ```
 
-Currently this is supported only by the native V3 backend.
+Currently these schema modes are supported only by the native V3 backend.
 
 ### Model Types
 

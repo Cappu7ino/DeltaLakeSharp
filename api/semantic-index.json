@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "repository": "DeltaLakeExperimental",
+  "primaryPackage": "Microsoft.DI.DeltaTableService.Client",
+  "entries": [
+    {
+      "id": "DeltaTableServiceClient",
+      "type": "class",
+      "namespace": "Microsoft.DI.DeltaTableService.Client",
+      "capabilities": ["read", "sql", "write", "dml", "cdf", "partitioned-read", "schema", "protocol-upgrade"],
+      "intendedUsage": "Primary SDK entry point for Delta table operations. Prefer V3_Rust for new external NuGet integrations unless an existing V1/V2 Flight service is required.",
+      "limitations": ["Backend capabilities differ by ServiceMode", "V1/V2 are service-backed compatibility paths", "Dispose after use", "Large result materialization can be expensive"],
+      "relatedConcepts": ["ServiceMode", "StorageConfig", "GenericStorageOptions", "RecordBatch", "IArrowArrayStream"],
+      "keywords": ["Delta Lake", "client", "Arrow", "Flight", "native Rust", "NuGet"],
+      "performanceNotes": "Prefer streaming RecordBatch or Arrow stream APIs for large results.",
+      "threadingExpectations": "Treat client-owned backend resources as lifecycle-scoped; validate concurrency before sharing one V3 client across parallel native operations."
+    },
+    {
+      "id": "ServiceMode",
+      "type": "enum",
+      "namespace": "Microsoft.DI.DeltaTableService.Client",
+      "capabilities": ["backend-selection"],
+      "intendedUsage": "Select V1 Spark Flight, V2 DataFusion Flight, or V3 native Rust execution. V3 is the preferred SDK runtime; V1/V2 remain public compatibility modes for service-backed scenarios.",
+      "limitations": ["Modes are not feature-equivalent", "V1/V2 require reachable Flight services", "V3 is required for ADBC-backed behavior"],
+      "relatedConcepts": ["FlightClientWrapper", "NativeRustBackend"],
+      "keywords": ["V1_Spark", "V2_DataFusion", "V3_Rust"],
+      "performanceNotes": "Flight modes include service and gRPC overhead; V3 uses in-process native interop.",
+      "threadingExpectations": "Immutable value."
+    },
+    {
+      "id": "StorageConfig",
+      "type": "class",
+      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "capabilities": ["storage-auth", "onelake", "sas"],
+      "intendedUsage": "Provide storage account and SAS-token settings per request.",
+      "limitations": ["Contains secret material", "EvictFileSystemCache is mainly V1-oriented"],
+      "relatedConcepts": ["GenericStorageOptions"],
+      "keywords": ["SAS", "ABFSS", "OneLake", "storage account"],
+      "performanceNotes": "Use per request rather than mutating global storage state.",
+      "threadingExpectations": "Treat as immutable configuration."
+    },
+    {
+      "id": "GenericStorageOptions",
+      "type": "class",
+      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "capabilities": ["storage-auth", "object-store-options", "delta-rs"],
+      "intendedUsage": "Pass backend-specific object-store options, especially for delta-rs/native paths.",
+      "limitations": ["Keys are backend-specific", "May contain secret values"],
+      "relatedConcepts": ["StorageConfig"],
+      "keywords": ["object store", "delta-rs", "Fabric endpoint", "storage options"],
+      "performanceNotes": "Avoid recreating large option dictionaries in tight loops unless credentials rotate.",
+      "threadingExpectations": "Do not mutate shared option dictionaries during operations."
+    },
+    {
+      "id": "DeltaDataReaderOptions",
+      "type": "class",
+      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "capabilities": ["data-reader", "decimal-handling"],
+      "intendedUsage": "Configure how DbDataReader exposes high-precision decimal values.",
+      "limitations": ["Default behavior may not match downstream decimal expectations"],
+      "relatedConcepts": ["DeltaDataReaderDecimalBehavior", "DbDataReader"],
+      "keywords": ["decimal", "SqlDecimal", "overflow", "DataReader"],
+      "performanceNotes": "Decimal conversion choice can affect allocation and exception behavior.",
+      "threadingExpectations": "Configuration object; use per reader construction."
+    },
+    {
+      "id": "DeltaReadPartition",
+      "type": "class",
+      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "capabilities": ["partitioned-read", "parallel-read"],
+      "intendedUsage": "Opaque descriptor returned by V3 partition planning and consumed by partition read APIs.",
+      "limitations": ["V3-only through public client", "Do not construct tokens manually", "Not a long-term stable identifier"],
+      "relatedConcepts": ["GetReadPartitionsAsync", "ReadTablePartitionAsync"],
+      "keywords": ["partition", "token", "snapshot", "parallel"],
+      "performanceNotes": "Use to distribute reads across consumers without full-table buffering.",
+      "threadingExpectations": "Partition descriptors may be read independently, but remain tied to planned snapshot semantics."
+    },
+    {
+      "id": "WriteSchemaMode",
+      "type": "enum",
+      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "capabilities": ["schema-evolution", "write"],
+      "intendedUsage": "Control schema merge or schema overwrite behavior during writes where supported.",
+      "limitations": ["V3-only through current public wrapper behavior"],
+      "relatedConcepts": ["SaveMode", "InsertAsync", "TableSchema"],
+      "keywords": ["schema merge", "schema overwrite", "Delta schema evolution"],
+      "performanceNotes": "Schema evolution can change downstream projection and conversion costs.",
+      "threadingExpectations": "Immutable enum value."
+    },
+    {
+      "id": "MergeOptions",
+      "type": "class",
+      "namespace": "Microsoft.DI.DeltaTableService.Client.Models",
+      "capabilities": ["merge", "dml", "streaming-write"],
+      "intendedUsage": "Configure streaming MergeDataAsync predicates, aliases, and matched/not-matched actions.",
+      "limitations": ["Requires correct source/target predicate", "Different from raw SQL MERGE text"],
+      "relatedConcepts": ["MergeDataAsync", "RecordBatch", "ExecuteResult"],
+      "keywords": ["MERGE", "upsert", "predicate", "source alias", "target alias"],
+      "performanceNotes": "Streaming source batches avoid full source materialization in the .NET caller.",
+      "threadingExpectations": "Configuration object; do not mutate during merge execution."
+    },
+    {
+      "id": "DeltaAdbcDriver",
+      "type": "class",
+      "namespace": "Microsoft.DI.DeltaTableService.Adbc",
+      "capabilities": ["adbc", "read", "sql", "metadata", "partitioned-read", "cdf"],
+      "intendedUsage": "Expose a path-scoped Delta table to Arrow Database Connectivity consumers through the V3 Rust path.",
+      "limitations": ["Read-only", "No prepared statements", "No transactions", "Synthetic single-table catalog"],
+      "relatedConcepts": ["DeltaAdbcConnection", "DeltaAdbcStatement", "NativeRustBackend"],
+      "keywords": ["ADBC", "Arrow", "delta_table", "read-only"],
+      "performanceNotes": "Best for Arrow-native read pipelines; not for write orchestration.",
+      "threadingExpectations": "Use standard ADBC connection/statement ownership patterns."
+    }
+  ]
+}
