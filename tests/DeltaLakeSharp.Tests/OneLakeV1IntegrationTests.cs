@@ -29,6 +29,7 @@ namespace DeltaLakeSharp.Tests
     /// Run with: <c>dotnet vstest &lt;dll&gt; --TestCaseFilter:"TestCategory=OneLake&amp;TestCategory=V1" /Platform:x64</c>
     /// </summary>
     [TestClass]
+    [TestCategory("Integration")]
     [TestCategory("OneLake")]
     [TestCategory("V1")]
     public class OneLakeV1IntegrationTests : OneLakeIntegrationTestBase
