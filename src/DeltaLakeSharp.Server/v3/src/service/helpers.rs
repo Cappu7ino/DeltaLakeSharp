@@ -5,14 +5,14 @@
 //!
 //! These utilities are used by both the read and write handler modules.
 
-use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
 use datafusion::execution::context::SessionContext;
 use deltalake::kernel::Add;
 use deltalake::kernel::Protocol;
 use deltalake::kernel::scalars::ScalarExt;
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -22,17 +22,27 @@ use crate::error::ServiceError;
 /// `file://` URLs; paths that already contain a scheme are parsed directly.
 pub fn path_to_url(path: &str) -> Result<Url, ServiceError> {
     if path.contains("://") {
-        Url::parse(path).map_err(|e| {
+        let url = Url::parse(path).map_err(|e| {
             ServiceError::InvalidRequest(format!("Invalid table URL '{path}': {e}"))
-        })
+        })?;
+        if url.scheme() == "file" {
+            let file_path = url.to_file_path().map_err(|_| {
+                ServiceError::InvalidRequest(format!("Cannot convert file URL to path: '{path}'"))
+            })?;
+            local_path_to_url(&file_path, path)
+        } else {
+            Ok(url)
+        }
     } else {
-        // Local filesystem path → file:// URL.
-        Url::from_file_path(std::path::Path::new(path)).map_err(|()| {
-            ServiceError::InvalidRequest(format!(
-                "Cannot convert path to file URL: '{path}'"
-            ))
-        })
+        local_path_to_url(Path::new(path), path)
     }
+}
+
+fn local_path_to_url(path: &Path, original: &str) -> Result<Url, ServiceError> {
+    let normalized = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    Url::from_file_path(&normalized).map_err(|()| {
+        ServiceError::InvalidRequest(format!("Cannot convert path to file URL: '{original}'"))
+    })
 }
 
 /// Builds storage options HashMap for delta-rs from optional account/token.
@@ -70,6 +80,20 @@ pub fn storage_options(
     opts
 }
 
+pub fn request_version_to_delta(version: i64, field_name: &str) -> Result<u64, ServiceError> {
+    u64::try_from(version).map_err(|_| {
+        ServiceError::InvalidRequest(format!("{field_name} must be non-negative: {version}"))
+    })
+}
+
+pub fn delta_version_to_request(version: u64, context: &str) -> Result<i64, ServiceError> {
+    i64::try_from(version).map_err(|_| {
+        ServiceError::Internal(format!(
+            "{context} version {version} exceeds supported range"
+        ))
+    })
+}
+
 /// Opens a Delta table at the given path with optional storage configuration.
 /// When `version` is `Some(v)`, opens the table at that specific historical version.
 pub async fn open_delta_table(
@@ -85,10 +109,11 @@ pub async fn open_delta_table(
     debug!(path = %path, url = %url, version = ?version, "Opening Delta table");
     let table = match version {
         Some(v) => {
+            let delta_version = request_version_to_delta(v, "version")?;
             deltalake::DeltaTableBuilder::from_url(url.clone())
                 .map_err(ServiceError::Delta)?
                 .with_storage_options(opts)
-                .with_version(v)
+                .with_version(delta_version)
                 .load()
                 .await
                 .map_err(|error| {
@@ -96,14 +121,12 @@ pub async fn open_delta_table(
                     ServiceError::Delta(error)
                 })?
         }
-        None => {
-            deltalake::open_table_with_storage_options(url.clone(), opts)
-                .await
-                .map_err(|error| {
-                    warn!(path = %path, url = %url, error = %error, "Failed to open Delta table");
-                    ServiceError::Delta(error)
-                })?
-        }
+        None => deltalake::open_table_with_storage_options(url.clone(), opts)
+            .await
+            .map_err(|error| {
+                warn!(path = %path, url = %url, error = %error, "Failed to open Delta table");
+                ServiceError::Delta(error)
+            })?,
     };
     debug!(path = %path, version = table.version(), "Delta table opened");
     Ok(table)
@@ -161,8 +184,9 @@ pub async fn open_or_initialize_delta_table(
 
 fn ensure_local_table_directory_exists(path: &str) -> Result<(), ServiceError> {
     if path.contains("://") {
-        let url = Url::parse(path)
-            .map_err(|e| ServiceError::InvalidRequest(format!("Invalid table URL '{path}': {e}")))?;
+        let url = Url::parse(path).map_err(|e| {
+            ServiceError::InvalidRequest(format!("Invalid table URL '{path}': {e}"))
+        })?;
         if url.scheme() != "file" {
             return Ok(());
         }
@@ -171,13 +195,17 @@ fn ensure_local_table_directory_exists(path: &str) -> Result<(), ServiceError> {
             ServiceError::InvalidRequest(format!("Cannot convert file URL to path: '{path}'"))
         })?;
         fs::create_dir_all(file_path).map_err(|e| {
-            ServiceError::Internal(format!("Failed to create local table directory '{path}': {e}"))
+            ServiceError::Internal(format!(
+                "Failed to create local table directory '{path}': {e}"
+            ))
         })?;
         return Ok(());
     }
 
     fs::create_dir_all(Path::new(path)).map_err(|e| {
-        ServiceError::Internal(format!("Failed to create local table directory '{path}': {e}"))
+        ServiceError::Internal(format!(
+            "Failed to create local table directory '{path}': {e}"
+        ))
     })
 }
 
@@ -296,7 +324,11 @@ pub async fn register_delta_table_with_files(
         .map_err(ServiceError::Delta)?;
 
     let provider = deltalake::delta_datafusion::DeltaTableProvider::try_new(
-        table.snapshot().map_err(ServiceError::Delta)?.snapshot().clone(),
+        table
+            .snapshot()
+            .map_err(ServiceError::Delta)?
+            .snapshot()
+            .clone(),
         table.log_store(),
         deltalake::delta_datafusion::DeltaScanConfig::new_from_session(&ctx.state()),
     )
@@ -336,3 +368,48 @@ pub fn success_response_with_result(
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_version_to_delta_rejects_negative_versions() {
+        let error = request_version_to_delta(-1, "version").expect_err("negative version");
+        assert!(matches!(error, ServiceError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn request_version_to_delta_accepts_zero_and_positive_versions() {
+        assert_eq!(0, request_version_to_delta(0, "version").unwrap());
+        assert_eq!(42, request_version_to_delta(42, "version").unwrap());
+    }
+
+    #[test]
+    fn delta_version_to_request_rejects_out_of_range_versions() {
+        let error = delta_version_to_request(u64::MAX, "test").expect_err("out of range");
+        assert!(matches!(error, ServiceError::Internal(_)));
+    }
+
+    #[test]
+    fn path_to_url_canonicalizes_existing_local_paths() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let redundant_path = tmp.path().join(".");
+
+        let url = path_to_url(redundant_path.to_str().expect("utf8 path")).unwrap();
+        let expected = Url::from_file_path(fs::canonicalize(tmp.path()).unwrap()).unwrap();
+
+        assert_eq!(expected, url);
+    }
+
+    #[test]
+    fn path_to_url_canonicalizes_file_urls() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let redundant_path = tmp.path().join(".");
+        let input_url = Url::from_file_path(&redundant_path).unwrap();
+
+        let url = path_to_url(input_url.as_str()).unwrap();
+        let expected = Url::from_file_path(fs::canonicalize(tmp.path()).unwrap()).unwrap();
+
+        assert_eq!(expected, url);
+    }
+}

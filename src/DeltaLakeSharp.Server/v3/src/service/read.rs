@@ -24,7 +24,7 @@ mod tests;
 
 use super::helpers::{
     open_delta_table, open_delta_table_for_datafusion, register_delta_table,
-    register_delta_table_with_files, success_response_with_result,
+    register_delta_table_with_files, request_version_to_delta, success_response_with_result,
 };
 use super::request::{
     Command, PartitionDescriptorMode, ReadChangeDataCommand, ReadCommand, SqlCommand,
@@ -326,12 +326,16 @@ async fn execute_change_data_stream(
     )
     .await?;
 
+    let starting_version = request_version_to_delta(cmd.starting_version, "starting_version")?;
     let mut builder = table
         .scan_cdf()
         .with_session_state(Arc::new(ctx.state()))
-        .with_starting_version(cmd.starting_version);
+        .with_starting_version(starting_version);
     if let Some(ending_version) = cmd.ending_version {
-        builder = builder.with_ending_version(ending_version);
+        builder = builder.with_ending_version(request_version_to_delta(
+            ending_version,
+            "ending_version",
+        )?);
     }
 
     let provider = Arc::new(DeltaCdfTableProvider::try_new(builder).map_err(ServiceError::Delta)?);

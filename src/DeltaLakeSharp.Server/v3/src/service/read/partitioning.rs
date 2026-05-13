@@ -8,7 +8,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use datafusion::logical_expr::{Expr, col, lit};
 use deltalake::kernel::Add;
 
-use super::super::helpers::{get_active_add_actions, has_reader_feature, table_protocol};
+use super::super::helpers::{
+    delta_version_to_request, get_active_add_actions, has_reader_feature, table_protocol,
+};
 use super::super::request::{
     PartitionDescriptorMode, PartitionDescriptorPayload, PartitionPredicateKey, ReadCommand,
 };
@@ -104,6 +106,7 @@ pub(super) async fn plan_read_partitions(
     let table_version = table.version().ok_or_else(|| {
         ServiceError::Internal("expected loaded Delta table to expose a pinned version".to_string())
     })?;
+    let table_version = delta_version_to_request(table_version, "loaded Delta table")?;
 
     let planned = if units.len() > desired_partitions {
         coalesce_units(units, desired_partitions, table_version)
