@@ -70,6 +70,18 @@ pub fn storage_options(
     opts
 }
 
+pub fn request_version_to_delta(version: i64, field_name: &str) -> Result<u64, ServiceError> {
+    u64::try_from(version).map_err(|_| {
+        ServiceError::InvalidRequest(format!("{field_name} must be non-negative: {version}"))
+    })
+}
+
+pub fn delta_version_to_request(version: u64, context: &str) -> Result<i64, ServiceError> {
+    i64::try_from(version).map_err(|_| {
+        ServiceError::Internal(format!("{context} version {version} exceeds supported range"))
+    })
+}
+
 /// Opens a Delta table at the given path with optional storage configuration.
 /// When `version` is `Some(v)`, opens the table at that specific historical version.
 pub async fn open_delta_table(
@@ -85,10 +97,11 @@ pub async fn open_delta_table(
     debug!(path = %path, url = %url, version = ?version, "Opening Delta table");
     let table = match version {
         Some(v) => {
+            let delta_version = request_version_to_delta(v, "version")?;
             deltalake::DeltaTableBuilder::from_url(url.clone())
                 .map_err(ServiceError::Delta)?
                 .with_storage_options(opts)
-                .with_version(v)
+                .with_version(delta_version)
                 .load()
                 .await
                 .map_err(|error| {
@@ -334,5 +347,28 @@ pub fn success_response_with_result(
         "message": message,
         "result": result,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_version_to_delta_rejects_negative_versions() {
+        let error = request_version_to_delta(-1, "version").expect_err("negative version");
+        assert!(matches!(error, ServiceError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn request_version_to_delta_accepts_zero_and_positive_versions() {
+        assert_eq!(0, request_version_to_delta(0, "version").unwrap());
+        assert_eq!(42, request_version_to_delta(42, "version").unwrap());
+    }
+
+    #[test]
+    fn delta_version_to_request_rejects_out_of_range_versions() {
+        let error = delta_version_to_request(u64::MAX, "test").expect_err("out of range");
+        assert!(matches!(error, ServiceError::Internal(_)));
+    }
 }
 
