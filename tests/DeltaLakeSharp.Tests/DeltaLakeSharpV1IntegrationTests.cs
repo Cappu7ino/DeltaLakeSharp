@@ -1560,21 +1560,21 @@ WHEN NOT MATCHED THEN INSERT (id, value) VALUES (s.id, s.value)";
         [TestMethod]
         public void DeleteAsync_InvalidSqlPrefix_ThrowsArgumentException()
         {
-            Assert.ThrowsException<ArgumentException>(() =>
+            Assert.ThrowsExactly<ArgumentException>(() =>
                 _client!.DeleteAsync("SELECT * FROM t", "/tmp/unused", "t").GetAwaiter().GetResult());
         }
 
         [TestMethod]
         public void UpdateAsync_InvalidSqlPrefix_ThrowsArgumentException()
         {
-            Assert.ThrowsException<ArgumentException>(() =>
+            Assert.ThrowsExactly<ArgumentException>(() =>
                 _client!.UpdateAsync("SELECT * FROM t", "/tmp/unused", "t").GetAwaiter().GetResult());
         }
 
         [TestMethod]
         public void MergeAsync_InvalidSqlPrefix_ThrowsArgumentException()
         {
-            Assert.ThrowsException<ArgumentException>(() =>
+            Assert.ThrowsExactly<ArgumentException>(() =>
                 _client!.MergeAsync("SELECT * FROM t", "/tmp/unused", "t").GetAwaiter().GetResult());
         }
 

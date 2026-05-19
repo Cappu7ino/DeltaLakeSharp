@@ -50,7 +50,7 @@ namespace DeltaLakeSharp.Client.Compatibility.Tests
         [TestMethod]
         public void UriLessConstructorStillRequiresNativeMode()
         {
-            ArgumentException exception = Assert.ThrowsException<ArgumentException>(
+            ArgumentException exception = Assert.ThrowsExactly<ArgumentException>(
                 () => new DeltaTableServiceClient(ServiceMode.V1_Spark));
 
             StringAssert.Contains(exception.Message, "server URI");

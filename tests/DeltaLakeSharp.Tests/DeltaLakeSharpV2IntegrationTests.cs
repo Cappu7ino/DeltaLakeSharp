@@ -532,21 +532,21 @@ namespace DeltaLakeSharp.Tests
         [TestMethod]
         public void V2_DeleteAsync_InvalidSqlPrefix_ThrowsArgumentException()
         {
-            Assert.ThrowsException<ArgumentException>(() =>
+            Assert.ThrowsExactly<ArgumentException>(() =>
                 _client!.DeleteAsync("SELECT * FROM t", "/tmp/unused", "t").GetAwaiter().GetResult());
         }
 
         [TestMethod]
         public void V2_UpdateAsync_InvalidSqlPrefix_ThrowsArgumentException()
         {
-            Assert.ThrowsException<ArgumentException>(() =>
+            Assert.ThrowsExactly<ArgumentException>(() =>
                 _client!.UpdateAsync("SELECT * FROM t", "/tmp/unused", "t").GetAwaiter().GetResult());
         }
 
         [TestMethod]
         public void V2_MergeAsync_InvalidSqlPrefix_ThrowsArgumentException()
         {
-            Assert.ThrowsException<ArgumentException>(() =>
+            Assert.ThrowsExactly<ArgumentException>(() =>
                 _client!.MergeAsync("SELECT * FROM t", "/tmp/unused", "t").GetAwaiter().GetResult());
         }
 

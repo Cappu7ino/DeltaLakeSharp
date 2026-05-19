@@ -21,7 +21,7 @@ namespace DeltaLakeSharp.Adbc.Tests
         {
             using var connection = new DeltaAdbcConnection(new TestAdapter(CreateSampleSchema()));
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(
                 () => connection.GetTableSchema(null, null, "other_table"));
 
             Assert.AreEqual(AdbcStatusCode.NotFound, exception.Status); 
@@ -32,11 +32,11 @@ namespace DeltaLakeSharp.Adbc.Tests
         {
             using var connection = new DeltaAdbcConnection(new TestAdapter(CreateSampleSchema()));
 
-            AdbcException catalogException = Assert.ThrowsException<AdbcException>(
+            AdbcException catalogException = Assert.ThrowsExactly<AdbcException>(
                 () => connection.GetTableSchema("catalog", null, DeltaAdbcConnectOptions.LogicalTableName));
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, catalogException.Status);
 
-            AdbcException schemaException = Assert.ThrowsException<AdbcException>(
+            AdbcException schemaException = Assert.ThrowsExactly<AdbcException>(
                 () => connection.GetTableSchema(null, "schema", DeltaAdbcConnectOptions.LogicalTableName));
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, schemaException.Status);
         }

@@ -27,17 +27,15 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void StorageConfig_NullStorageAccount_Throws()
         {
-            _ = new StorageConfig(null!, "token");
+            Assert.ThrowsExactly<ArgumentNullException>(() => new StorageConfig(null!, "token"));
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void StorageConfig_NullSasToken_Throws()
         {
-            _ = new StorageConfig("account", null!);
+            Assert.ThrowsExactly<ArgumentNullException>(() => new StorageConfig("account", null!));
         }
 
         // ================================================================== //
@@ -60,10 +58,9 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void TableSchema_NullColumns_Throws()
         {
-            _ = new TableSchema(null!);
+            Assert.ThrowsExactly<ArgumentNullException>(() => new TableSchema(null!));
         }
 
         // ================================================================== //
@@ -79,17 +76,15 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void ColumnDefinition_NullName_Throws()
         {
-            _ = new ColumnDefinition(null!, "string");
+            Assert.ThrowsExactly<ArgumentNullException>(() => new ColumnDefinition(null!, "string"));
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void ColumnDefinition_NullDataType_Throws()
         {
-            _ = new ColumnDefinition("col", null!);
+            Assert.ThrowsExactly<ArgumentNullException>(() => new ColumnDefinition("col", null!));
         }
 
         // ================================================================== //
@@ -147,24 +142,21 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void MergeOptions_NullPredicate_Throws()
         {
-            _ = new MergeOptions(null!);
+            Assert.ThrowsExactly<ArgumentNullException>(() => new MergeOptions(null!));
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void MergeOptions_NullSourceAlias_Throws()
         {
-            _ = new MergeOptions("pred", null!, "target");
+            Assert.ThrowsExactly<ArgumentNullException>(() => new MergeOptions("pred", null!, "target"));
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentNullException))]
         public void MergeOptions_NullTargetAlias_Throws()
         {
-            _ = new MergeOptions("pred", "source", null!);
+            Assert.ThrowsExactly<ArgumentNullException>(() => new MergeOptions("pred", "source", null!));
         }
 
         [TestMethod]

@@ -404,8 +404,8 @@ namespace DeltaLakeSharp.Tests
 
                 Assert.IsTrue(reader.Read());
                 Assert.AreEqual(typeof(decimal), reader.GetFieldType(1));
-                Assert.ThrowsException<OverflowException>(() => reader.GetValue(1));
-                Assert.ThrowsException<OverflowException>(() => reader.GetDecimal(1));
+                Assert.ThrowsExactly<OverflowException>(() => reader.GetValue(1));
+                Assert.ThrowsExactly<OverflowException>(() => reader.GetDecimal(1));
             }
             finally
             {
@@ -531,7 +531,7 @@ namespace DeltaLakeSharp.Tests
 
                 Assert.IsTrue(reader.Read());
                 Assert.AreEqual(typeof(decimal), reader.GetFieldType(0));
-                Assert.ThrowsException<OverflowException>(() => reader.GetValue(0));
+                Assert.ThrowsExactly<OverflowException>(() => reader.GetValue(0));
             }
             finally
             {
@@ -1162,7 +1162,7 @@ namespace DeltaLakeSharp.Tests
                     new object[] { 20, "Portland", false },
                 }, replacementSchema);
 
-                var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+                var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
                 {
                     await backend.InsertAsync(
                         tablePath,
@@ -1434,7 +1434,7 @@ namespace DeltaLakeSharp.Tests
         {
             using var backend = new NativeRustBackend();
 
-            var ex = await Assert.ThrowsExceptionAsync<NotSupportedException>(() =>
+            var ex = await Assert.ThrowsExactlyAsync<NotSupportedException>(() =>
                 backend.MergeAsync(
                     "MERGE INTO target USING source ON target.id = source.id WHEN MATCHED THEN UPDATE SET target.name = source.name",
                     "dummy-path",

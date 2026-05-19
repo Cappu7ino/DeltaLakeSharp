@@ -28,7 +28,7 @@ namespace DeltaLakeSharp.Tests
                     .Field(new Field("id", Int32Type.Default, nullable: false))
                     .Build());
 
-            Assert.ThrowsException<InvalidOperationException>(() => reader.GetValue(0));
+            Assert.ThrowsExactly<InvalidOperationException>(() => reader.GetValue(0));
         }
 
         [TestMethod]
@@ -175,7 +175,7 @@ namespace DeltaLakeSharp.Tests
 
             Assert.IsTrue(reader.Read());
             Assert.AreEqual(1, reader.GetOrdinal("name"));
-            Assert.ThrowsException<IndexOutOfRangeException>(() => reader.GetOrdinal("Name"));
+            Assert.ThrowsExactly<IndexOutOfRangeException>(() => reader.GetOrdinal("Name"));
 
             object[] values = new object[3];
             Assert.AreEqual(3, reader.GetValues(values));
@@ -210,7 +210,7 @@ namespace DeltaLakeSharp.Tests
             Assert.IsTrue(reader.Read());
             Assert.IsTrue(reader.IsDBNull(0));
             Assert.AreEqual(DBNull.Value, reader.GetValue(0));
-            Assert.ThrowsException<InvalidCastException>(() => reader.GetString(0));
+            Assert.ThrowsExactly<InvalidCastException>(() => reader.GetString(0));
         }
 
         [TestMethod]
@@ -224,7 +224,7 @@ namespace DeltaLakeSharp.Tests
             using var cts = new CancellationTokenSource();
             cts.Cancel();
 
-            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() => reader.ReadAsync(cts.Token));
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => reader.ReadAsync(cts.Token));
         }
 
         [TestMethod]
@@ -236,7 +236,7 @@ namespace DeltaLakeSharp.Tests
 
             using var reader = CreateReader(schema);
 
-            Assert.ThrowsException<NotSupportedException>(() => reader.GetEnumerator());
+            Assert.ThrowsExactly<NotSupportedException>(() => reader.GetEnumerator());
         }
 
         [TestMethod]
@@ -389,8 +389,8 @@ namespace DeltaLakeSharp.Tests
 
             Assert.IsTrue(reader.Read());
             Assert.AreEqual(typeof(decimal), reader.GetFieldType(0));
-            Assert.ThrowsException<OverflowException>(() => reader.GetValue(0));
-            Assert.ThrowsException<OverflowException>(() => reader.GetDecimal(0));
+            Assert.ThrowsExactly<OverflowException>(() => reader.GetValue(0));
+            Assert.ThrowsExactly<OverflowException>(() => reader.GetDecimal(0));
         }
 
         private static ArrowStreamDataReader CreateReader(

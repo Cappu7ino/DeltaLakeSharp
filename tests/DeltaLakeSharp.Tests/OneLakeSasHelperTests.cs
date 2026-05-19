@@ -38,10 +38,9 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentOutOfRangeException))]
         public void ResolveEnvironment_InvalidValue_Throws()
         {
-            OneLakeSasHelper.ResolveEnvironment((OneLakeEnvironment)999);
+            Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => OneLakeSasHelper.ResolveEnvironment((OneLakeEnvironment)999));
         }
 
         // ================================================================== //
@@ -112,32 +111,27 @@ namespace DeltaLakeSharp.Tests
         // ================================================================== //
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentException))]
         public void GetStorageConfigAsync_NullWorkspaceId_Throws()
         {
-            // The method should throw synchronously before any async work.
-            OneLakeSasHelper.GetStorageConfigAsync(null!, "some/path").GetAwaiter().GetResult();
+            Assert.ThrowsExactly<ArgumentException>(() => OneLakeSasHelper.GetStorageConfigAsync(null!, "some/path").GetAwaiter().GetResult());
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentException))]
         public void GetStorageConfigAsync_EmptyWorkspaceId_Throws()
         {
-            OneLakeSasHelper.GetStorageConfigAsync("", "some/path").GetAwaiter().GetResult();
+            Assert.ThrowsExactly<ArgumentException>(() => OneLakeSasHelper.GetStorageConfigAsync("", "some/path").GetAwaiter().GetResult());
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentException))]
         public void GetStorageConfigAsync_NullPath_Throws()
         {
-            OneLakeSasHelper.GetStorageConfigAsync("workspace-id", null!).GetAwaiter().GetResult();
+            Assert.ThrowsExactly<ArgumentException>(() => OneLakeSasHelper.GetStorageConfigAsync("workspace-id", null!).GetAwaiter().GetResult());
         }
 
         [TestMethod]
-        [ExpectedException(typeof(ArgumentException))]
         public void GetStorageConfigAsync_EmptyPath_Throws()
         {
-            OneLakeSasHelper.GetStorageConfigAsync("workspace-id", "").GetAwaiter().GetResult();
+            Assert.ThrowsExactly<ArgumentException>(() => OneLakeSasHelper.GetStorageConfigAsync("workspace-id", "").GetAwaiter().GetResult());
         }
     }
 }

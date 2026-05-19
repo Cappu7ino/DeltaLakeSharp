@@ -240,7 +240,7 @@ namespace DeltaLakeSharp.Tests
         [TestMethod]
         public async Task V3_ReadTable_InvalidPath_ReturnsError()
         {
-            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await foreach (RecordBatch _ in Client.ReadTableAsync(
                     "/nonexistent/path/to/table"))
@@ -255,7 +255,7 @@ namespace DeltaLakeSharp.Tests
         [TestMethod]
         public async Task V3_GetSchema_InvalidPath_ReturnsError()
         {
-            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await Client.GetSchemaAsync("/nonexistent/path/to/table");
             });
@@ -266,7 +266,7 @@ namespace DeltaLakeSharp.Tests
         [TestMethod]
         public async Task V3_ExecuteQuery_InvalidSql_ReturnsError()
         {
-            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await foreach (RecordBatch _ in Client.ExecuteQueryAsync(
                     "SELECT * FROM nonexistent_table_xyz"))
@@ -1504,7 +1504,7 @@ namespace DeltaLakeSharp.Tests
                 new[] { "Seattle", "Portland" },
                 new[] { true, false });
 
-            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await Client.InsertAsync(
                     tablePath,
@@ -1537,7 +1537,7 @@ namespace DeltaLakeSharp.Tests
                 new ColumnDefinition("name", "string"),
             });
 
-            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await Client.CreateTableAsync(
                     tablePath,
@@ -1684,7 +1684,7 @@ namespace DeltaLakeSharp.Tests
                 .Append("name", nullable: true, new StringArray.Builder().AppendRange(new[] { "carol", "david" }).Build())
                 .Build();
 
-            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            var ex = await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await Client.InsertAsync(
                     tablePath,
@@ -2290,7 +2290,7 @@ namespace DeltaLakeSharp.Tests
             await Client.InsertAsync(tablePath, arrowSchema,
                 ToAsyncEnumerable(initialBatch), SaveMode.Append);
 
-            await Assert.ThrowsExceptionAsync<InvalidOperationException>(async () =>
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(async () =>
             {
                 await Client.ExecuteChangeDataQueryAsync(
                         "SELECT definitely_missing FROM _cdf",

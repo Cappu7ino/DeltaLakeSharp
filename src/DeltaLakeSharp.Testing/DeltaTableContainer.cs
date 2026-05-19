@@ -83,7 +83,7 @@ namespace DeltaLakeSharp.Testing
                 .WithPortBinding(containerPort, true)
                 .WithWaitStrategy(
                     Wait.ForUnixContainer()
-                        .UntilPortIsAvailable(containerPort))
+                        .UntilInternalTcpPortIsAvailable(containerPort))
                 .WithCleanUp(true);
 
             _container = imageExists
@@ -140,7 +140,7 @@ namespace DeltaLakeSharp.Testing
                 .WithPortBinding(containerPort, true)
                 .WithWaitStrategy(
                     Wait.ForUnixContainer()
-                        .UntilPortIsAvailable(containerPort))
+                        .UntilInternalTcpPortIsAvailable(containerPort))
                 .WithCleanUp(true)
                 .Build();
 

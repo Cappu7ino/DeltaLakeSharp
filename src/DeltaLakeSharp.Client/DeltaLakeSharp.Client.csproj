@@ -62,7 +62,7 @@
 
   <ItemGroup>
     <None Include="..\..\README.md" Pack="true" PackagePath="" Link="README.md" />
-    <None Include="$(RustV3ProjectDir)\target\$(RustCargoProfile)\delta_table_service_native.dll" Pack="true" PackagePath="runtimes\win-x64\native\" Visible="false" Link="runtimes\win-x64\native\delta_table_service_native.dll" />
+    <None Include="$(RustV3ProjectDir)\target\$(RustCargoProfile)\delta_table_service_native.dll" Pack="true" PackagePath="runtimes\win-x64\native\" Visible="false" Link="runtimes\win-x64\native\delta_table_service_native.dll" Condition="'$(SkipRustBuild)' != 'true' Or Exists('$(RustV3ProjectDir)\target\$(RustCargoProfile)\delta_table_service_native.dll')" />
   </ItemGroup>
 
   <ItemGroup>

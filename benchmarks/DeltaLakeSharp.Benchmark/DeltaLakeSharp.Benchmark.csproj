@@ -51,6 +51,7 @@
     <Content Include="$(RustV3ProjectDir)\target\$(RustCargoProfile)\delta_table_service_native.dll"
              Link="runtimes\win-x64\native\delta_table_service_native.dll"
              CopyToOutputDirectory="PreserveNewest"
-             Visible="false" />
+             Visible="false"
+             Condition="'$(SkipRustBuild)' != 'true' Or Exists('$(RustV3ProjectDir)\target\$(RustCargoProfile)\delta_table_service_native.dll')" />
   </ItemGroup>
 </Project>

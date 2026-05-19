@@ -13,7 +13,7 @@ namespace DeltaLakeSharp.Adbc.Tests
         [TestMethod]
         public void Parse_RequiresTableUri()
         {
-            Assert.ThrowsException<ArgumentException>(() => DeltaAdbcConnectOptions.Parse(new Dictionary<string, string>()));
+            Assert.ThrowsExactly<ArgumentException>(() => DeltaAdbcConnectOptions.Parse(new Dictionary<string, string>()));
         }
 
         [TestMethod]
@@ -82,7 +82,7 @@ namespace DeltaLakeSharp.Adbc.Tests
         [TestMethod]
         public void Parse_WithNegativeVersion_ThrowsArgumentException()
         {
-            Assert.ThrowsException<ArgumentException>(() => DeltaAdbcConnectOptions.Parse(new Dictionary<string, string>
+            Assert.ThrowsExactly<ArgumentException>(() => DeltaAdbcConnectOptions.Parse(new Dictionary<string, string>
             {
                 [DeltaAdbcConnectOptions.TableUriKey] = "C:/tables/foo",
                 [DeltaAdbcStatementOptions.VersionOptionKey] = "-1",

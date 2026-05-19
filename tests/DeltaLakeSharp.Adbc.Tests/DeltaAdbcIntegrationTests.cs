@@ -507,7 +507,7 @@ namespace DeltaLakeSharp.Adbc.Tests
                 var statement = connection.CreateStatement();
                 try
                 {
-                    Exception exception = Assert.ThrowsException<InvalidOperationException>(() => statement.ExecutePartitioned());
+                    Exception exception = Assert.ThrowsExactly<InvalidOperationException>(() => statement.ExecutePartitioned());
                     StringAssert.Contains(exception.Message, "partitioned reads are not yet supported");
                     StringAssert.Contains(exception.Message, "deletion vectors");
                 }
@@ -577,7 +577,7 @@ namespace DeltaLakeSharp.Adbc.Tests
                 {
                     statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
 
-                    AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecutePartitioned());
+                    AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecutePartitioned());
 
                     Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
                     StringAssert.Contains(exception.Message, "Change Data Feed");
@@ -962,7 +962,7 @@ namespace DeltaLakeSharp.Adbc.Tests
                 {
                     statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "9");
 
-                    AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.SetOption(DeltaAdbcStatementOptions.CdfEndingVersionOptionKey, "5"));
+                    AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.SetOption(DeltaAdbcStatementOptions.CdfEndingVersionOptionKey, "5"));
 
                     Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
                     StringAssert.Contains(exception.Message, DeltaAdbcStatementOptions.CdfEndingVersionOptionKey);
@@ -992,7 +992,7 @@ namespace DeltaLakeSharp.Adbc.Tests
                     statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
                     statement.SqlQuery = "SELECT * FROM delta_table";
 
-                    AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecuteQuery());
+                    AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecuteQuery());
 
                     Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
                     StringAssert.Contains(exception.Message, "_cdf");
@@ -1016,7 +1016,7 @@ namespace DeltaLakeSharp.Adbc.Tests
 
             try
             {
-                AdbcException exception = Assert.ThrowsException<AdbcException>(
+                AdbcException exception = Assert.ThrowsExactly<AdbcException>(
                     () => connection.GetTableSchema("catalog", null, DeltaAdbcConnectOptions.LogicalTableName));
 
                 Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
@@ -1035,7 +1035,7 @@ namespace DeltaLakeSharp.Adbc.Tests
 
             try
             {
-                AdbcException exception = Assert.ThrowsException<AdbcException>(
+                AdbcException exception = Assert.ThrowsExactly<AdbcException>(
                     () => connection.GetTableSchema(null, "schema", DeltaAdbcConnectOptions.LogicalTableName));
 
                 Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
@@ -1054,7 +1054,7 @@ namespace DeltaLakeSharp.Adbc.Tests
 
             try
             {
-                AdbcException exception = Assert.ThrowsException<AdbcException>(
+                AdbcException exception = Assert.ThrowsExactly<AdbcException>(
                     () => connection.GetTableSchema(null, null, "other_table"));
 
                 Assert.AreEqual(AdbcStatusCode.NotFound, exception.Status);

@@ -92,7 +92,7 @@ namespace DeltaLakeSharp.Adbc.Tests
                 SqlQuery = "select * from delta_table",
             };
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecutePartitioned());
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecutePartitioned());
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
             StringAssert.Contains(exception.Message, "direct Delta table reads");
@@ -105,7 +105,7 @@ namespace DeltaLakeSharp.Adbc.Tests
             using var statement = new DeltaAdbcStatement(adapter);
             statement.SetOption(DeltaAdbcStatementOptions.MaxRowsOptionKey, "2");
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecutePartitioned());
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecutePartitioned());
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
             StringAssert.Contains(exception.Message, DeltaAdbcStatementOptions.MaxRowsOptionKey);
@@ -118,7 +118,7 @@ namespace DeltaLakeSharp.Adbc.Tests
             using var statement = new DeltaAdbcStatement(adapter);
             statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecutePartitioned());
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecutePartitioned());
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
             StringAssert.Contains(exception.Message, "Change Data Feed");
@@ -156,7 +156,7 @@ namespace DeltaLakeSharp.Adbc.Tests
             };
             statement.SetOption(DeltaAdbcStatementOptions.MaxRowsOptionKey, "2");
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecuteQuery());
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecuteQuery());
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
             StringAssert.Contains(exception.Message, DeltaAdbcStatementOptions.MaxRowsOptionKey);
@@ -167,7 +167,7 @@ namespace DeltaLakeSharp.Adbc.Tests
         {
             using var statement = new DeltaAdbcStatement(new StatementTestAdapter());
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.SetOption("delta.unknown", "1"));
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.SetOption("delta.unknown", "1"));
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
         }
@@ -177,7 +177,7 @@ namespace DeltaLakeSharp.Adbc.Tests
         {
             using var statement = new DeltaAdbcStatement(new StatementTestAdapter());
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.SetOption(DeltaAdbcStatementOptions.BatchSizeOptionKey, "0"));
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.SetOption(DeltaAdbcStatementOptions.BatchSizeOptionKey, "0"));
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
         }
@@ -229,7 +229,7 @@ namespace DeltaLakeSharp.Adbc.Tests
             };
             statement.SetOption(DeltaAdbcStatementOptions.CdfStartingVersionOptionKey, "1");
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecuteQuery());
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecuteQuery());
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
             StringAssert.Contains(exception.Message, "_cdf");
@@ -242,7 +242,7 @@ namespace DeltaLakeSharp.Adbc.Tests
             using var statement = new DeltaAdbcStatement(adapter);
             statement.SetOption(DeltaAdbcStatementOptions.CdfEndingVersionOptionKey, "5");
 
-            AdbcException exception = Assert.ThrowsException<AdbcException>(() => statement.ExecuteQuery());
+            AdbcException exception = Assert.ThrowsExactly<AdbcException>(() => statement.ExecuteQuery());
 
             Assert.AreEqual(AdbcStatusCode.InvalidArgument, exception.Status);
             StringAssert.Contains(exception.Message, DeltaAdbcStatementOptions.CdfStartingVersionOptionKey);
@@ -253,7 +253,7 @@ namespace DeltaLakeSharp.Adbc.Tests
         {
             using var statement = new DeltaAdbcStatement(new StatementTestAdapter());
 
-            Assert.ThrowsException<AdbcException>(() => statement.ExecuteUpdate());
+            Assert.ThrowsExactly<AdbcException>(() => statement.ExecuteUpdate());
         }
 
         [TestMethod]
@@ -261,7 +261,7 @@ namespace DeltaLakeSharp.Adbc.Tests
         {
             using var statement = new DeltaAdbcStatement(new StatementTestAdapter());
 
-            Assert.ThrowsException<AdbcException>(() => statement.Prepare());
+            Assert.ThrowsExactly<AdbcException>(() => statement.Prepare());
         }
 
         private sealed class StatementTestAdapter : IDeltaAdbcClientAdapter
