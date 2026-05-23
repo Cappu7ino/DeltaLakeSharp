@@ -1,15 +1,17 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use datafusion::logical_expr::{Expr, col, lit};
 use deltalake::kernel::Add;
+use deltalake::DeltaTable;
 
 use super::super::helpers::{
-    delta_version_to_request, get_active_add_actions, has_reader_feature, table_protocol,
+    delta_version_to_request, get_active_add_actions, has_reader_feature, open_delta_table,
+    table_protocol,
 };
 use super::super::request::{
     PartitionDescriptorMode, PartitionDescriptorPayload, PartitionPredicateKey, ReadCommand,
@@ -17,6 +19,10 @@ use super::super::request::{
 use crate::error::ServiceError;
 
 const DEFAULT_PARTITION_MULTIPLIER: usize = 4;
+
+/// Multiplier over the average partition size above which a PartitionPredicate
+/// partition is downgraded to individually-splittable FileSubset partitions.
+const SKEW_THRESHOLD_MULTIPLIER: f64 = 1.5;
 
 #[derive(Debug, Clone)]
 pub(super) struct PlannedPartition {
@@ -98,7 +104,21 @@ pub(super) async fn plan_read_partitions(
         return Ok(Vec::new());
     }
 
-    adds.sort_by(|left, right| left.path.cmp(&right.path));
+    adds.sort_by(|left, right| left.size.cmp(&right.size));
+
+    // Build key → files lookup before adds is consumed by build_planning_units.
+    // This is used after coalescing to detect and deaggregate skewed
+    // PartitionPredicate partitions that would otherwise become stragglers.
+    let key_to_adds = if !partition_columns.is_empty() {
+        let mut map: HashMap<String, Vec<Add>> = HashMap::new();
+        for add in &adds {
+            let key = partition_key(add, &partition_columns);
+            map.entry(key).or_default().push(add.clone());
+        }
+        map
+    } else {
+        HashMap::new()
+    };
 
     let desired_partitions = choose_partition_count(adds.len());
     let mut units = build_planning_units(adds, &partition_columns);
@@ -116,22 +136,27 @@ pub(super) async fn plan_read_partitions(
             .collect()
     };
 
-    Ok(planned)
+    Ok(deaggregate_skewed_partitions(
+        planned,
+        &key_to_adds,
+        &partition_columns,
+        table_version,
+    ))
 }
 
 pub(super) async fn resolve_partition_files(
     cmd: &ReadCommand,
     descriptor: &PartitionDescriptorPayload,
-) -> Result<(i64, Vec<Add>), ServiceError> {
+) -> Result<(DeltaTable, Vec<Add>), ServiceError> {
     let version = resolve_partition_token_version(cmd, descriptor.version)?;
 
-    let PartitionDescriptorMode::FileSubset { file_paths } = &descriptor.mode else {
+    let PartitionDescriptorMode::FileSubset { files } = &descriptor.mode else {
         return Err(ServiceError::InvalidRequest(
             "expected file-subset partition token".to_string(),
         ));
     };
 
-    let (table, adds) = get_active_add_actions(
+    let table = open_delta_table(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
@@ -140,26 +165,9 @@ pub(super) async fn resolve_partition_files(
     )
     .await?;
 
-    ensure_partitioned_reads_supported(&table, &adds)?;
+    ensure_partitioned_reads_supported(&table, files)?;
 
-    let add_lookup = adds
-        .into_iter()
-        .map(|add| (add.path.clone(), add))
-        .collect::<BTreeMap<_, _>>();
-
-    let files = file_paths
-        .iter()
-        .map(|path| {
-            add_lookup.get(path).cloned().ok_or_else(|| {
-                ServiceError::InvalidRequest(format!(
-                    "partition token references file '{path}' that is not active in table version {}",
-                    version
-                ))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok((version, files))
+    Ok((table, files.clone()))
 }
 
 pub(super) fn resolve_partition_token_version(
@@ -445,6 +453,94 @@ fn partition_key(add: &Add, partition_columns: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join("/")
+}
+
+/// Converts a [`PartitionPredicateKey`] back to the canonical string key produced
+/// by [`partition_key`], so we can look up the files belonging to a logical
+/// partition in the pre-built `key_to_adds` map.
+fn predicate_key_to_string(key: &PartitionPredicateKey, partition_columns: &[String]) -> String {
+    partition_columns
+        .iter()
+        .map(|column| {
+            let value = key
+                .values
+                .get(column)
+                .and_then(|v| v.as_deref())
+                .unwrap_or("__NULL__");
+            format!("{column}={value}")
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Scans the planned partitions for [`PartitionPredicate`] units whose total
+/// byte size exceeds [`SKEW_THRESHOLD_MULTIPLIER`] × the average. Such units
+/// are downgraded to multiple individually-splittable [`FileSubset`] partitions,
+/// avoiding stragglers caused by hot logical partitions.
+///
+/// [`PartitionPredicate`]: PlannedPartitionMode::PartitionPredicate
+/// [`FileSubset`]: PlannedPartitionMode::FileSubset
+fn deaggregate_skewed_partitions(
+    planned: Vec<PlannedPartition>,
+    key_to_adds: &HashMap<String, Vec<Add>>,
+    partition_columns: &[String],
+    version: i64,
+) -> Vec<PlannedPartition> {
+    if planned.is_empty() || key_to_adds.is_empty() || partition_columns.is_empty() {
+        return planned;
+    }
+
+    if planned.len() < 2 {
+        return planned;
+    }
+
+    let total_size: i64 = key_to_adds
+        .values()
+        .flat_map(|files| files.iter())
+        .map(|add| add.size)
+        .sum();
+    let avg_size = total_size / planned.len() as i64;
+    let threshold = (avg_size as f64 * SKEW_THRESHOLD_MULTIPLIER).ceil() as i64;
+
+    let mut result = Vec::with_capacity(planned.len());
+    for partition in planned {
+        match &partition.mode {
+            PlannedPartitionMode::PartitionPredicate { keys } => {
+                let mut unit_files: Vec<Add> = Vec::new();
+                let mut unit_size: i64 = 0;
+                for key in keys {
+                    let key_str = predicate_key_to_string(key, partition_columns);
+                    if let Some(files) = key_to_adds.get(&key_str) {
+                        unit_size += files.iter().map(|f| f.size).sum::<i64>();
+                        unit_files.extend(files.clone());
+                    }
+                }
+
+                if unit_size > threshold && unit_files.len() > keys.len() {
+                    let mut file_units: Vec<PartitionPlanningUnit> = unit_files
+                        .into_iter()
+                        .map(|f| {
+                            let size = f.size;
+                            PartitionPlanningUnit {
+                                mode: PartitionPlanningUnitMode::FileSubset { files: vec![f] },
+                                total_size: size,
+                            }
+                        })
+                        .collect();
+                    let desired = choose_partition_count(file_units.len());
+                    split_large_units(&mut file_units, desired);
+                    for unit in file_units {
+                        result.push(PlannedPartition::from_unit(version, unit));
+                    }
+                } else {
+                    result.push(partition);
+                }
+            }
+            _ => result.push(partition),
+        }
+    }
+
+    result
 }
 
 pub(super) fn apply_partition_predicate_filter(

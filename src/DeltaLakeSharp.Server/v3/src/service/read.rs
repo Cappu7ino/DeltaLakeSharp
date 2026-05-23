@@ -109,7 +109,7 @@ pub async fn plan_read_partitions_from_command_bytes(
                 total_partitions: partitions.len(),
                 mode: match &partition.mode {
                     PlannedPartitionMode::FileSubset { files } => PartitionDescriptorMode::FileSubset {
-                        file_paths: files.iter().map(|file| file.path.clone()).collect(),
+                        files: files.clone(),
                     },
                     PlannedPartitionMode::PartitionPredicate { keys } => {
                         PartitionDescriptorMode::PartitionPredicate { keys: keys.clone() }
@@ -224,19 +224,23 @@ async fn execute_read_table_stream(
         let descriptor = decode_partition_token(token)?;
         match descriptor.mode {
             PartitionDescriptorMode::FileSubset { .. } => {
-                let (version, files) = resolve_partition_files(&cmd, &descriptor).await?;
-                let table = open_delta_table(
-                    &cmd.path,
-                    cmd.storage_account.as_deref(),
-                    cmd.sas_token.as_deref(),
-                    cmd.storage_options.as_ref(),
-                    Some(version),
-                )
-                .await?;
+                let (table, files) = resolve_partition_files(&cmd, &descriptor).await?;
+                debug!(
+                    path = %cmd.path,
+                    file_count = files.len(),
+                    version = descriptor.version,
+                    "reading file-subset partition"
+                );
                 register_delta_table_with_files(&ctx, "_tbl", &table, files).await?;
             }
             PartitionDescriptorMode::PartitionPredicate { keys } => {
                 let version = resolve_partition_token_version(&cmd, descriptor.version)?;
+                debug!(
+                    path = %cmd.path,
+                    key_count = keys.len(),
+                    version,
+                    "reading partition-predicate partition"
+                );
                 register_delta_table(
                     &ctx,
                     "_tbl",

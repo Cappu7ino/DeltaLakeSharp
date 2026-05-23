@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use arrow::datatypes::DataType;
+use deltalake::kernel::Add;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -36,11 +37,11 @@ pub struct PartitionPredicateKey {
 #[serde(tag = "mode")]
 pub enum PartitionDescriptorMode {
     FileSubset {
-        /// Exact set of active file paths selected for this partition at `version`.
+        /// Exact set of active files selected for this partition at `version`.
         ///
-        /// These are snapshot-relative Add paths, not a durable table identity. The
-        /// token is therefore an opaque execution descriptor, not a long-lived ID.
-        file_paths: Vec<String>,
+        /// Carries the full Add metadata so the read path can reconstruct scan
+        /// targets without re-enumerating the snapshot.
+        files: Vec<Add>,
     },
     PartitionPredicate {
         /// One or more Delta partition key tuples that should be OR'ed together.

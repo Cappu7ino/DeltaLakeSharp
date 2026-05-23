@@ -2,10 +2,15 @@
 // Licensed under the MIT License.
 
 use super::*;
-use super::partitioning::encode_partition_token;
+use super::partitioning::{
+    decode_partition_token, encode_partition_token, resolve_partition_files,
+};
 use arrow::array::{Int32Array, Int64Array, StringArray, StringViewArray};
 use arrow::datatypes::{DataType, Field};
-use crate::service::request::PartitionPredicateKey;
+use crate::service::request::{
+    PartitionDescriptorMode, PartitionDescriptorPayload, PartitionPredicateKey,
+};
+use deltalake::kernel::Add;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use url::Url;
@@ -393,6 +398,53 @@ async fn read_batches_partitioned_table_sql_filter_on_partition() {
     ))
     .await;
     assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
+}
+
+async fn create_skewed_partitioned_table() -> (String, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let table_path = tmp.path().join("skewed_table");
+    std::fs::create_dir(&table_path).expect("create table dir");
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("region", DataType::Utf8, false),
+    ]));
+
+    let url = Url::from_file_path(&table_path).expect("url");
+    let table: deltalake::DeltaTable = deltalake::DeltaTable::try_from_url(url)
+        .await
+        .expect("try_from_url");
+    let mut table = table
+        .write(vec![RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1])),
+                Arc::new(StringArray::from(vec!["eu"])),
+            ],
+        )
+        .expect("batch")])
+        .with_partition_columns(vec!["region".to_string()])
+        .await
+        .expect("create partitioned table");
+
+    // Write multiple batches for the "us" partition so it becomes much larger
+    // than "eu" — this creates the skew we test for.
+    for i in 2..=10 {
+        table = table
+            .write(vec![RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int32Array::from(vec![i])),
+                    Arc::new(StringArray::from(vec!["us"])),
+                ],
+            )
+            .expect("batch")])
+            .await
+            .expect("write us batch");
+    }
+
+    let path_str = table_path.to_str().expect("non-UTF8 path");
+    (path_str.to_string(), tmp)
 }
 
 fn fixture_path(name: &str) -> String {
@@ -794,4 +846,186 @@ async fn plan_read_partitions_deletion_vector_table_returns_error() {
             && message.contains("deletion vectors"),
         "unexpected error message: {message}"
     );
+}
+
+#[test]
+fn file_subset_token_round_trip() {
+    let add = Add {
+        path: "part-00000.snappy.parquet".to_string(),
+        partition_values: HashMap::new(),
+        size: 1024,
+        modification_time: 1_700_000_000_000,
+        data_change: true,
+        stats: Some(r#"{"numRecords":100}"#.to_string()),
+        tags: None,
+        deletion_vector: None,
+        base_row_id: None,
+        default_row_commit_version: None,
+        clustering_provider: None,
+    };
+
+    let payload = PartitionDescriptorPayload {
+        version: 5,
+        ordinal: 0,
+        total_partitions: 4,
+        mode: PartitionDescriptorMode::FileSubset {
+            files: vec![add.clone(), add.clone()],
+        },
+    };
+
+    let token = encode_partition_token(&payload).expect("should encode");
+    let decoded = decode_partition_token(&token).expect("should decode");
+
+    assert_eq!(decoded.version, 5);
+    assert_eq!(decoded.ordinal, 0);
+    assert_eq!(decoded.total_partitions, 4);
+
+    let PartitionDescriptorMode::FileSubset { files } = &decoded.mode else {
+        panic!("expected FileSubset mode");
+    };
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].path, "part-00000.snappy.parquet");
+    assert_eq!(files[0].size, 1024);
+    assert_eq!(files[0].stats.as_deref(), Some(r#"{"numRecords":100}"#));
+}
+
+#[tokio::test]
+async fn resolve_partition_files_rejects_partition_predicate_token() {
+    let (path, _guard) = create_test_delta_table().await;
+
+    let payload = PartitionDescriptorPayload {
+        version: 0,
+        ordinal: 0,
+        total_partitions: 1,
+        mode: PartitionDescriptorMode::PartitionPredicate {
+            keys: vec![PartitionPredicateKey {
+                values: HashMap::from([("id".to_string(), Some("1".to_string()))]),
+            }],
+        },
+    };
+
+    let cmd = ReadCommand {
+        path,
+        num_rows: None,
+        batch_size: None,
+        storage_account: None,
+        sas_token: None,
+        storage_options: None,
+        version: None,
+        partition_token: Some(encode_partition_token(&payload).expect("should encode")),
+    };
+
+    let error = resolve_partition_files(&cmd, &payload)
+        .await
+        .expect_err("should reject non-FileSubset token");
+    assert!(
+        error.to_string().contains("expected file-subset partition token"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn resolve_partition_files_returns_table_and_files() {
+    let (path, _guard) = create_test_delta_table().await;
+
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("should plan");
+    let partitions = planned["result"].as_array().expect("result array");
+    assert!(!partitions.is_empty(), "should have at least one partition");
+
+    let token = partitions[0]["token"].as_str().expect("token").to_string();
+    let descriptor = decode_partition_token(&token).expect("should decode");
+
+    let cmd = ReadCommand {
+        path,
+        num_rows: None,
+        batch_size: None,
+        storage_account: None,
+        sas_token: None,
+        storage_options: None,
+        version: None,
+        partition_token: Some(token),
+    };
+
+    let (table, files) = resolve_partition_files(&cmd, &descriptor)
+        .await
+        .expect("should resolve");
+
+    assert!(!files.is_empty(), "should have files");
+    assert_eq!(
+        table.version().map(|v| v as i64),
+        Some(descriptor.version),
+        "table version should match token version"
+    );
+}
+
+#[tokio::test]
+async fn plan_read_partitions_downgrades_skewed_partition() {
+    let (path, _guard) = create_skewed_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("planning should succeed");
+    let partitions = planned["result"].as_array().expect("result array");
+
+    // A skewed table: 9 rows in "us" and 1 in "eu".
+    // The "us" partition should be downgraded to FileSubset.
+    let has_file_subset = partitions.iter().any(|p| {
+        let token = p["token"].as_str().expect("token");
+        let descriptor = decode_partition_token(token).expect("decode");
+        matches!(descriptor.mode, PartitionDescriptorMode::FileSubset { .. })
+    });
+    let has_predicate = partitions.iter().any(|p| {
+        let token = p["token"].as_str().expect("token");
+        let descriptor = decode_partition_token(token).expect("decode");
+        matches!(descriptor.mode, PartitionDescriptorMode::PartitionPredicate { .. })
+    });
+
+    assert!(has_file_subset, "skewed 'us' partition should be downgraded to FileSubset");
+    assert!(has_predicate, "small 'eu' partition should remain as PartitionPredicate");
+}
+
+#[tokio::test]
+async fn partition_reads_cover_skewed_partitioned_table() {
+    let (path, _guard) = create_skewed_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("planning should succeed");
+    let partitions = planned["result"].as_array().expect("result array");
+    assert!(!partitions.is_empty(), "should have partitions");
+
+    let mut ids = Vec::new();
+    for partition in partitions {
+        let token = partition["token"].as_str().expect("token");
+
+        let mut map = serde_json::Map::new();
+        map.insert("path".to_string(), serde_json::Value::String(path.clone()));
+        map.insert(
+            "partition_token".to_string(),
+            serde_json::Value::String(token.to_string()),
+        );
+        let command = serde_json::to_vec(&map).expect("serialize");
+        let parsed = Command::parse(&command).expect("parse");
+        let Command::Read(read_cmd) = parsed else {
+            panic!("expected read command");
+        };
+
+        let (_schema, mut stream) = execute_read_table_stream(read_cmd)
+            .await
+            .expect("read should succeed");
+        while let Some(batch) = stream.next().await {
+            let batch = batch.expect("batch");
+            let col = batch.column(0);
+            if let Some(id_col) = col.as_any().downcast_ref::<Int32Array>() {
+                for idx in 0..batch.num_rows() {
+                    ids.push(id_col.value(idx));
+                }
+            }
+        }
+    }
+
+    ids.sort();
+    assert_eq!(ids.len(), 10, "should cover all 10 rows across partitions");
+    assert_eq!(ids[0], 1, "first id should be 1");
+    assert_eq!(ids[9], 10, "last id should be 10");
 }
