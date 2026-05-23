@@ -12,6 +12,7 @@ use std::future::Future;
 use std::ptr;
 use std::sync::Once;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
@@ -20,12 +21,23 @@ use tracing_subscriber::EnvFilter;
 use crate::service::DeltaService;
 
 static INIT_TRACING: Once = Once::new();
+static SHARED_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn shared_runtime() -> &'static tokio::runtime::Runtime {
+    SHARED_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_stack_size(8 * 1024 * 1024)
+            .build()
+            .expect("creating Tokio runtime for native V3 engine should succeed")
+    })
+}
 
 /// Opaque native engine handle owned by the consumer.
 pub struct DeltaServiceEngine {
     service: DeltaService,
     last_error: Mutex<Option<CString>>,
-    runtime: tokio::runtime::Runtime,
+    runtime_handle: tokio::runtime::Handle,
 }
 
 impl DeltaServiceEngine {
@@ -42,11 +54,7 @@ impl DeltaServiceEngine {
         Self {
             service: DeltaService::new(),
             last_error: Mutex::new(None),
-            runtime: tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .thread_stack_size(8 * 1024 * 1024)
-                .build()
-                .expect("creating Tokio runtime for native V3 engine should succeed"),
+            runtime_handle: shared_runtime().handle().clone(),
         }
     }
 
@@ -74,7 +82,7 @@ impl DeltaServiceEngine {
     where
         F: std::future::Future<Output = T>,
     {
-        self.runtime.block_on(future)
+        self.runtime_handle.block_on(future)
     }
 
     fn block_on_spawn<F, T>(&self, future: F) -> Result<T, tokio::task::JoinError>
@@ -82,11 +90,11 @@ impl DeltaServiceEngine {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.runtime.block_on(self.runtime.spawn(future))
+        self.runtime_handle.block_on(self.runtime_handle.spawn(future))
     }
 
     fn runtime_handle(&self) -> tokio::runtime::Handle {
-        self.runtime.handle().clone()
+        self.runtime_handle.clone()
     }
 }
 
@@ -658,6 +666,36 @@ mod tests {
         assert_eq!(1, dts_health_check(engine));
         assert!(dts_get_last_error(engine).is_null());
         dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn multiple_engines_share_runtime_and_remain_healthy() {
+        let engines: Vec<*mut DeltaServiceEngine> = (0..16).map(|_| dts_create_engine()).collect();
+
+        for &engine in &engines {
+            assert_eq!(1, dts_health_check(engine));
+            assert!(dts_get_last_error(engine).is_null());
+        }
+
+        for engine in engines {
+            dts_destroy_engine(engine);
+        }
+    }
+
+    #[test]
+    fn destroying_one_engine_does_not_invalidate_another() {
+        let first = dts_create_engine();
+        let second = dts_create_engine();
+
+        assert_eq!(1, dts_health_check(first));
+        assert_eq!(1, dts_health_check(second));
+
+        dts_destroy_engine(first);
+
+        assert_eq!(1, dts_health_check(second));
+        assert!(dts_get_last_error(second).is_null());
+
+        dts_destroy_engine(second);
     }
 
     #[test]
