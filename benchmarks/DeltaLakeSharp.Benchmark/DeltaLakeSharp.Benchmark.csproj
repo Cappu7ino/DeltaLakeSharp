@@ -19,9 +19,11 @@
     <RustNativeLibraryName Condition="$([MSBuild]::IsOSPlatform('Windows'))">delta_table_service_native.dll</RustNativeLibraryName>
     <RustNativeLibraryName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libdelta_table_service_native.dylib</RustNativeLibraryName>
     <RustNativeLibraryName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libdelta_table_service_native.so</RustNativeLibraryName>
-    <RustNativeRuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('Windows'))">win-x64</RustNativeRuntimeIdentifier>
-    <RustNativeRuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('OSX'))">osx-arm64</RustNativeRuntimeIdentifier>
-    <RustNativeRuntimeIdentifier Condition="$([MSBuild]::IsOSPlatform('Linux'))">linux-x64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX')) and '$(PlatformTarget)' == 'arm64'">osx-arm64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</RustNativeRuntimeIdentifier>
   </PropertyGroup>
 
   <ItemGroup>
