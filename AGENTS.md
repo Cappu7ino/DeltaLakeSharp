@@ -34,6 +34,22 @@ This repository is optimized for agent-assisted work on DeltaLakeSharp, an exper
 - Do not log storage credentials, SAS tokens, object-store secrets, or real private paths.
 - Keep V1/V2 Docker-backed tests separate from normal non-container validation.
 
+## Documentation Hygiene
+
+- After any code change, assess whether tracked markdown files need updates.
+- Update docs in the same change when behavior, setup, validation commands, architecture, public API usage, limitations, or troubleshooting guidance changes.
+- Prefer focused updates to existing docs over creating new docs.
+- If no markdown update is needed, say so in the final summary.
+- Do not commit code changes until documentation impact has been considered.
+
+Documentation targets:
+
+- Architecture or runtime behavior: `docs/architecture/`
+- Consumer workflows: `docs/how-to/`
+- AI and agent guidance: `docs/ai/`
+- Validation and contributor commands: `CONTRIBUTING.md` and `AGENTS.md`
+- Public API changes: `README.md`, `api/public-api.md`, and `api/semantic-index.json`
+
 ## Validation Commands
 
 ```powershell
@@ -58,6 +74,12 @@ For V3 runtime changes, build the Rust fixture and run focused V3 tests:
 
 ```powershell
 dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --filter "TestCategory=V3"
+```
+
+On macOS ARM64, prefer the explicit ARM64 `net8.0` invocation when validating V3 tests locally:
+
+```powershell
+dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --framework net8.0 --arch arm64 --filter "TestCategory=V3" /p:PlatformTarget=arm64 /p:SkipRustBuild=true
 ```
 
 ## Files Worth Reading Before Major Changes

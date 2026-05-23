@@ -57,6 +57,7 @@
 - Row and dictionary conversion trade performance for convenience.
 - Flight mode performance includes service and gRPC overhead.
 - V3 avoids the Flight service boundary but introduces native FFI ownership concerns.
+- V3 engine handles share one process-wide Tokio runtime; avoid long blocking work inside imported managed Arrow streams because it can affect other V3 clients in the process.
 - Partitioned reads are for parallel consumers; they are not a general replacement for simple reads.
 
 ## Naming And Terminology

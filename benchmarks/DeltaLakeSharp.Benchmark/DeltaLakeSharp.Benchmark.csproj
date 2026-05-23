@@ -16,6 +16,14 @@
     <RustCargoProfile Condition="'$(RustCargoProfile)' == ''">debug</RustCargoProfile>
     <UseNativeRustForBenchmark Condition="'$(UseNativeRustForBenchmark)' == ''">true</UseNativeRustForBenchmark>
     <RustTargetCpu Condition="'$(Configuration)' == 'Release' and '$(UseNativeRustForBenchmark)' == 'true' and '$(RustTargetCpu)' == ''">native</RustTargetCpu>
+    <RustNativeLibraryName Condition="$([MSBuild]::IsOSPlatform('Windows'))">delta_table_service_native.dll</RustNativeLibraryName>
+    <RustNativeLibraryName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libdelta_table_service_native.dylib</RustNativeLibraryName>
+    <RustNativeLibraryName Condition="$([MSBuild]::IsOSPlatform('Linux'))">libdelta_table_service_native.so</RustNativeLibraryName>
+    <RustNativeRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX')) and '$(PlatformTarget)' == 'arm64'">osx-arm64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</RustNativeRuntimeIdentifier>
   </PropertyGroup>
 
   <ItemGroup>
@@ -48,9 +56,10 @@
              Link="TestData\%(RecursiveDir)%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest"
              Visible="false" />
-    <Content Include="$(RustV3ProjectDir)\target\$(RustCargoProfile)\delta_table_service_native.dll"
-             Link="runtimes\win-x64\native\delta_table_service_native.dll"
+    <Content Include="$(RustV3ProjectDir)\target\$(RustCargoProfile)\$(RustNativeLibraryName)"
+             Link="runtimes\$(RustNativeRuntimeIdentifier)\native\$(RustNativeLibraryName)"
              CopyToOutputDirectory="PreserveNewest"
-             Visible="false" />
+             Visible="false"
+             Condition="'$(UseNativeRustForBenchmark)' == 'true' And '$(RustNativeLibraryName)' != ''" />
   </ItemGroup>
 </Project>

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Types;
@@ -125,7 +126,9 @@ namespace DeltaLakeSharp.Tests
                         "v3",
                         "target",
                         "debug",
-                        "delta-table-service-v3-fixture.exe");
+                        RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                            ? "delta-table-service-v3-fixture.exe"
+                            : "delta-table-service-v3-fixture");
                     return File.Exists(binaryPath) ? binaryPath : null;
                 }
 
