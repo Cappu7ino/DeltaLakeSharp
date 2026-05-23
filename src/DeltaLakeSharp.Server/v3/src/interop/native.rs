@@ -8,6 +8,7 @@
 //! subsequent changes.
 
 use std::ffi::{c_char, CStr, CString};
+use std::future::Future;
 use std::ptr;
 use std::sync::Once;
 use std::sync::Mutex;
@@ -41,7 +42,10 @@ impl DeltaServiceEngine {
         Self {
             service: DeltaService::new(),
             last_error: Mutex::new(None),
-            runtime: tokio::runtime::Runtime::new()
+            runtime: tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(8 * 1024 * 1024)
+                .build()
                 .expect("creating Tokio runtime for native V3 engine should succeed"),
         }
     }
@@ -71,6 +75,14 @@ impl DeltaServiceEngine {
         F: std::future::Future<Output = T>,
     {
         self.runtime.block_on(future)
+    }
+
+    fn block_on_spawn<F, T>(&self, future: F) -> Result<T, tokio::task::JoinError>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.runtime.block_on(self.runtime.spawn(future))
     }
 
     fn runtime_handle(&self) -> tokio::runtime::Handle {
@@ -447,7 +459,7 @@ pub extern "C" fn dts_merge_stream(
             return ptr::null_mut();
         }
 
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
         let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
             Ok(reader) => reader,
             Err(error) => {
@@ -456,10 +468,17 @@ pub extern "C" fn dts_merge_stream(
             }
         };
 
-        let result = match engine_ref.block_on(engine_ref.service.merge_reader(command, reader)) {
-            Ok(result) => result,
-            Err(error) => {
+        let service = engine_ref.service.clone();
+        let result = match engine_ref.block_on_spawn(async move {
+            service.merge_reader(&command, reader).await
+        }) {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
                 engine_ref.set_last_error_message(error.to_string());
+                return ptr::null_mut();
+            }
+            Err(error) => {
+                engine_ref.set_last_error_message(format!("Native merge task failed: {error}"));
                 return ptr::null_mut();
             }
         };
