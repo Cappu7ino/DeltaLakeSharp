@@ -65,7 +65,10 @@ Properties:
 - Uses JSON command payloads for metadata and operation parameters.
 - Uses Arrow C Data/C Stream interfaces for schemas and batches.
 - Owns a native engine handle through a `SafeHandle` wrapper.
+- Shares one process-wide Tokio runtime across native engine handles.
 - Avoids the Flight service boundary but requires native runtime assets.
+
+Each `NativeRustBackend` still owns its native engine handle and per-engine error state. The shared runtime reduces thread and stack reservation overhead when multiple V3 clients are created in the same process. Native merge work is scheduled onto Tokio worker threads so deep delta-rs/DataFusion merge execution does not run on the .NET caller stack.
 
 ## Streaming First
 

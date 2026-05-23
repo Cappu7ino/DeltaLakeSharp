@@ -26,6 +26,8 @@ cargo test
 Pop-Location
 ```
 
+The local native library name is platform-specific: `delta_table_service_native.dll` on Windows, `libdelta_table_service_native.dylib` on macOS, and `libdelta_table_service_native.so` on Linux. The V3 fixture binary is `delta-table-service-v3-fixture.exe` on Windows and `delta-table-service-v3-fixture` on macOS/Linux.
+
 ## Validation
 
 Use these commands for typical changes:
@@ -40,6 +42,12 @@ For V3 runtime or public SDK workflow changes, also run the focused V3 tests aft
 
 ```powershell
 dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --filter "TestCategory=V3"
+```
+
+On macOS ARM64, run the `net8.0` V3 tests with an ARM64 host when the project `PlatformTarget` would otherwise request x64:
+
+```powershell
+dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --framework net8.0 --arch arm64 --filter "TestCategory=V3" /p:PlatformTarget=arm64 /p:SkipRustBuild=true
 ```
 
 V1/V2 compatibility tests require Docker/Testcontainers and may be run separately.
