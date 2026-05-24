@@ -808,8 +808,8 @@ mod tests {
         let engine = dts_create_engine();
         let mut ffi_stream = FFI_ArrowArrayStream::empty();
 
-    let status = dts_execute_query(engine, command.as_ptr(), &mut ffi_stream);
-    assert_eq!(1, status, "native execute_query should succeed");
+        let status = dts_execute_query(engine, command.as_ptr(), &mut ffi_stream);
+        assert_eq!(1, status, "native execute_query should succeed");
 
         let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
             .expect("import stream");
