@@ -770,6 +770,7 @@ mod tests {
         let command = CString::new(
             serde_json::json!({
                 "path": path,
+                "batch_size": 1,
             })
             .to_string(),
         )
@@ -807,8 +808,8 @@ mod tests {
         let engine = dts_create_engine();
         let mut ffi_stream = FFI_ArrowArrayStream::empty();
 
-        let status = dts_read_table(engine, command.as_ptr(), &mut ffi_stream);
-        assert_eq!(1, status, "native read_table should succeed");
+    let status = dts_execute_query(engine, command.as_ptr(), &mut ffi_stream);
+    assert_eq!(1, status, "native execute_query should succeed");
 
         let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
             .expect("import stream");
@@ -828,6 +829,40 @@ mod tests {
         assert_eq!(1, ids.value(0));
         assert_eq!(2, ids.value(1));
         assert_eq!(3, ids.value(2));
+
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn execute_query_arrow_array_stream_can_be_released_early() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "sql": "SELECT id, name FROM tbl ORDER BY id",
+                "table_path": path,
+                "table_name": "tbl",
+                "batch_size": 1,
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+
+        let status = dts_execute_query(engine, command.as_ptr(), &mut ffi_stream);
+        assert_eq!(1, status, "native execute_query should succeed");
+
+        let mut reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import stream");
+        let first_batch = reader
+            .next()
+            .expect("stream should produce first batch")
+            .expect("first batch should be readable");
+        assert_eq!(1, first_batch.num_rows());
+        drop(reader);
 
         dts_destroy_engine(engine);
     }

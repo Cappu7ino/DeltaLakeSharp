@@ -3,7 +3,7 @@
 
 //! Transport-neutral read/query helpers for the Delta Table Service V3.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use arrow::array::ArrayRef;
 use arrow::compute::cast;
@@ -16,7 +16,9 @@ use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use deltalake::delta_datafusion::DeltaCdfTableProvider;
 use futures::StreamExt;
-use tracing::{debug, info};
+use tokio::sync::{Semaphore, mpsc, watch};
+use tokio::task::JoinHandle;
+use tracing::{debug, info, trace};
 
 mod partitioning;
 #[cfg(test)]
@@ -157,23 +159,124 @@ async fn get_delta_schema(cmd: &ReadCommand) -> Result<SchemaRef, ServiceError> 
     Ok(schema)
 }
 
-struct AsyncRecordBatchReader {
-    schema: SchemaRef,
-    runtime_handle: tokio::runtime::Handle,
-    stream: SendableRecordBatchStream,
+const DEFAULT_RECORD_BATCH_PREFETCH: usize = 2;
+const DEFAULT_MAX_PREFETCH_PRODUCERS: usize = 16;
+
+static PREFETCH_PRODUCER_LIMIT: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn prefetch_producer_limit() -> Arc<Semaphore> {
+    Arc::clone(
+        PREFETCH_PRODUCER_LIMIT
+            .get_or_init(|| Arc::new(Semaphore::new(DEFAULT_MAX_PREFETCH_PRODUCERS))),
+    )
 }
 
-impl Iterator for AsyncRecordBatchReader {
-    type Item = Result<RecordBatch, ArrowError>;
+struct PrefetchingRecordBatchReader {
+    schema: SchemaRef,
+    batches: mpsc::Receiver<Result<RecordBatch, ArrowError>>,
+    cancel: watch::Sender<bool>,
+    producer: JoinHandle<()>,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.runtime_handle
-            .block_on(self.stream.next())
-            .map(|result| result.map_err(|error| ArrowError::ExternalError(Box::new(error))))
+impl PrefetchingRecordBatchReader {
+    fn new(
+        schema: SchemaRef,
+        runtime_handle: tokio::runtime::Handle,
+        stream: SendableRecordBatchStream,
+    ) -> Self {
+        Self::new_with_limit(schema, runtime_handle, stream, prefetch_producer_limit())
+    }
+
+    fn new_with_limit(
+        schema: SchemaRef,
+        runtime_handle: tokio::runtime::Handle,
+        mut stream: SendableRecordBatchStream,
+        producer_limit: Arc<Semaphore>,
+    ) -> Self {
+        let (batch_sender, batches) = mpsc::channel(DEFAULT_RECORD_BATCH_PREFETCH);
+        let (cancel, mut cancel_receiver) = watch::channel(false);
+
+        let producer = runtime_handle.spawn(async move {
+            trace!("prefetch producer started");
+            loop {
+                let producer_permit = tokio::select! {
+                    _ = cancel_receiver.changed() => {
+                        trace!("prefetch producer cancelled while waiting for capacity");
+                        break;
+                    }
+                    permit = producer_limit.clone().acquire_owned() => {
+                        match permit {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                trace!("prefetch producer limiter closed");
+                                break;
+                            }
+                        }
+                    }
+                };
+
+                let next_batch = tokio::select! {
+                    _ = cancel_receiver.changed() => {
+                        trace!("prefetch producer cancelled while reading batch");
+                        break;
+                    }
+                    next_batch = stream.next() => next_batch,
+                };
+                drop(producer_permit);
+
+                let Some(next_batch) = next_batch else {
+                    trace!("prefetch producer reached end of stream");
+                    break;
+                };
+
+                let next_batch =
+                    next_batch.map_err(|error| ArrowError::ExternalError(Box::new(error)));
+                if next_batch.is_err() {
+                    trace!("prefetch producer received batch error");
+                }
+
+                tokio::select! {
+                    _ = cancel_receiver.changed() => {
+                        trace!("prefetch producer cancelled while sending batch");
+                        break;
+                    }
+                    send_result = batch_sender.send(next_batch) => {
+                        if send_result.is_err() {
+                            trace!("prefetch producer receiver closed");
+                            break;
+                        }
+                        trace!("prefetch producer sent batch result");
+                    }
+                }
+            }
+            trace!("prefetch producer exited");
+        });
+
+        Self {
+            schema,
+            batches,
+            cancel,
+            producer,
+        }
     }
 }
 
-impl RecordBatchReader for AsyncRecordBatchReader {
+impl Iterator for PrefetchingRecordBatchReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.batches.blocking_recv()
+    }
+}
+
+impl Drop for PrefetchingRecordBatchReader {
+    fn drop(&mut self) {
+        let _ = self.cancel.send(true);
+        self.producer.abort();
+    }
+}
+
+impl RecordBatchReader for PrefetchingRecordBatchReader {
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }
@@ -185,11 +288,11 @@ async fn read_table_batch_reader(
 ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
 {
     let (schema, stream) = execute_read_table_stream(cmd).await?;
-    Ok(Box::new(AsyncRecordBatchReader {
+    Ok(Box::new(PrefetchingRecordBatchReader::new(
         schema,
         runtime_handle,
         stream,
-    }))
+    )))
 }
 
 async fn sql_batch_reader(
@@ -198,11 +301,11 @@ async fn sql_batch_reader(
 ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
 {
     let (schema, stream) = execute_sql_stream(cmd).await?;
-    Ok(Box::new(AsyncRecordBatchReader {
+    Ok(Box::new(PrefetchingRecordBatchReader::new(
         schema,
         runtime_handle,
         stream,
-    }))
+    )))
 }
 
 async fn change_data_batch_reader(
@@ -211,11 +314,11 @@ async fn change_data_batch_reader(
 ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
 {
     let (schema, stream) = execute_change_data_stream(cmd).await?;
-    Ok(Box::new(AsyncRecordBatchReader {
+    Ok(Box::new(PrefetchingRecordBatchReader::new(
         schema,
         runtime_handle,
         stream,
-    }))
+    )))
 }
 
 async fn execute_read_table_stream(
