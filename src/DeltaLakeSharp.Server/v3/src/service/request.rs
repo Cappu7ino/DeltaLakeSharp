@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use arrow::datatypes::DataType;
+use deltalake::kernel::Add;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
@@ -36,11 +37,14 @@ pub struct PartitionPredicateKey {
 #[serde(tag = "mode")]
 pub enum PartitionDescriptorMode {
     FileSubset {
-        /// Exact set of active file paths selected for this partition at `version`.
+        /// Exact set of active files selected for this partition at `version`.
         ///
-        /// These are snapshot-relative Add paths, not a durable table identity. The
-        /// token is therefore an opaque execution descriptor, not a long-lived ID.
-        file_paths: Vec<String>,
+        /// Carries trusted, short-lived Add metadata so the read path can
+        /// reconstruct scan targets without re-enumerating the snapshot. Large
+        /// file statistics are intentionally stripped before token encoding.
+        /// The token is therefore an opaque execution descriptor, not a
+        /// long-lived ID.
+        files: Vec<Add>,
     },
     PartitionPredicate {
         /// One or more Delta partition key tuples that should be OR'ed together.
@@ -60,7 +64,7 @@ pub struct PartitionDescriptorPayload {
     /// Zero-based ordinal of this planned partition within the planning result.
     ///
     /// This is planner metadata for diagnostics and client display; execution is
-    /// driven by `version` plus `file_paths`.
+    /// driven by `version` plus the backend-specific descriptor payload.
     pub ordinal: usize,
     /// Total number of partitions returned by the original planning operation.
     ///
@@ -509,18 +513,22 @@ mod tests {
 
     #[test]
     fn parse_execute_dml_missing_sql_returns_error() {
-        assert!(serde_json::from_slice::<ExecuteDmlCommand>(
-            br#"{"table_path":"/tmp/t","table_name":"t"}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_slice::<ExecuteDmlCommand>(
+                br#"{"table_path":"/tmp/t","table_name":"t"}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn parse_execute_dml_missing_table_path_returns_error() {
-        assert!(serde_json::from_slice::<ExecuteDmlCommand>(
-            br#"{"sql":"DELETE FROM t","table_name":"t"}"#
-        )
-        .is_err());
+        assert!(
+            serde_json::from_slice::<ExecuteDmlCommand>(
+                br#"{"sql":"DELETE FROM t","table_name":"t"}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
