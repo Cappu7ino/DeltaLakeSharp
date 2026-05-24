@@ -12,8 +12,8 @@ use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use datafusion::execution::config::SessionConfig;
 use datafusion::execution::context::SessionContext;
-use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::SendableRecordBatchStream;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use deltalake::delta_datafusion::DeltaCdfTableProvider;
 use futures::StreamExt;
 use tracing::{debug, info};
@@ -29,12 +29,12 @@ use super::helpers::{
 use super::request::{
     Command, PartitionDescriptorMode, ReadChangeDataCommand, ReadCommand, SqlCommand,
 };
+use crate::error::ServiceError;
 use partitioning::{
     PlannedPartitionMode, apply_partition_predicate_filter, decode_partition_token,
-    encode_partition_token, plan_read_partitions, resolve_partition_files,
-    resolve_partition_token_version,
+    encode_partition_token, plan_read_partitions, prepare_file_subset_token_files,
+    resolve_partition_files, resolve_partition_token_version,
 };
-use crate::error::ServiceError;
 
 /// Resolves the Arrow schema for a read/query command without committing to any
 /// transport representation.
@@ -77,7 +77,8 @@ pub async fn resolve_change_data_reader_from_command_bytes(
     runtime_handle: tokio::runtime::Handle,
 ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
 {
-    let cmd: ReadChangeDataCommand = serde_json::from_slice(cmd_bytes).map_err(ServiceError::Json)?;
+    let cmd: ReadChangeDataCommand =
+        serde_json::from_slice(cmd_bytes).map_err(ServiceError::Json)?;
     info!(
         path = %cmd.path,
         starting_version = cmd.starting_version,
@@ -108,9 +109,11 @@ pub async fn plan_read_partitions_from_command_bytes(
                 ordinal,
                 total_partitions: partitions.len(),
                 mode: match &partition.mode {
-                    PlannedPartitionMode::FileSubset { files } => PartitionDescriptorMode::FileSubset {
-                        file_paths: files.iter().map(|file| file.path.clone()).collect(),
-                    },
+                    PlannedPartitionMode::FileSubset { files } => {
+                        PartitionDescriptorMode::FileSubset {
+                            files: prepare_file_subset_token_files(files),
+                        }
+                    }
                     PlannedPartitionMode::PartitionPredicate { keys } => {
                         PartitionDescriptorMode::PartitionPredicate { keys: keys.clone() }
                     }
@@ -164,9 +167,9 @@ impl Iterator for AsyncRecordBatchReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.runtime_handle.block_on(self.stream.next()).map(|result| {
-            result.map_err(|error| ArrowError::ExternalError(Box::new(error)))
-        })
+        self.runtime_handle
+            .block_on(self.stream.next())
+            .map(|result| result.map_err(|error| ArrowError::ExternalError(Box::new(error))))
     }
 }
 
@@ -223,20 +226,25 @@ async fn execute_read_table_stream(
     if let Some(token) = cmd.partition_token.as_deref() {
         let descriptor = decode_partition_token(token)?;
         match descriptor.mode {
-            PartitionDescriptorMode::FileSubset { .. } => {
-                let (version, files) = resolve_partition_files(&cmd, &descriptor).await?;
-                let table = open_delta_table(
-                    &cmd.path,
-                    cmd.storage_account.as_deref(),
-                    cmd.sas_token.as_deref(),
-                    cmd.storage_options.as_ref(),
-                    Some(version),
-                )
-                .await?;
+            PartitionDescriptorMode::FileSubset { files } => {
+                let version = descriptor.version;
+                let (table, files) = resolve_partition_files(&cmd, version, files).await?;
+                debug!(
+                    path = %cmd.path,
+                    version,
+                    file_count = files.len(),
+                    "reading file-subset partition"
+                );
                 register_delta_table_with_files(&ctx, "_tbl", &table, files).await?;
             }
             PartitionDescriptorMode::PartitionPredicate { keys } => {
                 let version = resolve_partition_token_version(&cmd, descriptor.version)?;
+                debug!(
+                    path = %cmd.path,
+                    version,
+                    key_count = keys.len(),
+                    "reading partition-predicate partition"
+                );
                 register_delta_table(
                     &ctx,
                     "_tbl",
@@ -249,14 +257,19 @@ async fn execute_read_table_stream(
                 .await?;
 
                 let df = ctx.table("_tbl").await.map_err(ServiceError::DataFusion)?;
-                let df = apply_partition_predicate_filter(df, &keys).map_err(ServiceError::DataFusion)?;
+                let df = apply_partition_predicate_filter(df, &keys)
+                    .map_err(ServiceError::DataFusion)?;
                 let df = if let Some(n) = cmd.num_rows {
-                    df.limit(0, Some(n as usize)).map_err(ServiceError::DataFusion)?
+                    df.limit(0, Some(n as usize))
+                        .map_err(ServiceError::DataFusion)?
                 } else {
                     df
                 };
                 let schema: SchemaRef = Arc::clone(df.schema().inner());
-                let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
+                let batch_stream = df
+                    .execute_stream()
+                    .await
+                    .map_err(ServiceError::DataFusion)?;
                 let batch_stream = normalize_stream_to_schema(batch_stream, Arc::clone(&schema));
                 return Ok((schema, batch_stream));
             }
@@ -282,7 +295,10 @@ async fn execute_read_table_stream(
 
     let df = ctx.sql(&sql).await.map_err(ServiceError::DataFusion)?;
     let schema: SchemaRef = Arc::clone(df.schema().inner());
-    let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
+    let batch_stream = df
+        .execute_stream()
+        .await
+        .map_err(ServiceError::DataFusion)?;
     let batch_stream = normalize_stream_to_schema(batch_stream, Arc::clone(&schema));
     Ok((schema, batch_stream))
 }
@@ -308,7 +324,10 @@ async fn execute_sql_stream(
     debug!(sql = %cmd.sql, "Executing SQL query");
     let df = ctx.sql(&cmd.sql).await.map_err(ServiceError::DataFusion)?;
     let schema: SchemaRef = Arc::clone(df.schema().inner());
-    let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
+    let batch_stream = df
+        .execute_stream()
+        .await
+        .map_err(ServiceError::DataFusion)?;
     Ok((schema, batch_stream))
 }
 
@@ -332,10 +351,8 @@ async fn execute_change_data_stream(
         .with_session_state(Arc::new(ctx.state()))
         .with_starting_version(starting_version);
     if let Some(ending_version) = cmd.ending_version {
-        builder = builder.with_ending_version(request_version_to_delta(
-            ending_version,
-            "ending_version",
-        )?);
+        builder = builder
+            .with_ending_version(request_version_to_delta(ending_version, "ending_version")?);
     }
 
     let provider = Arc::new(DeltaCdfTableProvider::try_new(builder).map_err(ServiceError::Delta)?);
@@ -348,7 +365,10 @@ async fn execute_change_data_stream(
         ctx.read_table(provider).map_err(ServiceError::DataFusion)?
     };
     let schema: SchemaRef = Arc::clone(df.schema().inner());
-    let batch_stream = df.execute_stream().await.map_err(ServiceError::DataFusion)?;
+    let batch_stream = df
+        .execute_stream()
+        .await
+        .map_err(ServiceError::DataFusion)?;
     Ok((schema, batch_stream))
 }
 
@@ -381,7 +401,10 @@ fn normalize_stream_to_schema(
     Box::pin(RecordBatchStreamAdapter::new(schema, normalized))
 }
 
-fn normalize_batch_to_schema(batch: RecordBatch, schema: &SchemaRef) -> Result<RecordBatch, ArrowError> {
+fn normalize_batch_to_schema(
+    batch: RecordBatch,
+    schema: &SchemaRef,
+) -> Result<RecordBatch, ArrowError> {
     if batch.schema().as_ref() == schema.as_ref() {
         return Ok(batch);
     }
@@ -396,7 +419,10 @@ fn normalize_batch_to_schema(batch: RecordBatch, schema: &SchemaRef) -> Result<R
     RecordBatch::try_new(Arc::clone(schema), columns)
 }
 
-fn normalize_array_to_type(array: ArrayRef, target_type: &arrow::datatypes::DataType) -> Result<ArrayRef, ArrowError> {
+fn normalize_array_to_type(
+    array: ArrayRef,
+    target_type: &arrow::datatypes::DataType,
+) -> Result<ArrayRef, ArrowError> {
     if array.data_type() == target_type {
         Ok(array)
     } else {

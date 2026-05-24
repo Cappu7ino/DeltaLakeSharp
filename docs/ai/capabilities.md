@@ -119,14 +119,14 @@ Recommended usage:
 
 - Use V3 `GetReadPartitionsAsync` to obtain `DeltaReadPartition` descriptors.
 - Treat partition tokens as opaque; do not construct or mutate them manually.
-- Read partitions from the same table snapshot they were generated for.
+- Read partitions from the same table snapshot they were generated for and consume descriptors promptly.
 - Use ADBC `ExecutePartitioned` only for supported read modes.
 
 Constraints:
 
 - V1/V2 public wrappers throw for partition APIs.
 - ADBC partitioned execution has restrictions with CDF, `MaxRows`, and some deletion-vector layouts.
-- Partition tokens encode backend planning details and should not be persisted as long-term stable identifiers.
+- Partition tokens are trusted, short-lived backend execution descriptors. They can encode scan metadata and should not be logged, mutated, or persisted as long-term stable identifiers.
 
 ## Storage And Authentication
 

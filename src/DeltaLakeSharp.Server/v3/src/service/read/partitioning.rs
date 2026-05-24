@@ -1,22 +1,23 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use datafusion::logical_expr::{Expr, col, lit};
+use deltalake::DeltaTable;
 use deltalake::kernel::Add;
 
 use super::super::helpers::{
-    delta_version_to_request, get_active_add_actions, has_reader_feature, table_protocol,
+    delta_version_to_request, get_active_add_actions, has_reader_feature, open_delta_table,
+    table_protocol,
 };
-use super::super::request::{
-    PartitionDescriptorMode, PartitionDescriptorPayload, PartitionPredicateKey, ReadCommand,
-};
+use super::super::request::{PartitionDescriptorPayload, PartitionPredicateKey, ReadCommand};
 use crate::error::ServiceError;
 
 const DEFAULT_PARTITION_MULTIPLIER: usize = 4;
+const SKEW_THRESHOLD_MULTIPLIER: f64 = 1.5;
 
 #[derive(Debug, Clone)]
 pub(super) struct PlannedPartition {
@@ -76,7 +77,7 @@ impl PlannedPartition {
 pub(super) async fn plan_read_partitions(
     cmd: ReadCommand,
 ) -> Result<Vec<PlannedPartition>, ServiceError> {
-    let (table, mut adds) = get_active_add_actions(
+    let (table, adds) = get_active_add_actions(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
@@ -93,15 +94,15 @@ pub(super) async fn plan_read_partitions(
         .to_vec();
 
     ensure_partition_planning_supported(&table, &adds, &partition_columns)?;
+    let can_plan_file_subset_partitions = !table_has_deletion_vectors(&table, &adds)?;
 
     if adds.is_empty() {
         return Ok(Vec::new());
     }
 
-    adds.sort_by(|left, right| left.path.cmp(&right.path));
-
     let desired_partitions = choose_partition_count(adds.len());
-    let mut units = build_planning_units(adds, &partition_columns);
+    let (mut units, key_to_adds) = build_planning_units(adds, &partition_columns);
+    sort_planning_units_by_size_desc(&mut units, &partition_columns);
     split_large_units(&mut units, desired_partitions);
     let table_version = table.version().ok_or_else(|| {
         ServiceError::Internal("expected loaded Delta table to expose a pinned version".to_string())
@@ -111,27 +112,29 @@ pub(super) async fn plan_read_partitions(
     let planned = if units.len() > desired_partitions {
         coalesce_units(units, desired_partitions, table_version)
     } else {
-        units.into_iter()
+        units
+            .into_iter()
             .map(|unit| PlannedPartition::from_unit(table_version, unit))
             .collect()
     };
 
-    Ok(planned)
+    Ok(deaggregate_skewed_partitions(
+        planned,
+        &key_to_adds,
+        &partition_columns,
+        table_version,
+        can_plan_file_subset_partitions,
+    ))
 }
 
 pub(super) async fn resolve_partition_files(
     cmd: &ReadCommand,
-    descriptor: &PartitionDescriptorPayload,
-) -> Result<(i64, Vec<Add>), ServiceError> {
-    let version = resolve_partition_token_version(cmd, descriptor.version)?;
+    token_version: i64,
+    files: Vec<Add>,
+) -> Result<(DeltaTable, Vec<Add>), ServiceError> {
+    let version = resolve_partition_token_version(cmd, token_version)?;
 
-    let PartitionDescriptorMode::FileSubset { file_paths } = &descriptor.mode else {
-        return Err(ServiceError::InvalidRequest(
-            "expected file-subset partition token".to_string(),
-        ));
-    };
-
-    let (table, adds) = get_active_add_actions(
+    let table = open_delta_table(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
@@ -140,26 +143,20 @@ pub(super) async fn resolve_partition_files(
     )
     .await?;
 
-    ensure_partitioned_reads_supported(&table, &adds)?;
+    ensure_partitioned_reads_supported(&table, &files)?;
 
-    let add_lookup = adds
-        .into_iter()
-        .map(|add| (add.path.clone(), add))
-        .collect::<BTreeMap<_, _>>();
+    Ok((table, files))
+}
 
-    let files = file_paths
+pub(super) fn prepare_file_subset_token_files(files: &[Add]) -> Vec<Add> {
+    files
         .iter()
-        .map(|path| {
-            add_lookup.get(path).cloned().ok_or_else(|| {
-                ServiceError::InvalidRequest(format!(
-                    "partition token references file '{path}' that is not active in table version {}",
-                    version
-                ))
-            })
+        .cloned()
+        .map(|mut file| {
+            file.stats = None;
+            file
         })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok((version, files))
+        .collect()
 }
 
 pub(super) fn resolve_partition_token_version(
@@ -224,17 +221,22 @@ fn choose_partition_count(file_count: usize) -> usize {
     desired.clamp(1, file_count.max(1))
 }
 
-fn build_planning_units(adds: Vec<Add>, partition_columns: &[String]) -> Vec<PartitionPlanningUnit> {
+fn build_planning_units(
+    adds: Vec<Add>,
+    partition_columns: &[String],
+) -> (Vec<PartitionPlanningUnit>, HashMap<String, Vec<Add>>) {
     if partition_columns.is_empty() {
-        return adds
+        let units = adds
             .into_iter()
-            .map(|file| PartitionPlanningUnit {
-                mode: PartitionPlanningUnitMode::FileSubset {
-                    files: vec![file.clone()],
-                },
-                total_size: file.size,
+            .map(|file| {
+                let total_size = file.size;
+                PartitionPlanningUnit {
+                    mode: PartitionPlanningUnitMode::FileSubset { files: vec![file] },
+                    total_size,
+                }
             })
             .collect();
+        return (units, HashMap::new());
     }
 
     let mut groups = BTreeMap::<String, Vec<Add>>::new();
@@ -243,10 +245,9 @@ fn build_planning_units(adds: Vec<Add>, partition_columns: &[String]) -> Vec<Par
         groups.entry(key).or_default().push(add);
     }
 
-    groups
-        .into_values()
-        .map(|mut files| {
-            files.sort_by(|left, right| left.path.cmp(&right.path));
+    let units = groups
+        .values()
+        .map(|files| {
             let total_size = files.iter().map(|file| file.size).sum();
             let key = PartitionPredicateKey {
                 values: partition_columns
@@ -254,7 +255,11 @@ fn build_planning_units(adds: Vec<Add>, partition_columns: &[String]) -> Vec<Par
                     .map(|column| {
                         (
                             column.clone(),
-                            files[0].partition_values.get(column).cloned().unwrap_or(None),
+                            files[0]
+                                .partition_values
+                                .get(column)
+                                .cloned()
+                                .unwrap_or(None),
                         )
                     })
                     .collect(),
@@ -264,7 +269,33 @@ fn build_planning_units(adds: Vec<Add>, partition_columns: &[String]) -> Vec<Par
                 total_size,
             }
         })
-        .collect()
+        .collect();
+
+    (units, groups.into_iter().collect())
+}
+
+fn sort_planning_units_by_size_desc(
+    units: &mut [PartitionPlanningUnit],
+    partition_columns: &[String],
+) {
+    units.sort_by(|left, right| {
+        right.total_size.cmp(&left.total_size).then_with(|| {
+            planning_unit_sort_key(left, partition_columns)
+                .cmp(&planning_unit_sort_key(right, partition_columns))
+        })
+    });
+}
+
+fn planning_unit_sort_key(unit: &PartitionPlanningUnit, partition_columns: &[String]) -> String {
+    match &unit.mode {
+        PartitionPlanningUnitMode::FileSubset { files } => files
+            .first()
+            .map(|file| file.path.clone())
+            .unwrap_or_default(),
+        PartitionPlanningUnitMode::PartitionPredicate { key } => {
+            predicate_key_to_string(key, partition_columns)
+        }
+    }
 }
 
 fn split_large_units(units: &mut Vec<PartitionPlanningUnit>, desired_partitions: usize) {
@@ -447,6 +478,98 @@ fn partition_key(add: &Add, partition_columns: &[String]) -> String {
         .join("/")
 }
 
+fn predicate_key_to_string(key: &PartitionPredicateKey, partition_columns: &[String]) -> String {
+    partition_columns
+        .iter()
+        .map(|column| {
+            let value = key
+                .values
+                .get(column)
+                .and_then(|value| value.as_deref())
+                .unwrap_or("__NULL__");
+            format!("{column}={value}")
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn deaggregate_skewed_partitions(
+    planned: Vec<PlannedPartition>,
+    key_to_adds: &HashMap<String, Vec<Add>>,
+    partition_columns: &[String],
+    version: i64,
+    can_plan_file_subset_partitions: bool,
+) -> Vec<PlannedPartition> {
+    if !can_plan_file_subset_partitions
+        || planned.len() < 2
+        || key_to_adds.is_empty()
+        || partition_columns.is_empty()
+    {
+        return planned;
+    }
+
+    let total_size = key_to_adds
+        .values()
+        .flat_map(|files| files.iter())
+        .map(|file| file.size)
+        .sum::<i64>();
+    let avg_size = div_ceil_i64(total_size, planned.len() as i64);
+    let threshold = (avg_size as f64 * SKEW_THRESHOLD_MULTIPLIER).ceil() as i64;
+
+    let mut result = Vec::with_capacity(planned.len());
+    for partition in planned {
+        let PlannedPartitionMode::PartitionPredicate { keys } = &partition.mode else {
+            result.push(partition);
+            continue;
+        };
+
+        let mut files = Vec::new();
+        let mut total_size = 0_i64;
+        for key in keys {
+            let key_string = predicate_key_to_string(key, partition_columns);
+            if let Some(key_files) = key_to_adds.get(&key_string) {
+                total_size += key_files.iter().map(|file| file.size).sum::<i64>();
+                files.extend(key_files.clone());
+            }
+        }
+
+        if total_size <= threshold || files.len() <= keys.len() {
+            result.push(partition);
+            continue;
+        }
+
+        files.sort_by(|left, right| {
+            left.size
+                .cmp(&right.size)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        let mut units = files
+            .into_iter()
+            .map(|file| {
+                let total_size = file.size;
+                PartitionPlanningUnit {
+                    mode: PartitionPlanningUnitMode::FileSubset { files: vec![file] },
+                    total_size,
+                }
+            })
+            .collect::<Vec<_>>();
+        let desired_partitions = choose_partition_count(units.len());
+        sort_planning_units_by_size_desc(&mut units, partition_columns);
+        split_large_units(&mut units, desired_partitions);
+        if units.len() > desired_partitions {
+            result.extend(coalesce_units(units, desired_partitions, version));
+        } else {
+            result.extend(
+                units
+                    .into_iter()
+                    .map(|unit| PlannedPartition::from_unit(version, unit)),
+            );
+        }
+    }
+
+    result
+}
+
 pub(super) fn apply_partition_predicate_filter(
     df: datafusion::dataframe::DataFrame,
     keys: &[PartitionPredicateKey],
@@ -500,4 +623,56 @@ pub(super) fn decode_partition_token(
         ServiceError::InvalidRequest(format!("invalid partition token encoding: {error}"))
     })?;
     serde_json::from_slice(&bytes).map_err(ServiceError::Json)
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    fn test_add(path: &str, size: i64, region: &str) -> Add {
+        Add {
+            path: path.to_string(),
+            partition_values: [("region".to_string(), Some(region.to_string()))]
+                .into_iter()
+                .collect(),
+            size,
+            modification_time: 0,
+            data_change: true,
+            stats: None,
+            tags: None,
+            deletion_vector: None,
+            base_row_id: None,
+            default_row_commit_version: None,
+            clustering_provider: None,
+        }
+    }
+
+    #[test]
+    fn sort_planning_units_orders_partition_predicates_by_size_descending() {
+        let partition_columns = vec!["region".to_string()];
+        let (mut units, _groups) = build_planning_units(
+            vec![
+                test_add("region=a/part.parquet", 10, "a"),
+                test_add("region=c/part.parquet", 30, "c"),
+                test_add("region=b/part.parquet", 20, "b"),
+            ],
+            &partition_columns,
+        );
+
+        sort_planning_units_by_size_desc(&mut units, &partition_columns);
+
+        let regions = units
+            .iter()
+            .map(|unit| match &unit.mode {
+                PartitionPlanningUnitMode::PartitionPredicate { key } => key
+                    .values
+                    .get("region")
+                    .and_then(|value| value.as_deref())
+                    .expect("region value"),
+                PartitionPlanningUnitMode::FileSubset { .. } => panic!("expected predicate unit"),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(regions, vec!["c", "b", "a"]);
+    }
 }

@@ -1,11 +1,13 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
+use super::partitioning::{
+    decode_partition_token, encode_partition_token, resolve_partition_files,
+};
 use super::*;
-use super::partitioning::encode_partition_token;
+use crate::service::request::PartitionPredicateKey;
 use arrow::array::{Int32Array, Int64Array, StringArray, StringViewArray};
 use arrow::datatypes::{DataType, Field};
-use crate::service::request::PartitionPredicateKey;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use url::Url;
@@ -79,7 +81,10 @@ async fn create_multi_file_non_partitioned_table() -> (String, tempfile::TempDir
 
 fn read_command_bytes(path: &str, num_rows: Option<u64>) -> Vec<u8> {
     let mut map = serde_json::Map::new();
-    map.insert("path".to_string(), serde_json::Value::String(path.to_string()));
+    map.insert(
+        "path".to_string(),
+        serde_json::Value::String(path.to_string()),
+    );
     if let Some(n) = num_rows {
         map.insert("num_rows".to_string(), serde_json::Value::Number(n.into()));
     }
@@ -88,12 +93,21 @@ fn read_command_bytes(path: &str, num_rows: Option<u64>) -> Vec<u8> {
 
 fn sql_command_bytes(sql: &str, table_path: Option<&str>, table_name: Option<&str>) -> Vec<u8> {
     let mut map = serde_json::Map::new();
-    map.insert("sql".to_string(), serde_json::Value::String(sql.to_string()));
+    map.insert(
+        "sql".to_string(),
+        serde_json::Value::String(sql.to_string()),
+    );
     if let Some(tp) = table_path {
-        map.insert("table_path".to_string(), serde_json::Value::String(tp.to_string()));
+        map.insert(
+            "table_path".to_string(),
+            serde_json::Value::String(tp.to_string()),
+        );
     }
     if let Some(tn) = table_name {
-        map.insert("table_name".to_string(), serde_json::Value::String(tn.to_string()));
+        map.insert(
+            "table_name".to_string(),
+            serde_json::Value::String(tn.to_string()),
+        );
     }
     serde_json::to_vec(&map).expect("failed to serialize sql command")
 }
@@ -105,16 +119,25 @@ fn sql_command_bytes_with_batch_size(
     batch_size: usize,
 ) -> Vec<u8> {
     let mut map = serde_json::Map::new();
-    map.insert("sql".to_string(), serde_json::Value::String(sql.to_string()));
+    map.insert(
+        "sql".to_string(),
+        serde_json::Value::String(sql.to_string()),
+    );
     map.insert(
         "batch_size".to_string(),
         serde_json::Value::Number(serde_json::Number::from(batch_size as u64)),
     );
     if let Some(tp) = table_path {
-        map.insert("table_path".to_string(), serde_json::Value::String(tp.to_string()));
+        map.insert(
+            "table_path".to_string(),
+            serde_json::Value::String(tp.to_string()),
+        );
     }
     if let Some(tn) = table_name {
-        map.insert("table_name".to_string(), serde_json::Value::String(tn.to_string()));
+        map.insert(
+            "table_name".to_string(),
+            serde_json::Value::String(tn.to_string()),
+        );
     }
     serde_json::to_vec(&map).expect("failed to serialize sql command")
 }
@@ -156,7 +179,10 @@ fn ids_from_batches(batches: &[RecordBatch]) -> Vec<i32> {
                 ids.push(i32::try_from(id_col.value(i)).expect("id should fit into i32"));
             }
         } else {
-            panic!("id column should be Int32Array or Int64Array, got {:?}", col.data_type());
+            panic!(
+                "id column should be Int32Array or Int64Array, got {:?}",
+                col.data_type()
+            );
         }
     }
     ids.sort();
@@ -249,13 +275,20 @@ async fn read_batches_sql_with_batch_size_honors_max_batch_length() {
     .await;
 
     assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
-    assert!(batches.len() >= 3, "Expected one-row batches when batch_size=1.");
+    assert!(
+        batches.len() >= 3,
+        "Expected one-row batches when batch_size=1."
+    );
     assert!(batches.iter().all(|b| b.num_rows() <= 1));
 }
 
 #[tokio::test]
 async fn resolve_schema_invalid_path_returns_error() {
-    let result = resolve_schema_from_command_bytes(&read_command_bytes("/nonexistent/path/to/nowhere", None)).await;
+    let result = resolve_schema_from_command_bytes(&read_command_bytes(
+        "/nonexistent/path/to/nowhere",
+        None,
+    ))
+    .await;
     assert!(result.is_err());
 }
 
@@ -286,7 +319,9 @@ async fn create_time_travel_table() -> (String, tempfile::TempDir) {
     .expect("batch0");
 
     let url = Url::from_file_path(&table_path).expect("url");
-    let table: deltalake::DeltaTable = deltalake::DeltaTable::try_from_url(url).await.expect("try_from_url");
+    let table: deltalake::DeltaTable = deltalake::DeltaTable::try_from_url(url)
+        .await
+        .expect("try_from_url");
     let table: deltalake::DeltaTable = table.write(vec![batch0]).await.expect("write v0");
 
     let batch1 = RecordBatch::try_new(
@@ -310,8 +345,14 @@ async fn create_time_travel_table() -> (String, tempfile::TempDir) {
 
 fn read_command_bytes_versioned(path: &str, version: i64) -> Vec<u8> {
     let mut map = serde_json::Map::new();
-    map.insert("path".to_string(), serde_json::Value::String(path.to_string()));
-    map.insert("version".to_string(), serde_json::Value::Number(version.into()));
+    map.insert(
+        "path".to_string(),
+        serde_json::Value::String(path.to_string()),
+    );
+    map.insert(
+        "version".to_string(),
+        serde_json::Value::Number(version.into()),
+    );
     serde_json::to_vec(&map).expect("serialize")
 }
 
@@ -358,12 +399,59 @@ async fn create_partitioned_table() -> (String, tempfile::TempDir) {
     .expect("batch");
 
     let url = Url::from_file_path(&table_path).expect("url");
-    let table: deltalake::DeltaTable = deltalake::DeltaTable::try_from_url(url).await.expect("try_from_url");
+    let table: deltalake::DeltaTable = deltalake::DeltaTable::try_from_url(url)
+        .await
+        .expect("try_from_url");
     let _table: deltalake::DeltaTable = table
         .write(vec![batch])
         .with_partition_columns(vec!["region"])
         .await
         .expect("write partitioned");
+
+    let path_str = table_path.to_str().expect("non-UTF8 path");
+    (path_str.to_string(), tmp)
+}
+
+async fn create_skewed_partitioned_table() -> (String, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let table_path = tmp.path().join("skewed_part_table");
+    std::fs::create_dir(&table_path).expect("create table dir");
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("region", DataType::Utf8, false),
+    ]));
+
+    let url = Url::from_file_path(&table_path).expect("url");
+    let mut table: deltalake::DeltaTable = deltalake::DeltaTable::try_from_url(url)
+        .await
+        .expect("try_from_url");
+
+    for id in 1..=10 {
+        let region = if id <= 9 { "us" } else { "eu" };
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![id])),
+                Arc::new(StringArray::from(vec![format!("row_{id}")])),
+                Arc::new(StringArray::from(vec![region])),
+            ],
+        )
+        .expect("batch");
+
+        let writer = table
+            .write(vec![batch])
+            .with_partition_columns(vec!["region"]);
+        table = if id == 1 {
+            writer.await.expect("write initial partitioned row")
+        } else {
+            writer
+                .with_save_mode(deltalake::protocol::SaveMode::Append)
+                .await
+                .expect("append partitioned row")
+        };
+    }
 
     let path_str = table_path.to_str().expect("non-UTF8 path");
     (path_str.to_string(), tmp)
@@ -445,7 +533,8 @@ async fn fixture_column_mapping_read_returns_correct_data() {
 
     let mut rows: Vec<(i32, String)> = Vec::new();
     for batch in &batches {
-        let ids = batch.column(0)
+        let ids = batch
+            .column(0)
             .as_any()
             .downcast_ref::<Int32Array>()
             .expect("id column should be Int32Array");
@@ -457,7 +546,10 @@ async fn fixture_column_mapping_read_returns_correct_data() {
                 } else if let Some(sva) = col.as_any().downcast_ref::<StringViewArray>() {
                     sva.value(i).to_string()
                 } else {
-                    panic!("Unexpected array type for city column: {:?}", col.data_type());
+                    panic!(
+                        "Unexpected array type for city column: {:?}",
+                        col.data_type()
+                    );
                 }
             })
             .collect();
@@ -515,7 +607,8 @@ async fn fixture_deletion_vector_read_excludes_deleted_row() {
 
     let mut ids: Vec<i32> = Vec::new();
     for batch in &batches {
-        let id_col = batch.column(0)
+        let id_col = batch
+            .column(0)
             .as_any()
             .downcast_ref::<Int32Array>()
             .expect("id column should be Int32Array");
@@ -535,7 +628,8 @@ async fn fixture_deletion_vector_read_correct_data() {
 
     let mut rows: Vec<(i32, String)> = Vec::new();
     for batch in &batches {
-        let ids = batch.column(0)
+        let ids = batch
+            .column(0)
             .as_any()
             .downcast_ref::<Int32Array>()
             .expect("id column should be Int32Array");
@@ -546,7 +640,10 @@ async fn fixture_deletion_vector_read_correct_data() {
             } else if let Some(sva) = col.as_any().downcast_ref::<StringViewArray>() {
                 sva.value(i).to_string()
             } else {
-                panic!("Unexpected array type for value column: {:?}", col.data_type());
+                panic!(
+                    "Unexpected array type for value column: {:?}",
+                    col.data_type()
+                );
             };
             rows.push((ids.value(i), value));
         }
@@ -636,7 +733,10 @@ async fn plan_read_partitions_partitioned_table_returns_opaque_tokens() {
     let _debug = serde_json::to_string_pretty(&json).unwrap(); // ← add this
 
     let result = json["result"].as_array().expect("result array");
-    assert!(!result.is_empty(), "expected at least one planned partition");
+    assert!(
+        !result.is_empty(),
+        "expected at least one planned partition"
+    );
 
     let total_partitions = result.len();
     let mut ordinals = HashSet::new();
@@ -663,7 +763,10 @@ async fn plan_read_partitions_non_partitioned_table_returns_opaque_tokens() {
         .expect("partition planning should succeed");
 
     let result = json["result"].as_array().expect("result array");
-    assert!(!result.is_empty(), "expected at least one planned partition");
+    assert!(
+        !result.is_empty(),
+        "expected at least one planned partition"
+    );
 
     let total_partitions = result.len();
     let mut ordinals = HashSet::new();
@@ -690,7 +793,10 @@ async fn plan_read_partitions_non_partitioned_multi_file_table_splits_evenly() {
         .expect("partition planning should succeed");
 
     let result = json["result"].as_array().expect("result array");
-    assert!(result.len() > 1, "expected planner to create multiple partitions");
+    assert!(
+        result.len() > 1,
+        "expected planner to create multiple partitions"
+    );
 
     let file_counts = result
         .iter()
@@ -699,12 +805,242 @@ async fn plan_read_partitions_non_partitioned_multi_file_table_splits_evenly() {
     let min_count = file_counts.iter().min().copied().expect("min file count");
     let max_count = file_counts.iter().max().copied().expect("max file count");
 
-    assert_eq!(file_counts.iter().sum::<u64>(), 8, "expected all files to be assigned");
+    assert_eq!(
+        file_counts.iter().sum::<u64>(),
+        8,
+        "expected all files to be assigned"
+    );
     assert!(
         max_count - min_count <= 1,
         "expected reasonably balanced file counts, got {:?}",
         file_counts
     );
+}
+
+#[tokio::test]
+async fn file_subset_partition_token_embeds_add_metadata() {
+    let (path, _guard) = create_multi_file_non_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("partition planning should succeed");
+    let partition = planned["result"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("first partition");
+    let token = partition["token"].as_str().expect("token");
+
+    let decoded = decode_partition_token(token).expect("token should decode");
+    let PartitionDescriptorMode::FileSubset { files } = decoded.mode else {
+        panic!("expected file-subset token");
+    };
+
+    assert!(!files.is_empty(), "expected embedded Add metadata");
+    assert!(files.iter().all(|file| !file.path.is_empty()));
+    assert!(files.iter().all(|file| file.size > 0));
+    assert!(
+        files.iter().all(|file| file.stats.is_none()),
+        "file statistics should be stripped from short-lived partition tokens"
+    );
+}
+
+#[tokio::test]
+async fn resolve_partition_files_returns_open_table_and_embedded_files() {
+    let (path, _guard) = create_multi_file_non_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("partition planning should succeed");
+    let partition = planned["result"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("first partition");
+    let token = partition["token"].as_str().expect("token");
+    let descriptor = decode_partition_token(token).expect("token should decode");
+    let version = descriptor.version;
+    let PartitionDescriptorMode::FileSubset { files: token_files } = descriptor.mode else {
+        panic!("expected file-subset token");
+    };
+
+    let cmd = ReadCommand {
+        path,
+        num_rows: None,
+        batch_size: None,
+        storage_account: None,
+        sas_token: None,
+        storage_options: None,
+        version: None,
+        partition_token: Some(token.to_string()),
+    };
+
+    let (table, files) = resolve_partition_files(&cmd, version, token_files)
+        .await
+        .expect("file-subset token should resolve");
+
+    assert_eq!(table.version(), Some(version as u64));
+    assert_eq!(
+        files.len(),
+        partition["fileCount"].as_u64().expect("fileCount") as usize
+    );
+    assert!(files.iter().all(|file| !file.path.is_empty()));
+}
+
+#[tokio::test]
+async fn resolve_partition_files_rejects_version_mismatch() {
+    let (path, _guard) = create_multi_file_non_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("partition planning should succeed");
+    let partition = planned["result"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("first partition");
+    let token = partition["token"].as_str().expect("token");
+    let descriptor = decode_partition_token(token).expect("token should decode");
+    let version = descriptor.version;
+    let PartitionDescriptorMode::FileSubset { files: token_files } = descriptor.mode else {
+        panic!("expected file-subset token");
+    };
+
+    let cmd = ReadCommand {
+        path,
+        num_rows: None,
+        batch_size: None,
+        storage_account: None,
+        sas_token: None,
+        storage_options: None,
+        version: Some(version + 1),
+        partition_token: Some(token.to_string()),
+    };
+
+    let error = resolve_partition_files(&cmd, version, token_files)
+        .await
+        .expect_err("mismatched version should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("does not match requested version")
+    );
+}
+
+#[tokio::test]
+async fn resolve_partition_files_trusts_embedded_token_metadata() {
+    let (path, _guard) = create_multi_file_non_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("partition planning should succeed");
+    let partition = planned["result"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("first partition");
+    let token = partition["token"].as_str().expect("token");
+    let mut descriptor = decode_partition_token(token).expect("token should decode");
+    let version = descriptor.version;
+    let PartitionDescriptorMode::FileSubset { files } = &mut descriptor.mode else {
+        panic!("expected file-subset token");
+    };
+    let original_size = files[0].size;
+    files[0].size = original_size + 1024;
+
+    let cmd = ReadCommand {
+        path,
+        num_rows: None,
+        batch_size: None,
+        storage_account: None,
+        sas_token: None,
+        storage_options: None,
+        version: None,
+        partition_token: Some(token.to_string()),
+    };
+
+    let PartitionDescriptorMode::FileSubset { files: token_files } = descriptor.mode else {
+        panic!("expected file-subset token");
+    };
+    let (_table, resolved_files) = resolve_partition_files(&cmd, version, token_files)
+        .await
+        .expect("trusted token metadata should resolve");
+    assert_eq!(resolved_files[0].size, original_size + 1024);
+    assert!(resolved_files.iter().all(|file| file.stats.is_none()));
+}
+
+#[tokio::test]
+async fn plan_read_partitions_downgrades_skewed_partition() {
+    let (path, _guard) = create_skewed_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("partition planning should succeed");
+    let partitions = planned["result"].as_array().expect("result array");
+
+    let mut has_file_subset = false;
+    let mut has_partition_predicate = false;
+    for partition in partitions {
+        let token = partition["token"].as_str().expect("token");
+        match decode_partition_token(token)
+            .expect("token should decode")
+            .mode
+        {
+            PartitionDescriptorMode::FileSubset { .. } => has_file_subset = true,
+            PartitionDescriptorMode::PartitionPredicate { .. } => has_partition_predicate = true,
+        }
+    }
+
+    assert!(
+        has_file_subset,
+        "expected hot partition to be downgraded to FileSubset"
+    );
+    assert!(
+        has_partition_predicate,
+        "expected small partition to remain predicate-based"
+    );
+}
+
+#[tokio::test]
+async fn plan_read_partitions_partitioned_deletion_vector_table_stays_predicate_based() {
+    let path = fixture_path("delta_test_partitioned_deletion_vector");
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("partitioned DV table should plan predicate partitions");
+    let partitions = planned["result"].as_array().expect("result array");
+    assert!(!partitions.is_empty());
+
+    for partition in partitions {
+        let token = partition["token"].as_str().expect("token");
+        let descriptor = decode_partition_token(token).expect("token should decode");
+        assert!(
+            matches!(
+                descriptor.mode,
+                PartitionDescriptorMode::PartitionPredicate { .. }
+            ),
+            "partitioned DV tables must not plan FileSubset descriptors"
+        );
+    }
+}
+
+#[tokio::test]
+async fn partition_reads_cover_skewed_partitioned_table() {
+    let (path, _guard) = create_skewed_partitioned_table().await;
+    let planned = plan_read_partitions_from_command_bytes(&read_command_bytes(&path, None))
+        .await
+        .expect("partition planning should succeed");
+    let partitions = planned["result"].as_array().expect("result array");
+
+    let mut ids = Vec::new();
+    for partition in partitions {
+        let token = partition["token"].as_str().expect("token");
+        let batches = collect_read_batches(ReadCommand {
+            path: path.clone(),
+            num_rows: None,
+            batch_size: None,
+            storage_account: None,
+            sas_token: None,
+            storage_options: None,
+            version: None,
+            partition_token: Some(token.to_string()),
+        })
+        .await;
+        ids.extend(ids_from_batches(&batches));
+    }
+
+    ids.sort();
+    assert_eq!(ids, (1..=10).collect::<Vec<_>>());
 }
 
 #[tokio::test]
@@ -741,7 +1077,10 @@ async fn partition_read_returns_subset_of_partitioned_table() {
         total_rows += batch.expect("batch").num_rows();
     }
 
-    assert!(total_rows >= 1 && total_rows < 5, "expected subset of table rows");
+    assert!(
+        total_rows >= 1 && total_rows < 5,
+        "expected subset of table rows"
+    );
 }
 
 #[tokio::test]
@@ -778,7 +1117,10 @@ async fn partition_reads_cover_non_partitioned_table() {
         }
     }
 
-    assert_eq!(total_rows, 3, "expected all table rows across planned partitions");
+    assert_eq!(
+        total_rows, 3,
+        "expected all table rows across planned partitions"
+    );
 }
 
 #[tokio::test]

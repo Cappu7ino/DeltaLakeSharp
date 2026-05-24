@@ -70,6 +70,7 @@ Rules:
 
 - Treat partition tokens as opaque.
 - Do not construct partition descriptors manually.
+- Do not mutate, log, or persist partition tokens; they are short-lived backend execution descriptors.
 - Keep planning and reading tied to the intended snapshot.
 
 ## Use Schema Modes On Writes
