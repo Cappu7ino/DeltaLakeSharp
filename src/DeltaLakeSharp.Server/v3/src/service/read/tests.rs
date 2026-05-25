@@ -8,8 +8,13 @@ use super::*;
 use crate::service::request::PartitionPredicateKey;
 use arrow::array::{Int32Array, Int64Array, StringArray, StringViewArray};
 use arrow::datatypes::{DataType, Field};
+use arrow::error::ArrowError;
+use datafusion::error::DataFusionError;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 use url::Url;
 
 async fn create_test_delta_table() -> (String, tempfile::TempDir) {
@@ -205,6 +210,317 @@ fn predicate_partition_token(version: i64, values: &[(&str, Option<&str>)]) -> S
     };
 
     encode_partition_token(&descriptor).expect("predicate token should encode")
+}
+
+fn single_id_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
+}
+
+fn id_batch(values: Vec<i32>) -> RecordBatch {
+    RecordBatch::try_new(single_id_schema(), vec![Arc::new(Int32Array::from(values))])
+        .expect("id batch should be valid")
+}
+
+fn prefetch_test_stream(
+    schema: SchemaRef,
+    items: Vec<Result<RecordBatch, DataFusionError>>,
+) -> SendableRecordBatchStream {
+    Box::pin(RecordBatchStreamAdapter::new(
+        schema,
+        futures::stream::iter(items),
+    ))
+}
+
+fn pending_after_batch_stream(schema: SchemaRef, batch: RecordBatch) -> SendableRecordBatchStream {
+    Box::pin(RecordBatchStreamAdapter::new(
+        schema,
+        futures::stream::iter(vec![Ok(batch)]).chain(futures::stream::pending()),
+    ))
+}
+
+async fn wait_for_available_permits(limit: &Semaphore, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while limit.available_permits() != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("semaphore permit count should reach expected value");
+}
+
+async fn wait_for_prefetched_batches(reader: &PrefetchingRecordBatchReader, expected: usize) {
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while reader.batches.len() != expected {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("reader should reach expected prefetch queue depth");
+}
+
+#[tokio::test]
+async fn prefetch_reader_drains_batches_in_order() {
+    let schema = single_id_schema();
+    let stream = prefetch_test_stream(
+        Arc::clone(&schema),
+        vec![Ok(id_batch(vec![1, 2])), Ok(id_batch(vec![3]))],
+    );
+    let reader = PrefetchingRecordBatchReader::new_with_limit(
+        schema,
+        tokio::runtime::Handle::current(),
+        stream,
+        Arc::new(Semaphore::new(1)),
+    );
+
+    let batches = tokio::task::spawn_blocking(move || reader.collect::<Result<Vec<_>, _>>())
+        .await
+        .expect("blocking reader task should complete")
+        .expect("prefetch reader should drain without errors");
+
+    assert_eq!(ids_from_batches(&batches), vec![1, 2, 3]);
+}
+
+#[tokio::test]
+async fn prefetch_reader_propagates_producer_error() {
+    let schema = single_id_schema();
+    let stream = prefetch_test_stream(
+        Arc::clone(&schema),
+        vec![Err(DataFusionError::Execution(
+            "planned producer failure".to_string(),
+        ))],
+    );
+    let reader = PrefetchingRecordBatchReader::new_with_limit(
+        schema,
+        tokio::runtime::Handle::current(),
+        stream,
+        Arc::new(Semaphore::new(1)),
+    );
+
+    let error = tokio::task::spawn_blocking(move || reader.collect::<Result<Vec<_>, _>>())
+        .await
+        .expect("blocking reader task should complete")
+        .expect_err("prefetch reader should surface producer errors");
+
+    match error {
+        ArrowError::ExternalError(error) => {
+            assert!(error.to_string().contains("planned producer failure"));
+        }
+        other => panic!("expected external producer error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn prefetch_reader_drop_releases_producer_permit() {
+    let schema = single_id_schema();
+    let limit = Arc::new(Semaphore::new(1));
+    let stream = Box::pin(RecordBatchStreamAdapter::new(
+        Arc::clone(&schema),
+        futures::stream::pending::<Result<RecordBatch, DataFusionError>>(),
+    ));
+    let reader = PrefetchingRecordBatchReader::new_with_limit(
+        schema,
+        tokio::runtime::Handle::current(),
+        stream,
+        Arc::clone(&limit),
+    );
+
+    wait_for_available_permits(&limit, 0).await;
+    drop(reader);
+
+    let permit = tokio::time::timeout(Duration::from_secs(1), limit.acquire_owned())
+        .await
+        .expect("producer permit should be released after reader drop")
+        .expect("test semaphore should remain open");
+    drop(permit);
+}
+
+#[tokio::test]
+async fn prefetch_reader_full_queue_does_not_starve_later_stream() {
+    let schema = single_id_schema();
+    let limit = Arc::new(Semaphore::new(1));
+    let first_stream = prefetch_test_stream(
+        Arc::clone(&schema),
+        vec![
+            Ok(id_batch(vec![1])),
+            Ok(id_batch(vec![2])),
+            Ok(id_batch(vec![3])),
+        ],
+    );
+    let first_reader = PrefetchingRecordBatchReader::new_with_limit(
+        Arc::clone(&schema),
+        tokio::runtime::Handle::current(),
+        first_stream,
+        Arc::clone(&limit),
+    );
+
+    wait_for_prefetched_batches(&first_reader, DEFAULT_RECORD_BATCH_PREFETCH).await;
+    wait_for_available_permits(&limit, 1).await;
+
+    let second_stream = prefetch_test_stream(Arc::clone(&schema), vec![Ok(id_batch(vec![42]))]);
+    let second_reader = PrefetchingRecordBatchReader::new_with_limit(
+        schema,
+        tokio::runtime::Handle::current(),
+        second_stream,
+        Arc::clone(&limit),
+    );
+
+    let batches = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || second_reader.collect::<Result<Vec<_>, _>>()),
+    )
+    .await
+    .expect("later stream should make progress while earlier queue is full")
+    .expect("blocking reader task should complete")
+    .expect("later stream should drain without errors");
+
+    assert_eq!(ids_from_batches(&batches), vec![42]);
+    drop(first_reader);
+}
+
+#[tokio::test]
+async fn prefetch_reader_concurrent_streams_drain_with_shared_limit() {
+    let schema = single_id_schema();
+    let limit = Arc::new(Semaphore::new(2));
+    let mut tasks = Vec::new();
+
+    for stream_index in 0..8 {
+        let first_id = stream_index * 10 + 1;
+        let stream = prefetch_test_stream(
+            Arc::clone(&schema),
+            vec![
+                Ok(id_batch(vec![first_id])),
+                Ok(id_batch(vec![first_id + 1])),
+            ],
+        );
+        let reader = PrefetchingRecordBatchReader::new_with_limit(
+            Arc::clone(&schema),
+            tokio::runtime::Handle::current(),
+            stream,
+            Arc::clone(&limit),
+        );
+
+        tasks.push(tokio::task::spawn_blocking(move || {
+            reader.collect::<Result<Vec<_>, _>>()
+        }));
+    }
+
+    let mut ids = Vec::new();
+    for task in tasks {
+        let batches = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("concurrent reader should not hang")
+            .expect("blocking reader task should complete")
+            .expect("concurrent reader should drain successfully");
+        ids.extend(ids_from_batches(&batches));
+    }
+
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![1, 2, 11, 12, 21, 22, 31, 32, 41, 42, 51, 52, 61, 62, 71, 72]
+    );
+    wait_for_available_permits(&limit, 2).await;
+}
+
+#[tokio::test]
+async fn prefetch_reader_drop_after_first_batch_stops_pending_producer() {
+    let schema = single_id_schema();
+    let limit = Arc::new(Semaphore::new(1));
+    let stream = pending_after_batch_stream(Arc::clone(&schema), id_batch(vec![7]));
+    let reader = PrefetchingRecordBatchReader::new_with_limit(
+        schema,
+        tokio::runtime::Handle::current(),
+        stream,
+        Arc::clone(&limit),
+    );
+
+    let ids = tokio::time::timeout(
+        Duration::from_secs(1),
+        tokio::task::spawn_blocking(move || {
+            let batch = reader
+                .take(1)
+                .collect::<Result<Vec<_>, _>>()
+                .expect("first batch should be readable");
+            ids_from_batches(&batch)
+        }),
+    )
+    .await
+    .expect("partial reader should not hang")
+    .expect("blocking reader task should complete");
+
+    assert_eq!(ids, vec![7]);
+    let permit = tokio::time::timeout(Duration::from_secs(1), limit.acquire_owned())
+        .await
+        .expect("producer permit should be available after partial drop")
+        .expect("test semaphore should remain open");
+    drop(permit);
+}
+
+#[tokio::test]
+async fn prefetch_reader_error_does_not_block_other_streams() {
+    let schema = single_id_schema();
+    let limit = Arc::new(Semaphore::new(1));
+    let success_stream = prefetch_test_stream(Arc::clone(&schema), vec![Ok(id_batch(vec![10]))]);
+    let error_stream = prefetch_test_stream(
+        Arc::clone(&schema),
+        vec![Err(DataFusionError::Execution(
+            "isolated producer failure".to_string(),
+        ))],
+    );
+    let later_success_stream =
+        prefetch_test_stream(Arc::clone(&schema), vec![Ok(id_batch(vec![20]))]);
+
+    let success_reader = PrefetchingRecordBatchReader::new_with_limit(
+        Arc::clone(&schema),
+        tokio::runtime::Handle::current(),
+        success_stream,
+        Arc::clone(&limit),
+    );
+    let error_reader = PrefetchingRecordBatchReader::new_with_limit(
+        Arc::clone(&schema),
+        tokio::runtime::Handle::current(),
+        error_stream,
+        Arc::clone(&limit),
+    );
+    let later_success_reader = PrefetchingRecordBatchReader::new_with_limit(
+        schema,
+        tokio::runtime::Handle::current(),
+        later_success_stream,
+        Arc::clone(&limit),
+    );
+
+    let success_task =
+        tokio::task::spawn_blocking(move || success_reader.collect::<Result<Vec<_>, _>>());
+    let error_task =
+        tokio::task::spawn_blocking(move || error_reader.collect::<Result<Vec<_>, _>>());
+    let later_success_task =
+        tokio::task::spawn_blocking(move || later_success_reader.collect::<Result<Vec<_>, _>>());
+
+    let success_batches = tokio::time::timeout(Duration::from_secs(2), success_task)
+        .await
+        .expect("success reader should not hang")
+        .expect("success reader task should complete")
+        .expect("success reader should drain");
+    let error = tokio::time::timeout(Duration::from_secs(2), error_task)
+        .await
+        .expect("error reader should not hang")
+        .expect("error reader task should complete")
+        .expect_err("error reader should surface its producer error");
+    let later_success_batches = tokio::time::timeout(Duration::from_secs(2), later_success_task)
+        .await
+        .expect("later success reader should not hang")
+        .expect("later success reader task should complete")
+        .expect("later success reader should drain");
+
+    assert_eq!(ids_from_batches(&success_batches), vec![10]);
+    assert_eq!(ids_from_batches(&later_success_batches), vec![20]);
+    match error {
+        ArrowError::ExternalError(error) => {
+            assert!(error.to_string().contains("isolated producer failure"));
+        }
+        other => panic!("expected external producer error, got {other:?}"),
+    }
+    wait_for_available_permits(&limit, 1).await;
 }
 
 #[tokio::test]
