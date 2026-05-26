@@ -64,14 +64,14 @@ Properties:
 - Runs in process through a native Rust DLL.
 - Uses JSON command payloads for metadata and operation parameters.
 - Uses Arrow C Data/C Stream interfaces for schemas and batches.
-- Uses bounded Rust-side prefetch for read streams to reduce per-batch sync-over-async polling while preserving streaming semantics.
+- Uses direct Arrow C Stream pulls by default, with bounded Rust-side prefetch available through `DeltaTableServiceClientOptions.EnableNativeReadPrefetch`.
 - Owns a native engine handle through a `SafeHandle` wrapper.
 - Shares one process-wide Tokio runtime across native engine handles.
 - Avoids the Flight service boundary but requires native runtime assets.
 
 Each `NativeRustBackend` still owns its native engine handle and per-engine error state. The shared runtime reduces thread and stack reservation overhead when multiple V3 clients are created in the same process. Native merge work is scheduled onto Tokio worker threads so deep delta-rs/DataFusion merge execution does not run on the .NET caller stack.
 
-Read-stream production is bounded in two ways: each exported stream has a small native queue, and active backend batch production is capped process-wide. These limits provide backpressure for high-concurrency readers without changing the public `IAsyncEnumerable<RecordBatch>` or `IArrowArrayStream` shapes.
+When read-stream prefetch is enabled, production is bounded in two ways: each exported stream has a small native queue, and active backend batch production is capped process-wide. These limits provide backpressure for high-concurrency readers without changing the public `IAsyncEnumerable<RecordBatch>` or `IArrowArrayStream` shapes. The default read path remains direct batch pulling because local benchmarks showed prefetch overhead can dominate small/local reads.
 
 ## Streaming First
 

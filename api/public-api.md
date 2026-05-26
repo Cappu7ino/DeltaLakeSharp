@@ -32,6 +32,7 @@ Intended usage:
 - `new DeltaTableServiceClient(uri)` for default V1 Flight service.
 - `new DeltaTableServiceClient(uri, ServiceMode.V2_DataFusion)` for DataFusion Flight service.
 - `new DeltaTableServiceClient(ServiceMode.V3_Rust)` for native in-process mode.
+- `new DeltaTableServiceClient(ServiceMode.V3_Rust, options)` for V3 native mode with client-level tuning.
 - Dispose after use.
 
 Common pitfalls:
@@ -45,6 +46,7 @@ Common pitfalls:
 Related APIs:
 
 - `ServiceMode`
+- `DeltaTableServiceClientOptions`
 - `StorageConfig`
 - `GenericStorageOptions`
 - `DeltaDataReaderOptions`
@@ -70,6 +72,29 @@ Common pitfalls:
 
 - Treating backend modes as feature-equivalent.
 - Choosing V1/V2 for CDF, partitions, or schema-mode write APIs.
+
+## `DeltaTableServiceClientOptions`
+
+Source: [../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs](../src/DeltaLakeSharp.Client/DeltaTableServiceClient.cs)
+
+Responsibility:
+
+- Configure client-level backend behavior at construction time.
+- Provide V3 native tuning without changing individual read method signatures.
+
+Current options:
+
+- `EnableNativeReadPrefetch` enables the experimental V3 native read-stream prefetch path.
+
+Intended usage:
+
+- Leave `EnableNativeReadPrefetch` disabled by default for general local reads.
+- Enable prefetch deliberately for benchmark or workload validation where read-ahead may help, such as high-latency storage or slower managed consumers.
+
+Common pitfalls:
+
+- Assuming prefetch always improves local or small-table reads.
+- Treating V3-specific tuning as meaningful for V1/V2 Flight backends.
 
 ## Read APIs
 

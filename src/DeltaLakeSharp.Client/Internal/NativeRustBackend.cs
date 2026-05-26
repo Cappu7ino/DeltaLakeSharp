@@ -26,10 +26,12 @@ namespace DeltaLakeSharp.Client.Internal
     internal sealed class NativeRustBackend : IDeltaLakeBackend
     {
         private readonly NativeEngineHandle _engine;
+        private readonly bool _enableReadPrefetch;
 
-        internal NativeRustBackend()
+        internal NativeRustBackend(DeltaTableServiceClientOptions? options = null)
         {
             _engine = NativeEngineHandle.Create();
+            _enableReadPrefetch = options?.EnableNativeReadPrefetch ?? false;
         }
 
         public Task<bool> HealthCheckAsync(CancellationToken cancellationToken = default)
@@ -154,7 +156,7 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string commandJson = BuildReadTableCommandJson(path, storageConfig, genericStorageOptions, numRows, batchSize, version);
+            string commandJson = BuildReadTableCommandJson(path, storageConfig, genericStorageOptions, numRows, batchSize, version, _enableReadPrefetch);
             IArrowArrayStream stream = OpenReadTableStream(commandJson);
             return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
@@ -265,7 +267,7 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string commandJson = BuildReadTablePartitionCommandJson(path, partition, storageConfig, genericStorageOptions, batchSize);
+            string commandJson = BuildReadTablePartitionCommandJson(path, partition, storageConfig, genericStorageOptions, batchSize, _enableReadPrefetch);
             IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
             return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
@@ -279,7 +281,7 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string commandJson = BuildReadTablePartitionCommandJson(path, partitionToken, storageConfig, genericStorageOptions, batchSize);
+            string commandJson = BuildReadTablePartitionCommandJson(path, partitionToken, storageConfig, genericStorageOptions, batchSize, _enableReadPrefetch);
             IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
             return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
@@ -425,7 +427,7 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            string commandJson = BuildExecuteQueryCommandJson(sql, tablePath, tableName, storageConfig, genericStorageOptions, batchSize, version);
+            string commandJson = BuildExecuteQueryCommandJson(sql, tablePath, tableName, storageConfig, genericStorageOptions, batchSize, version, _enableReadPrefetch);
             IArrowArrayStream stream = OpenExecuteQueryStream(commandJson);
             return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
@@ -958,7 +960,8 @@ namespace DeltaLakeSharp.Client.Internal
             GenericStorageOptions? genericStorageOptions,
             long? numRows,
             int? batchSize,
-            long? version)
+            long? version,
+            bool enableReadPrefetch)
         {
             var command = new Dictionary<string, object>
             {
@@ -979,6 +982,7 @@ namespace DeltaLakeSharp.Client.Internal
             {
                 command["version"] = version.Value;
             }
+            AddReadPrefetch(command, enableReadPrefetch);
 
             return JsonSerializer.Serialize(command);
         }
@@ -988,9 +992,10 @@ namespace DeltaLakeSharp.Client.Internal
             DeltaReadPartition partition,
             StorageConfig? storageConfig,
             GenericStorageOptions? genericStorageOptions,
-            int? batchSize)
+            int? batchSize,
+            bool enableReadPrefetch)
         {
-            return BuildReadTablePartitionCommandJson(path, partition.Token, storageConfig, genericStorageOptions, batchSize);
+            return BuildReadTablePartitionCommandJson(path, partition.Token, storageConfig, genericStorageOptions, batchSize, enableReadPrefetch);
         }
 
         private static string BuildReadTablePartitionCommandJson(
@@ -998,7 +1003,8 @@ namespace DeltaLakeSharp.Client.Internal
             string partitionToken,
             StorageConfig? storageConfig,
             GenericStorageOptions? genericStorageOptions,
-            int? batchSize)
+            int? batchSize,
+            bool enableReadPrefetch)
         {
             var command = new Dictionary<string, object>
             {
@@ -1011,6 +1017,7 @@ namespace DeltaLakeSharp.Client.Internal
             {
                 command["batch_size"] = batchSize.Value;
             }
+            AddReadPrefetch(command, enableReadPrefetch);
 
             return JsonSerializer.Serialize(command);
         }
@@ -1081,6 +1088,7 @@ namespace DeltaLakeSharp.Client.Internal
             {
                 command["sql"] = sql!;
             }
+            AddReadPrefetch(command, _enableReadPrefetch);
 
             string commandJson = JsonSerializer.Serialize(command);
             IArrowArrayStream stream = OpenChangeDataStream(commandJson);
@@ -1094,7 +1102,8 @@ namespace DeltaLakeSharp.Client.Internal
             StorageConfig? storageConfig,
             GenericStorageOptions? genericStorageOptions,
             int? batchSize,
-            long? version)
+            long? version,
+            bool enableReadPrefetch)
         {
             var command = new Dictionary<string, object>
             {
@@ -1120,8 +1129,17 @@ namespace DeltaLakeSharp.Client.Internal
             {
                 command["version"] = version.Value;
             }
+            AddReadPrefetch(command, enableReadPrefetch);
 
             return JsonSerializer.Serialize(command);
+        }
+
+        private static void AddReadPrefetch(IDictionary<string, object> command, bool enableReadPrefetch)
+        {
+            if (enableReadPrefetch)
+            {
+                command["read_prefetch"] = true;
+            }
         }
 
         /// <summary>

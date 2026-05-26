@@ -10,10 +10,22 @@
       "capabilities": ["read", "sql", "write", "dml", "cdf", "partitioned-read", "schema", "protocol-upgrade"],
       "intendedUsage": "Primary SDK entry point for Delta table operations. Prefer V3_Rust for new external NuGet integrations unless an existing V1/V2 Flight service is required.",
       "limitations": ["Backend capabilities differ by ServiceMode", "V1/V2 are service-backed compatibility paths", "Dispose after use", "Large result materialization can be expensive"],
-      "relatedConcepts": ["ServiceMode", "StorageConfig", "GenericStorageOptions", "RecordBatch", "IArrowArrayStream"],
+      "relatedConcepts": ["ServiceMode", "DeltaTableServiceClientOptions", "StorageConfig", "GenericStorageOptions", "RecordBatch", "IArrowArrayStream"],
       "keywords": ["Delta Lake", "client", "Arrow", "Flight", "native Rust", "NuGet"],
       "performanceNotes": "Prefer streaming RecordBatch or Arrow stream APIs for large results.",
       "threadingExpectations": "Treat client-owned backend resources as lifecycle-scoped; validate concurrency before sharing one V3 client across parallel native operations."
+    },
+    {
+      "id": "DeltaTableServiceClientOptions",
+      "type": "class",
+      "namespace": "DeltaLakeSharp.Client",
+      "capabilities": ["backend-configuration", "native-read-prefetch"],
+      "intendedUsage": "Configure client-level backend behavior, including experimental V3 native read-stream prefetch through EnableNativeReadPrefetch.",
+      "limitations": ["Options are construction-time settings", "Native read prefetch is V3-specific", "Prefetch can regress small or local reads"],
+      "relatedConcepts": ["DeltaTableServiceClient", "NativeRustBackend", "ServiceMode"],
+      "keywords": ["client options", "V3_Rust", "prefetch", "read stream"],
+      "performanceNotes": "EnableNativeReadPrefetch is disabled by default; use benchmarks before enabling for a workload.",
+      "threadingExpectations": "Configuration object; set before constructing the client and avoid mutating after sharing."
     },
     {
       "id": "ServiceMode",

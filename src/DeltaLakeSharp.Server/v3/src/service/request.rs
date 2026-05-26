@@ -26,6 +26,8 @@ pub struct ReadCommand {
     pub version: Option<i64>,
     #[serde(default)]
     pub partition_token: Option<String>,
+    #[serde(default)]
+    pub read_prefetch: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +93,8 @@ pub struct ReadChangeDataCommand {
     pub sas_token: Option<String>,
     #[serde(default)]
     pub storage_options: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub read_prefetch: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -110,6 +114,8 @@ pub struct SqlCommand {
     pub storage_options: Option<HashMap<String, String>>,
     #[serde(default)]
     pub version: Option<i64>,
+    #[serde(default)]
+    pub read_prefetch: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -357,6 +363,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_read_command_with_read_prefetch() {
+        let cmd = Command::parse(br#"{"path":"/tmp/t","read_prefetch":true}"#).unwrap();
+        match cmd {
+            Command::Read(read) => assert_eq!(read.read_prefetch, Some(true)),
+            _ => panic!("expected read command"),
+        }
+    }
+
+    #[test]
     fn parse_read_command_with_version() {
         let cmd = Command::parse(br#"{"path":"/tmp/t","version":3}"#).unwrap();
         match cmd {
@@ -463,6 +478,18 @@ mod tests {
         .unwrap();
         match cmd {
             Command::Sql(sql) => assert_eq!(sql.batch_size, Some(4096)),
+            _ => panic!("expected sql command"),
+        }
+    }
+
+    #[test]
+    fn parse_sql_command_with_read_prefetch() {
+        let cmd = Command::parse(
+            br#"{"sql":"SELECT * FROM t","table_path":"/tmp/t","table_name":"t","read_prefetch":true}"#,
+        )
+        .unwrap();
+        match cmd {
+            Command::Sql(sql) => assert_eq!(sql.read_prefetch, Some(true)),
             _ => panic!("expected sql command"),
         }
     }
