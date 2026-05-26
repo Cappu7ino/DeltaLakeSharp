@@ -40,6 +40,18 @@ namespace DeltaLakeSharp.Client
     }
 
     /// <summary>
+    /// Optional client-level settings for backend-specific behavior.
+    /// </summary>
+    public sealed class DeltaTableServiceClientOptions
+    {
+        /// <summary>
+        /// Enables the experimental V3 native read-stream prefetch path.
+        /// The default is <c>false</c>, which uses direct Arrow C Stream pulls.
+        /// </summary>
+        public bool EnableNativeReadPrefetch { get; set; }
+    }
+
+    /// <summary>
     /// High-level client for the Delta Table Service.
         /// Supports V1 (PySpark + Arrow Flight), V2 (DataFusion + Arrow Flight),
         /// and V3 (in-process native Rust) backends.
@@ -64,7 +76,7 @@ namespace DeltaLakeSharp.Client
         /// The base URI of the Arrow Flight server (e.g. <c>http://localhost:8815</c>).
         /// </param>
         public DeltaTableServiceClient(Uri serverUri)
-            : this(serverUri, ServiceMode.V1_Spark)
+            : this(serverUri, ServiceMode.V1_Spark, options: null)
         {
         }
 
@@ -74,6 +86,17 @@ namespace DeltaLakeSharp.Client
         /// </summary>
         /// <param name="mode">The backend protocol to use.</param>
         public DeltaTableServiceClient(ServiceMode mode)
+            : this(mode, options: null)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a new client for an in-process backend that does not
+        /// require a server URI.
+        /// </summary>
+        /// <param name="mode">The backend protocol to use.</param>
+        /// <param name="options">Optional client settings.</param>
+        public DeltaTableServiceClient(ServiceMode mode, DeltaTableServiceClientOptions? options)
         {
             if (mode != ServiceMode.V3_Rust)
             {
@@ -83,7 +106,7 @@ namespace DeltaLakeSharp.Client
             }
 
             Mode = mode;
-            _backend = new NativeRustBackend();
+            _backend = new NativeRustBackend(options);
         }
 
         /// <summary>
@@ -99,6 +122,24 @@ namespace DeltaLakeSharp.Client
         /// </param>
         /// <param name="mode">The backend protocol to use.</param>
         public DeltaTableServiceClient(Uri serverUri, ServiceMode mode)
+            : this(serverUri, mode, options: null)
+        {
+        }
+
+        /// <summary>
+         /// Initializes a new client that connects to the server at the given URI
+         /// using the specified backend protocol.
+        /// </summary>
+        /// <param name="serverUri">
+        /// The base URI of the server.
+        /// For V1: Arrow Flight server (e.g. <c>http://localhost:8815</c>).
+        /// For V2: Arrow Flight server (e.g. <c>http://localhost:8815</c>).
+        /// For V3: the URI is accepted for API compatibility, but the backend
+        /// runs in-process and does not connect to a Flight server.
+        /// </param>
+        /// <param name="mode">The backend protocol to use.</param>
+        /// <param name="options">Optional client settings.</param>
+        public DeltaTableServiceClient(Uri serverUri, ServiceMode mode, DeltaTableServiceClientOptions? options)
         {
             if (serverUri == null)
             {
@@ -110,7 +151,7 @@ namespace DeltaLakeSharp.Client
             {
                 ServiceMode.V1_Spark => new FlightClientWrapper(serverUri),
                 ServiceMode.V2_DataFusion => new FlightClientWrapper(serverUri),
-                ServiceMode.V3_Rust => new NativeRustBackend(),
+                ServiceMode.V3_Rust => new NativeRustBackend(options),
                 _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown service mode"),
             };
         }

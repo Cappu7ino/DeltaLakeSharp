@@ -3,7 +3,7 @@
     <RootNamespace>DeltaLakeSharp.Benchmark</RootNamespace>
     <AssemblyName>DeltaLakeSharp.Benchmark</AssemblyName>
     <TargetFrameworks>net472;net8.0</TargetFrameworks>
-    <PlatformTarget>x64</PlatformTarget>
+    <PlatformTarget Condition="'$(TargetFramework)' == 'net472' and '$(PlatformTarget)' == ''">x64</PlatformTarget>
     <OutputType>Exe</OutputType>
     <StartupObject>DeltaLakeSharp.Benchmark.Program</StartupObject>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
@@ -22,7 +22,8 @@
     <RustNativeRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</RustNativeRuntimeIdentifier>
     <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RustNativeRuntimeIdentifier>
     <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX')) and '$(PlatformTarget)' == 'arm64'">osx-arm64</RustNativeRuntimeIdentifier>
-    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX')) and '$(PlatformTarget)' == 'x64'">osx-x64</RustNativeRuntimeIdentifier>
+    <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and '$(PlatformTarget)' == '' and '$(NETCoreSdkRuntimeIdentifier)' != ''">$(NETCoreSdkRuntimeIdentifier)</RustNativeRuntimeIdentifier>
     <RustNativeRuntimeIdentifier Condition="'$(RustNativeRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</RustNativeRuntimeIdentifier>
   </PropertyGroup>
 

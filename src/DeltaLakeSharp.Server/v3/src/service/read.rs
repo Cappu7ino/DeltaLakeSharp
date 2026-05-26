@@ -171,6 +171,28 @@ fn prefetch_producer_limit() -> Arc<Semaphore> {
     )
 }
 
+struct AsyncRecordBatchReader {
+    schema: SchemaRef,
+    runtime_handle: tokio::runtime::Handle,
+    stream: SendableRecordBatchStream,
+}
+
+impl Iterator for AsyncRecordBatchReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.runtime_handle
+            .block_on(self.stream.next())
+            .map(|result| result.map_err(|error| ArrowError::ExternalError(Box::new(error))))
+    }
+}
+
+impl RecordBatchReader for AsyncRecordBatchReader {
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+}
+
 struct PrefetchingRecordBatchReader {
     schema: SchemaRef,
     batches: mpsc::Receiver<Result<RecordBatch, ArrowError>>,
@@ -282,17 +304,49 @@ impl RecordBatchReader for PrefetchingRecordBatchReader {
     }
 }
 
+fn create_record_batch_reader(
+    schema: SchemaRef,
+    runtime_handle: tokio::runtime::Handle,
+    stream: SendableRecordBatchStream,
+    prefetch_enabled: bool,
+) -> Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send> {
+    create_record_batch_reader_with_prefetch(schema, runtime_handle, stream, prefetch_enabled)
+}
+
+fn create_record_batch_reader_with_prefetch(
+    schema: SchemaRef,
+    runtime_handle: tokio::runtime::Handle,
+    stream: SendableRecordBatchStream,
+    prefetch_enabled: bool,
+) -> Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send> {
+    if prefetch_enabled {
+        Box::new(PrefetchingRecordBatchReader::new(
+            schema,
+            runtime_handle,
+            stream,
+        ))
+    } else {
+        Box::new(AsyncRecordBatchReader {
+            schema,
+            runtime_handle,
+            stream,
+        })
+    }
+}
+
 async fn read_table_batch_reader(
     cmd: ReadCommand,
     runtime_handle: tokio::runtime::Handle,
 ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
 {
+    let prefetch_enabled = cmd.read_prefetch.unwrap_or(false);
     let (schema, stream) = execute_read_table_stream(cmd).await?;
-    Ok(Box::new(PrefetchingRecordBatchReader::new(
+    Ok(create_record_batch_reader(
         schema,
         runtime_handle,
         stream,
-    )))
+        prefetch_enabled,
+    ))
 }
 
 async fn sql_batch_reader(
@@ -300,12 +354,14 @@ async fn sql_batch_reader(
     runtime_handle: tokio::runtime::Handle,
 ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
 {
+    let prefetch_enabled = cmd.read_prefetch.unwrap_or(false);
     let (schema, stream) = execute_sql_stream(cmd).await?;
-    Ok(Box::new(PrefetchingRecordBatchReader::new(
+    Ok(create_record_batch_reader(
         schema,
         runtime_handle,
         stream,
-    )))
+        prefetch_enabled,
+    ))
 }
 
 async fn change_data_batch_reader(
@@ -313,12 +369,14 @@ async fn change_data_batch_reader(
     runtime_handle: tokio::runtime::Handle,
 ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
 {
+    let prefetch_enabled = cmd.read_prefetch.unwrap_or(false);
     let (schema, stream) = execute_change_data_stream(cmd).await?;
-    Ok(Box::new(PrefetchingRecordBatchReader::new(
+    Ok(create_record_batch_reader(
         schema,
         runtime_handle,
         stream,
-    )))
+        prefetch_enabled,
+    ))
 }
 
 async fn execute_read_table_stream(

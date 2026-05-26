@@ -16,6 +16,7 @@ using BenchmarkDotNet.Exporters.Csv;
 using BenchmarkDotNet.Exporters.Json;
 using System.Security.Principal;
 using System.Net;
+using System.Runtime.InteropServices;
 
 namespace DeltaLakeSharp.Benchmark
 {
@@ -141,7 +142,7 @@ namespace DeltaLakeSharp.Benchmark
             public BenchmarkConfigForTrial()
             {
                 AddJob(Job.ShortRun
-                    .WithRuntime(ClrRuntime.Net472)
+                    .WithRuntime(Program.GetDefaultBenchmarkRuntime())
                     .WithGcServer(true)
                     .WithEnvironmentVariable("COMPlus_EnableEventLog", "1"));
                 WithOptions(ConfigOptions.StopOnFirstError);
@@ -163,7 +164,7 @@ namespace DeltaLakeSharp.Benchmark
             public BenchmarkConfig()
             {
                 AddJob(Job.Default
-                    .WithRuntime(ClrRuntime.Net472)
+                    .WithRuntime(Program.GetDefaultBenchmarkRuntime())
                     .WithGcServer(true)
                     .WithEnvironmentVariable("COMPlus_EnableEventLog", "1"));
                 WithOptions(ConfigOptions.StopOnFirstError);
@@ -187,6 +188,13 @@ namespace DeltaLakeSharp.Benchmark
             {
                 Logger.Info("Skipping NativeMemoryProfiler because the process is not running as Administrator.");
             }
+        }
+
+        private static Runtime GetDefaultBenchmarkRuntime()
+        {
+            return RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                ? ClrRuntime.Net472
+                : CoreRuntime.Core80;
         }
 
         private static bool IsProcessElevated()

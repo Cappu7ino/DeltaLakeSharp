@@ -259,6 +259,28 @@ async fn wait_for_prefetched_batches(reader: &PrefetchingRecordBatchReader, expe
 }
 
 #[tokio::test]
+async fn record_batch_reader_direct_mode_drains_batches_in_order() {
+    let schema = single_id_schema();
+    let stream = prefetch_test_stream(
+        Arc::clone(&schema),
+        vec![Ok(id_batch(vec![1, 2])), Ok(id_batch(vec![3]))],
+    );
+    let reader = create_record_batch_reader_with_prefetch(
+        schema,
+        tokio::runtime::Handle::current(),
+        stream,
+        false,
+    );
+
+    let batches = tokio::task::spawn_blocking(move || reader.collect::<Result<Vec<_>, _>>())
+        .await
+        .expect("blocking reader task should complete")
+        .expect("direct reader should drain without errors");
+
+    assert_eq!(ids_from_batches(&batches), vec![1, 2, 3]);
+}
+
+#[tokio::test]
 async fn prefetch_reader_drains_batches_in_order() {
     let schema = single_id_schema();
     let stream = prefetch_test_stream(
@@ -1005,6 +1027,7 @@ async fn fixture_partitioned_deletion_vector_predicate_token_us_partition_exclud
         storage_options: None,
         version: None,
         partition_token: Some(token),
+        read_prefetch: None,
     })
     .await;
 
@@ -1030,6 +1053,7 @@ async fn fixture_partitioned_deletion_vector_predicate_tokens_match_full_read() 
             storage_options: None,
             version: None,
             partition_token: Some(token),
+            read_prefetch: None,
         })
         .await;
         ids.extend(ids_from_batches(&batches));
@@ -1185,6 +1209,7 @@ async fn resolve_partition_files_returns_open_table_and_embedded_files() {
         storage_options: None,
         version: None,
         partition_token: Some(token.to_string()),
+        read_prefetch: None,
     };
 
     let (table, files) = resolve_partition_files(&cmd, version, token_files)
@@ -1225,6 +1250,7 @@ async fn resolve_partition_files_rejects_version_mismatch() {
         storage_options: None,
         version: Some(version + 1),
         partition_token: Some(token.to_string()),
+        read_prefetch: None,
     };
 
     let error = resolve_partition_files(&cmd, version, token_files)
@@ -1265,6 +1291,7 @@ async fn resolve_partition_files_trusts_embedded_token_metadata() {
         storage_options: None,
         version: None,
         partition_token: Some(token.to_string()),
+        read_prefetch: None,
     };
 
     let PartitionDescriptorMode::FileSubset { files: token_files } = descriptor.mode else {
@@ -1350,6 +1377,7 @@ async fn partition_reads_cover_skewed_partitioned_table() {
             storage_options: None,
             version: None,
             partition_token: Some(token.to_string()),
+            read_prefetch: None,
         })
         .await;
         ids.extend(ids_from_batches(&batches));

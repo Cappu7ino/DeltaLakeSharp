@@ -44,7 +44,7 @@ Native merge work runs on Tokio worker threads instead of polling the whole merg
 | --- | --- | --- |
 | command metadata | JSON string | Managed code builds command payload; Rust parses it. |
 | schema | Arrow C Data schema | Managed code imports schema and frees temporary native structures. |
-| read batches | Arrow C Stream | Imported managed stream owns the release callback; Rust uses bounded prefetch behind the stream. |
+| read batches | Arrow C Stream | Imported managed stream owns the release callback; Rust can use bounded prefetch behind the stream when enabled. |
 | write batches | Arrow C Stream | Managed stream is exported to Rust for operation duration. |
 | string results | native string pointer | Managed code frees returned native strings. |
 
@@ -71,7 +71,7 @@ Common failure modes:
 
 The public API is asynchronous, but V3 crosses a synchronous FFI boundary for native calls. Do not assume unlimited parallelism through a single client instance. For parallel reads, prefer V3 partition planning and independent partition consumption.
 
-V3 read streams use a small Rust-owned bounded prefetch queue behind the exported Arrow C Stream. A Tokio producer task advances the DataFusion stream and sends ready batch results into the queue, while the Arrow C Stream pull side drains queued batches. The queue is bounded per stream, and native read production is also guarded by a process-wide active-production limit so full per-stream queues do not monopolize global read capacity.
+By default, V3 read streams pull each batch through the Arrow C Stream callback and synchronously bridge to the async DataFusion stream. `DeltaTableServiceClientOptions.EnableNativeReadPrefetch` enables an experimental prefetch mode that places a small Rust-owned bounded queue behind the exported Arrow C Stream. In that mode, a Tokio producer task advances the DataFusion stream and sends ready batch results into the queue, while the Arrow C Stream pull side drains queued batches. The queue is bounded per stream, and native read production is guarded by a process-wide active-production limit so full per-stream queues do not monopolize global read capacity.
 
 Multiple V3 clients share the same process-wide Tokio runtime. This reduces thread and stack overhead compared with one runtime per engine, but it also means blocking native work can affect other V3 clients in the same process. Imported Arrow streams from managed code should avoid long blocking pulls; if a write source can block for a long time, isolate that behavior before sharing the client across high-concurrency workflows.
 
