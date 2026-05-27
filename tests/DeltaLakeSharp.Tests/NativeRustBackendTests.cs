@@ -410,6 +410,36 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_AsyncJsonOperations_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+            });
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.CreateEmptyTableAsync("unused", tableSchema, cancellationToken: cancellationTokenSource.Token));
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.UpgradeTableProtocolAsync(
+                    "unused",
+                    readerVersion: 1,
+                    writerVersion: 5,
+                    cancellationToken: cancellationTokenSource.Token));
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.DeleteAsync(
+                    "DELETE FROM tbl WHERE id = 1",
+                    "unused",
+                    "tbl",
+                    cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
         public async Task NativeBackend_ReadTableAsDataReader_OverflowDecimalAsString_ReturnsStringForPrecision38()
         {
             string tablePath = CreateTempTablePath("native_v3_table_decimal_string");

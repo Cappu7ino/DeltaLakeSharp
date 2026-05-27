@@ -44,6 +44,27 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_create_table_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr CreateTableAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        [DllImport(LibraryName, EntryPoint = "dts_upgrade_protocol_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr UpgradeProtocolAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        [DllImport(LibraryName, EntryPoint = "dts_execute_dml_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ExecuteDmlAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [DllImport(LibraryName, EntryPoint = "dts_async_operation_status", CallingConvention = CallingConvention.Cdecl)]
         internal static extern int AsyncOperationStatus(IntPtr operation);
 
@@ -108,6 +129,33 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return WithUtf8String(commandJson, ptr => PlanReadPartitionsAsyncWithCallbackNative(engine, ptr, callback, userData));
+        }
+
+        internal static IntPtr CreateTableAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return WithUtf8String(commandJson, ptr => CreateTableAsyncWithCallbackNative(engine, ptr, callback, userData));
+        }
+
+        internal static IntPtr UpgradeProtocolAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return WithUtf8String(commandJson, ptr => UpgradeProtocolAsyncWithCallbackNative(engine, ptr, callback, userData));
+        }
+
+        internal static IntPtr ExecuteDmlAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return WithUtf8String(commandJson, ptr => ExecuteDmlAsyncWithCallbackNative(engine, ptr, callback, userData));
         }
 
         internal static unsafe int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream)

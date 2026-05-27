@@ -19,6 +19,7 @@ use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use tracing_subscriber::EnvFilter;
 
+use crate::error::ServiceError;
 use crate::service::DeltaService;
 
 static INIT_TRACING: Once = Once::new();
@@ -131,6 +132,20 @@ fn set_async_operation_terminal_state(
     }
 
     false
+}
+
+fn async_operation_failed(error: impl ToString) -> AsyncOperationState {
+    AsyncOperationState::Failed(
+        CString::new(error.to_string())
+            .unwrap_or_else(|_| CString::new("native async operation failed").unwrap()),
+    )
+}
+
+fn async_operation_succeeded(result: serde_json::Value) -> AsyncOperationState {
+    match CString::new(result.to_string()) {
+        Ok(result) => AsyncOperationState::Succeeded(Some(result)),
+        Err(error) => async_operation_failed(error),
+    }
 }
 
 impl DeltaServiceEngine {
@@ -432,6 +447,81 @@ fn start_plan_read_partitions_async(
     command_json: *const c_char,
     completion: AsyncOperationCompletion,
 ) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        completion,
+        |service, command| async move { service.plan_read_partitions(command.as_slice()).await },
+    )
+}
+
+/// Starts table creation and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_create_table_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.create_table(command.as_slice()).await },
+    )
+}
+
+/// Starts protocol upgrade and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_upgrade_protocol_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.upgrade_protocol(command.as_slice()).await },
+    )
+}
+
+/// Starts SQL DML execution and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_execute_dml_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.execute_dml(command.as_slice()).await },
+    )
+}
+
+fn start_json_async_operation<F, Fut>(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    completion: AsyncOperationCompletion,
+    action: F,
+) -> *mut DeltaAsyncOperation
+where
+    F: FnOnce(DeltaService, Vec<u8>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<serde_json::Value, ServiceError>> + Send + 'static,
+{
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
@@ -448,19 +538,9 @@ fn start_plan_read_partitions_async(
         let operation_ptr = Box::into_raw(operation);
         let task_operation = AsyncOperationPtr::new(operation_ptr);
         let task = engine_ref.runtime_handle.spawn(async move {
-            let next_state = match service.plan_read_partitions(command.as_slice()).await {
-                Ok(result) => match CString::new(result.to_string()) {
-                    Ok(result) => AsyncOperationState::Succeeded(Some(result)),
-                    Err(error) => {
-                        AsyncOperationState::Failed(CString::new(error.to_string()).unwrap_or_else(
-                            |_| CString::new("native async operation failed").unwrap(),
-                        ))
-                    }
-                },
-                Err(error) => AsyncOperationState::Failed(
-                    CString::new(error.to_string())
-                        .unwrap_or_else(|_| CString::new("native async operation failed").unwrap()),
-                ),
+            let next_state = match action(service, command).await {
+                Ok(result) => async_operation_succeeded(result),
+                Err(error) => async_operation_failed(error),
             };
 
             if set_async_operation_terminal_state(&task_state, next_state) {

@@ -50,6 +50,27 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_create_table_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr CreateTableAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        [DllImport(LibraryName, EntryPoint = "dts_upgrade_protocol_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr UpgradeProtocolAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        [DllImport(LibraryName, EntryPoint = "dts_execute_dml_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ExecuteDmlAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         internal static IntPtr PlanReadPartitionsAsyncWithCallback(
             IntPtr engine,
             string commandJson,
@@ -57,6 +78,33 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return PlanReadPartitionsAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        internal static IntPtr CreateTableAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return CreateTableAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        internal static IntPtr UpgradeProtocolAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return UpgradeProtocolAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        internal static IntPtr ExecuteDmlAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return ExecuteDmlAsyncWithCallbackNative(engine, commandJson, callback, userData);
         }
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_status")]
