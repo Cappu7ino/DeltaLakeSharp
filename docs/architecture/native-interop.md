@@ -10,6 +10,7 @@ Managed V3 execution flows through:
 
 - [../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs](../../src/DeltaLakeSharp.Client/Internal/NativeRustBackend.cs)
 - [../../src/DeltaLakeSharp.Client/Internal/Native/NativeEngineHandle.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeEngineHandle.cs)
+- [../../src/DeltaLakeSharp.Client/Internal/Native/NativeAsyncOperationHandle.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeAsyncOperationHandle.cs)
 - [../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net8.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net8.cs)
 - [../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net472.cs](../../src/DeltaLakeSharp.Client/Internal/Native/NativeMethods.net472.cs)
 
@@ -46,6 +47,7 @@ Native merge work runs on Tokio worker threads instead of polling the whole merg
 | schema | Arrow C Data schema | Managed code imports schema and frees temporary native structures. |
 | read batches | Arrow C Stream | Imported managed stream owns the release callback; Rust can use bounded prefetch behind the stream when enabled. |
 | write batches | Arrow C Stream | Managed stream is exported to Rust for operation duration. |
+| one-shot async operation | native operation pointer | Managed code awaits a `TaskCompletionSource`, takes the owned result string once after native completion notification, and destroys the operation handle. |
 | string results | native string pointer | Managed code frees returned native strings. |
 
 ## Native Library Discovery
@@ -69,7 +71,9 @@ Common failure modes:
 
 ## Concurrency Expectations
 
-The public API is asynchronous, but V3 crosses a synchronous FFI boundary for native calls. Do not assume unlimited parallelism through a single client instance. For parallel reads, prefer V3 partition planning and independent partition consumption.
+The public API is asynchronous, but most V3 native calls still cross a synchronous FFI boundary. Do not assume unlimited parallelism through a single client instance. For parallel reads, prefer V3 partition planning and independent partition consumption.
+
+Partition planning uses the first native async operation handle with completion notification. Managed code starts `dts_plan_read_partitions_async_with_callback`, awaits a `TaskCompletionSource`, takes the result string with `dts_async_operation_take_result` after the native callback fires, and releases the handle through `dts_async_operation_destroy`. Cancellation requests call `dts_async_operation_cancel` before managed code surfaces `OperationCanceledException`. This keeps the public `GetReadPartitionsAsync` shape unchanged while moving the planning work onto the shared Tokio runtime instead of blocking the managed caller thread for the whole native operation.
 
 By default, V3 read streams pull each batch through the Arrow C Stream callback and synchronously bridge to the async DataFusion stream. `DeltaTableServiceClientOptions.EnableNativeReadPrefetch` enables an experimental prefetch mode that places a small Rust-owned bounded queue behind the exported Arrow C Stream. In that mode, a Tokio producer task advances the DataFusion stream and sends ready batch results into the queue, while the Arrow C Stream pull side drains queued batches. The queue is bounded per stream, and native read production is guarded by a process-wide active-production limit so full per-stream queues do not monopolize global read capacity.
 

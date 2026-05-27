@@ -37,6 +37,28 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr PlanReadPartitionsNative(IntPtr engine, IntPtr commandJson);
 
+        [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr PlanReadPartitionsAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        [DllImport(LibraryName, EntryPoint = "dts_async_operation_status", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern int AsyncOperationStatus(IntPtr operation);
+
+        [DllImport(LibraryName, EntryPoint = "dts_async_operation_take_result", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr AsyncOperationTakeResult(IntPtr operation);
+
+        [DllImport(LibraryName, EntryPoint = "dts_async_operation_get_error", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern IntPtr AsyncOperationGetError(IntPtr operation);
+
+        [DllImport(LibraryName, EntryPoint = "dts_async_operation_cancel", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void AsyncOperationCancel(IntPtr operation);
+
+        [DllImport(LibraryName, EntryPoint = "dts_async_operation_destroy", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern void AsyncOperationDestroy(IntPtr operation);
+
         [DllImport(LibraryName, EntryPoint = "dts_read_table_partition", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe int ReadTablePartitionNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
 
@@ -77,6 +99,15 @@ namespace DeltaLakeSharp.Client.Internal.Native
         internal static IntPtr PlanReadPartitions(IntPtr engine, string commandJson)
         {
             return WithUtf8String(commandJson, ptr => PlanReadPartitionsNative(engine, ptr));
+        }
+
+        internal static IntPtr PlanReadPartitionsAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return WithUtf8String(commandJson, ptr => PlanReadPartitionsAsyncWithCallbackNative(engine, ptr, callback, userData));
         }
 
         internal static unsafe int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream)

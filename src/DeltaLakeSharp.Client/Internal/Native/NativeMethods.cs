@@ -12,6 +12,9 @@ namespace DeltaLakeSharp.Client.Internal.Native
         internal const string LibraryName = "delta_table_service_native";
         private static IntPtr _loadedHandle;
 
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        internal delegate void NativeAsyncOperationCompletedCallback(IntPtr operation, IntPtr userData);
+
         private static string[] GetCandidateLibraryPaths()
         {
             string fileName = GetPlatformLibraryFileName();

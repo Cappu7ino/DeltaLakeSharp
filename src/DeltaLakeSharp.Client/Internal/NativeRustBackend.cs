@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
@@ -25,6 +26,13 @@ namespace DeltaLakeSharp.Client.Internal
     /// </summary>
     internal sealed class NativeRustBackend : IDeltaLakeBackend
     {
+        private const int NativeAsyncOperationPending = 0;
+        private const int NativeAsyncOperationSucceeded = 1;
+        private const int NativeAsyncOperationFailed = 2;
+        private const int NativeAsyncOperationCancelled = 3;
+
+        private static readonly NativeMethods.NativeAsyncOperationCompletedCallback NativeAsyncOperationCompleted = OnNativeAsyncOperationCompleted;
+
         private readonly NativeEngineHandle _engine;
         private readonly bool _enableReadPrefetch;
 
@@ -161,7 +169,7 @@ namespace DeltaLakeSharp.Client.Internal
             return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
         }
 
-        public Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
+        public async Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
             string path,
             StorageConfig? storageConfig = null,
             GenericStorageOptions? genericStorageOptions = null,
@@ -182,22 +190,20 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             string commandJson = JsonSerializer.Serialize(command);
-            IntPtr resultPtr = NativeMethods.PlanReadPartitions(_engine.DangerousGetHandle(), commandJson);
-            if (resultPtr == IntPtr.Zero)
+            using var context = new NativeReadPartitionsOperationContext(cancellationToken);
+            IntPtr operationPtr = NativeMethods.PlanReadPartitionsAsyncWithCallback(
+                _engine.DangerousGetHandle(),
+                commandJson,
+                NativeAsyncOperationCompleted,
+                context.UserData);
+            if (operationPtr == IntPtr.Zero)
             {
                 throw CreateNativeOperationFailedException(nameof(GetReadPartitionsAsync));
             }
 
-            try
-            {
-                string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
-                    ?? throw new InvalidOperationException("Native plan_read_partitions returned null JSON.");
-                return Task.FromResult(ParseReadPartitions(resultJson));
-            }
-            finally
-            {
-                NativeMethods.FreeString(resultPtr);
-            }
+            context.SetOperation(operationPtr);
+            context.RegisterCancellation();
+            return await context.Task.ConfigureAwait(false);
         }
 
         public async IAsyncEnumerable<RecordBatch> ReadTablePartitionAsync(
@@ -624,6 +630,42 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             return new InvalidOperationException(message);
+        }
+
+        private static InvalidOperationException CreateNativeAsyncOperationFailedException(
+            IntPtr operation,
+            string operationName)
+        {
+            IntPtr errorPtr = NativeMethods.AsyncOperationGetError(operation);
+            string? error = NativeMethods.PtrToStringUtf8(errorPtr);
+            string message = $"Native V3 backend operation '{operationName}' failed.";
+
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                message += $" Native error: {error}";
+            }
+
+            return new InvalidOperationException(message);
+        }
+
+        private static void OnNativeAsyncOperationCompleted(IntPtr operation, IntPtr userData)
+        {
+            if (userData == IntPtr.Zero)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr(userData);
+            if (handle.Target is NativeReadPartitionsOperationContext context)
+            {
+                ThreadPool.QueueUserWorkItem(
+                    static state =>
+                    {
+                        var callbackState = (NativeAsyncOperationCallbackState)state!;
+                        callbackState.Context.Complete(callbackState.Operation);
+                    },
+                    new NativeAsyncOperationCallbackState(context, operation));
+            }
         }
 
         private string? GetLastErrorMessage()
@@ -1172,6 +1214,148 @@ namespace DeltaLakeSharp.Client.Internal
                 }
 
                 command["storage_options"] = storageOptions;
+            }
+        }
+
+        private sealed class NativeAsyncOperationCallbackState
+        {
+            public NativeAsyncOperationCallbackState(NativeReadPartitionsOperationContext context, IntPtr operation)
+            {
+                Context = context;
+                Operation = operation;
+            }
+
+            public NativeReadPartitionsOperationContext Context { get; }
+
+            public IntPtr Operation { get; }
+        }
+
+        private sealed class NativeReadPartitionsOperationContext : IDisposable
+        {
+            private readonly CancellationToken _cancellationToken;
+            private readonly TaskCompletionSource<IReadOnlyList<DeltaReadPartition>> _completion;
+            private readonly GCHandle _selfHandle;
+            private NativeAsyncOperationHandle? _operation;
+            private CancellationTokenRegistration _cancellationRegistration;
+            private int _completed;
+            private int _disposed;
+
+            public NativeReadPartitionsOperationContext(CancellationToken cancellationToken)
+            {
+                _cancellationToken = cancellationToken;
+                _completion = new TaskCompletionSource<IReadOnlyList<DeltaReadPartition>>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _selfHandle = GCHandle.Alloc(this);
+            }
+
+            public Task<IReadOnlyList<DeltaReadPartition>> Task => _completion.Task;
+
+            public IntPtr UserData => GCHandle.ToIntPtr(_selfHandle);
+
+            public void SetOperation(IntPtr operation)
+            {
+                _operation = NativeAsyncOperationHandle.FromIntPtr(operation);
+            }
+
+            public void RegisterCancellation()
+            {
+                if (_cancellationToken.CanBeCanceled)
+                {
+                    _cancellationRegistration = _cancellationToken.Register(
+                        static state => ((NativeReadPartitionsOperationContext)state!).Cancel(),
+                        this);
+                }
+            }
+
+            public void Complete(IntPtr operation)
+            {
+                if (Interlocked.Exchange(ref _completed, 1) != 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    int status = NativeMethods.AsyncOperationStatus(operation);
+                    switch (status)
+                    {
+                        case NativeAsyncOperationSucceeded:
+                            _completion.TrySetResult(TakeResult(operation));
+                            break;
+
+                        case NativeAsyncOperationFailed:
+                            _completion.TrySetException(CreateNativeAsyncOperationFailedException(
+                                operation,
+                                nameof(GetReadPartitionsAsync)));
+                            break;
+
+                        case NativeAsyncOperationCancelled:
+                            if (_cancellationToken.CanBeCanceled)
+                            {
+                                _completion.TrySetCanceled(_cancellationToken);
+                            }
+                            else
+                            {
+                                _completion.TrySetCanceled();
+                            }
+                            break;
+
+                        case NativeAsyncOperationPending:
+                            _completion.TrySetException(new InvalidOperationException(
+                                "Native async plan_read_partitions completion was signaled before terminal state was available."));
+                            break;
+
+                        default:
+                            _completion.TrySetException(new InvalidOperationException(
+                                $"Native async plan_read_partitions returned unknown status {status}."));
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _completion.TrySetException(ex);
+                }
+            }
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
+
+                _cancellationRegistration.Dispose();
+                _operation?.Dispose();
+                _selfHandle.Free();
+            }
+
+            private void Cancel()
+            {
+                NativeAsyncOperationHandle? operation = _operation;
+                if (operation != null && !operation.IsInvalid)
+                {
+                    NativeMethods.AsyncOperationCancel(operation.DangerousGetHandle());
+                }
+            }
+
+            private static IReadOnlyList<DeltaReadPartition> TakeResult(IntPtr operation)
+            {
+                IntPtr resultPtr = NativeMethods.AsyncOperationTakeResult(operation);
+                if (resultPtr == IntPtr.Zero)
+                {
+                    throw new InvalidOperationException("Native async plan_read_partitions returned null JSON.");
+                }
+
+                try
+                {
+                    string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
+                        ?? throw new InvalidOperationException("Native async plan_read_partitions returned null JSON.");
+                    return ParseReadPartitions(resultJson);
+                }
+                finally
+                {
+                    NativeMethods.FreeString(resultPtr);
+                }
             }
         }
 

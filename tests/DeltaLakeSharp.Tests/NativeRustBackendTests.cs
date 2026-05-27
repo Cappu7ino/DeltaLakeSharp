@@ -7,6 +7,7 @@ using System.Data.Common;
 using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Types;
@@ -51,7 +52,7 @@ namespace DeltaLakeSharp.Tests
         public async Task NativeBackend_HealthCheck_ReturnsTrue()
         {
             using var backend = new NativeRustBackend();
-            
+
 
             bool healthy = await backend.HealthCheckAsync();
 
@@ -357,6 +358,55 @@ namespace DeltaLakeSharp.Tests
             {
                 CleanupTablePath(tablePath);
             }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetReadPartitionsAsync_ReturnsPlannedPartitions()
+        {
+            string tablePath = CreateTempTablePath("native_v3_partitions_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[] { new object[] { 1, "Alice" } },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                IReadOnlyList<DeltaReadPartition> partitions = await backend.GetReadPartitionsAsync(tablePath);
+
+                Assert.AreEqual(1, partitions.Count);
+                Assert.AreEqual(0, partitions[0].Ordinal);
+                Assert.AreEqual(1, partitions[0].TotalPartitions);
+                Assert.IsFalse(string.IsNullOrWhiteSpace(partitions[0].Token));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetReadPartitionsAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.GetReadPartitionsAsync("unused", cancellationToken: cancellationTokenSource.Token));
         }
 
         [TestMethod]

@@ -58,7 +58,7 @@ Most SDK operations are asynchronous and stream Arrow `RecordBatch` values. Help
 - Treat `IAsyncEnumerable<RecordBatch>` and `IArrowArrayStream` results as streaming resources.
 - Avoid buffering full tables unless data volume is known to be small.
 - Use per-request storage options for SAS/OneLake authentication instead of global mutable state.
-- For V3 native operations, assume a synchronous FFI boundary inside the backend call path even when the public API is asynchronous.
+- For V3 native operations, assume most backend calls still cross a synchronous FFI boundary; partition planning is the current callback-notified native async operation.
 
 ## Major Tradeoffs
 

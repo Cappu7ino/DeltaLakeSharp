@@ -66,10 +66,13 @@ Properties:
 - Uses Arrow C Data/C Stream interfaces for schemas and batches.
 - Uses direct Arrow C Stream pulls by default, with bounded Rust-side prefetch available through `DeltaTableServiceClientOptions.EnableNativeReadPrefetch`.
 - Owns a native engine handle through a `SafeHandle` wrapper.
+- Uses a native async operation `SafeHandle` for V3 partition planning.
 - Shares one process-wide Tokio runtime across native engine handles.
 - Avoids the Flight service boundary but requires native runtime assets.
 
 Each `NativeRustBackend` still owns its native engine handle and per-engine error state. The shared runtime reduces thread and stack reservation overhead when multiple V3 clients are created in the same process. Native merge work is scheduled onto Tokio worker threads so deep delta-rs/DataFusion merge execution does not run on the .NET caller stack.
+
+`GetReadPartitionsAsync` starts native partition planning as a callback-notified operation on the shared Tokio runtime. The managed backend awaits a `TaskCompletionSource`, takes the JSON result once after native completion is signaled, and cancels the native operation if the managed cancellation token is signaled. The public API and partition descriptor model are unchanged.
 
 When read-stream prefetch is enabled, production is bounded in two ways: each exported stream has a small native queue, and active backend batch production is capped process-wide. These limits provide backpressure for high-concurrency readers without changing the public `IAsyncEnumerable<RecordBatch>` or `IArrowArrayStream` shapes. The default read path remains direct batch pulling because local benchmarks showed prefetch overhead can dominate small/local reads.
 

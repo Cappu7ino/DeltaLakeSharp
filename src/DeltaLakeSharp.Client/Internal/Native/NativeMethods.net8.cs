@@ -43,6 +43,38 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [LibraryImport(LibraryName, EntryPoint = "dts_plan_read_partitions", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr PlanReadPartitions(IntPtr engine, string commandJson);
 
+        [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr PlanReadPartitionsAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        internal static IntPtr PlanReadPartitionsAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return PlanReadPartitionsAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_status")]
+        [return: MarshalAs(UnmanagedType.I4)]
+        internal static partial int AsyncOperationStatus(IntPtr operation);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_take_result")]
+        internal static partial IntPtr AsyncOperationTakeResult(IntPtr operation);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_get_error")]
+        internal static partial IntPtr AsyncOperationGetError(IntPtr operation);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_cancel")]
+        internal static partial void AsyncOperationCancel(IntPtr operation);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_destroy")]
+        internal static partial void AsyncOperationDestroy(IntPtr operation);
+
         [LibraryImport(LibraryName, EntryPoint = "dts_read_table_partition", StringMarshalling = StringMarshalling.Utf8)]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream);
