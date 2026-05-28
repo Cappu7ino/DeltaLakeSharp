@@ -48,9 +48,14 @@ const ASYNC_OPERATION_FAILED: i32 = 2;
 const ASYNC_OPERATION_CANCELLED: i32 = 3;
 
 pub struct DeltaAsyncOperation {
-    state: Arc<Mutex<AsyncOperationState>>,
+    shared: Arc<AsyncOperationShared>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+struct AsyncOperationShared {
+    state: Mutex<AsyncOperationState>,
     completion: AsyncOperationCompletion,
+    operation_ptr: Mutex<usize>,
 }
 
 type AsyncOperationCompletedCallback = unsafe extern "C" fn(*mut DeltaAsyncOperation, *mut c_void);
@@ -81,22 +86,6 @@ impl AsyncOperationCompletion {
     }
 }
 
-#[derive(Clone, Copy)]
-struct AsyncOperationPtr(usize);
-
-unsafe impl Send for AsyncOperationPtr {}
-unsafe impl Sync for AsyncOperationPtr {}
-
-impl AsyncOperationPtr {
-    fn new(operation: *mut DeltaAsyncOperation) -> Self {
-        Self(operation as usize)
-    }
-
-    fn as_ptr(self) -> *mut DeltaAsyncOperation {
-        self.0 as *mut DeltaAsyncOperation
-    }
-}
-
 enum AsyncOperationState {
     Pending,
     Succeeded(Option<CString>),
@@ -105,11 +94,20 @@ enum AsyncOperationState {
 }
 
 impl DeltaAsyncOperation {
-    fn new(state: Arc<Mutex<AsyncOperationState>>, completion: AsyncOperationCompletion) -> Self {
+    fn new(completion: AsyncOperationCompletion) -> Self {
         Self {
-            state,
+            shared: Arc::new(AsyncOperationShared {
+                state: Mutex::new(AsyncOperationState::Pending),
+                completion,
+                operation_ptr: Mutex::new(0),
+            }),
             task: Mutex::new(None),
-            completion,
+        }
+    }
+
+    fn set_operation_ptr(&self, operation: *mut DeltaAsyncOperation) {
+        if let Ok(mut slot) = self.shared.operation_ptr.lock() {
+            *slot = operation as usize;
         }
     }
 
@@ -121,7 +119,7 @@ impl DeltaAsyncOperation {
 }
 
 fn set_async_operation_terminal_state(
-    state: &Arc<Mutex<AsyncOperationState>>,
+    state: &Mutex<AsyncOperationState>,
     next_state: AsyncOperationState,
 ) -> bool {
     if let Ok(mut slot) = state.lock() {
@@ -132,6 +130,15 @@ fn set_async_operation_terminal_state(
     }
 
     false
+}
+
+fn notify_async_operation_completion(shared: &AsyncOperationShared) {
+    if let Ok(slot) = shared.operation_ptr.lock() {
+        let operation = *slot as *mut DeltaAsyncOperation;
+        if !operation.is_null() {
+            shared.completion.notify(operation);
+        }
+    }
 }
 
 fn async_operation_failed(error: impl ToString) -> AsyncOperationState {
@@ -532,19 +539,20 @@ where
 
         let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
         let service = engine_ref.service.clone();
-        let state = Arc::new(Mutex::new(AsyncOperationState::Pending));
-        let task_state = Arc::clone(&state);
-        let operation = Box::new(DeltaAsyncOperation::new(Arc::clone(&state), completion));
+        let operation = Box::new(DeltaAsyncOperation::new(completion));
+        let task_shared = Arc::clone(&operation.shared);
         let operation_ptr = Box::into_raw(operation);
-        let task_operation = AsyncOperationPtr::new(operation_ptr);
+        unsafe {
+            (*operation_ptr).set_operation_ptr(operation_ptr);
+        }
         let task = engine_ref.runtime_handle.spawn(async move {
             let next_state = match action(service, command).await {
                 Ok(result) => async_operation_succeeded(result),
                 Err(error) => async_operation_failed(error),
             };
 
-            if set_async_operation_terminal_state(&task_state, next_state) {
-                completion.notify(task_operation.as_ptr());
+            if set_async_operation_terminal_state(&task_shared.state, next_state) {
+                notify_async_operation_completion(&task_shared);
             }
         });
 
@@ -573,6 +581,7 @@ pub extern "C" fn dts_async_operation_status(operation: *mut DeltaAsyncOperation
         .unwrap_or(false);
 
     operation_ref
+        .shared
         .state
         .lock()
         .map(|mut state| match &*state {
@@ -601,6 +610,7 @@ pub extern "C" fn dts_async_operation_take_result(
 
     let operation_ref = unsafe { &*operation };
     operation_ref
+        .shared
         .state
         .lock()
         .ok()
@@ -622,6 +632,7 @@ pub extern "C" fn dts_async_operation_get_error(
 
     let operation_ref = unsafe { &*operation };
     operation_ref
+        .shared
         .state
         .lock()
         .ok()
@@ -649,12 +660,12 @@ pub extern "C" fn dts_async_operation_cancel(operation: *mut DeltaAsyncOperation
     }
 
     if set_async_operation_terminal_state(
-        &operation_ref.state,
+        &operation_ref.shared.state,
         AsyncOperationState::Cancelled(
             CString::new("Native async operation was cancelled.").unwrap(),
         ),
     ) {
-        operation_ref.completion.notify(operation);
+        notify_async_operation_completion(&operation_ref.shared);
     }
 }
 
@@ -666,6 +677,9 @@ pub extern "C" fn dts_async_operation_destroy(operation: *mut DeltaAsyncOperatio
     }
 
     let operation = unsafe { Box::from_raw(operation) };
+    if let Ok(mut slot) = operation.shared.operation_ptr.lock() {
+        *slot = 0;
+    }
     if let Ok(mut task) = operation.task.lock() {
         if let Some(handle) = task.take() {
             handle.abort();
@@ -1191,6 +1205,14 @@ mod tests {
         notified.store(true, Ordering::SeqCst);
     }
 
+    unsafe extern "C" fn mark_async_operation_notified(
+        _operation: *mut DeltaAsyncOperation,
+        user_data: *mut c_void,
+    ) {
+        let notified = unsafe { &*(user_data as *const AtomicBool) };
+        notified.store(true, Ordering::SeqCst);
+    }
+
     #[test]
     fn async_plan_read_partitions_callback_notifies_after_success() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -1233,15 +1255,14 @@ mod tests {
 
     #[test]
     fn async_operation_cancel_marks_pending_operation_cancelled() {
-        let state = Arc::new(Mutex::new(AsyncOperationState::Pending));
         let task = shared_runtime().handle().spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         });
         let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
-            Arc::clone(&state),
             AsyncOperationCompletion::none(),
         )));
         unsafe {
+            (*operation).set_operation_ptr(operation);
             (*operation).set_task(task);
         }
 
@@ -1256,20 +1277,78 @@ mod tests {
     }
 
     #[test]
+    fn async_operation_cancel_notifies_real_pending_json_operation() {
+        let notified = AtomicBool::new(false);
+        let command = CString::new("{}").expect("command json");
+        let engine = dts_create_engine();
+        let operation = start_json_async_operation(
+            engine,
+            command.as_ptr(),
+            AsyncOperationCompletion {
+                callback: Some(mark_async_operation_notified),
+                user_data: &notified as *const AtomicBool as *mut c_void,
+            },
+            |_service, _command| async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok(serde_json::json!({ "success": true }))
+            },
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        dts_async_operation_cancel(operation);
+
+        assert_eq!(
+            ASYNC_OPERATION_CANCELLED,
+            dts_async_operation_status(operation)
+        );
+        assert!(!dts_async_operation_get_error(operation).is_null());
+        assert!(dts_async_operation_take_result(operation).is_null());
+        assert!(notified.load(Ordering::SeqCst));
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
     fn async_operation_destroy_aborts_pending_operation() {
-        let state = Arc::new(Mutex::new(AsyncOperationState::Pending));
         let task = shared_runtime().handle().spawn(async {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         });
         let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
-            state,
             AsyncOperationCompletion::none(),
         )));
         unsafe {
+            (*operation).set_operation_ptr(operation);
             (*operation).set_task(task);
         }
 
         dts_async_operation_destroy(operation);
+    }
+
+    #[test]
+    fn async_operation_destroy_suppresses_late_completion_callback() {
+        let notified = AtomicBool::new(false);
+        let command = CString::new("{}").expect("command json");
+        let engine = dts_create_engine();
+        let operation = start_json_async_operation(
+            engine,
+            command.as_ptr(),
+            AsyncOperationCompletion {
+                callback: Some(mark_async_operation_notified),
+                user_data: &notified as *const AtomicBool as *mut c_void,
+            },
+            |_service, _command| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok(serde_json::json!({ "success": true }))
+            },
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        dts_async_operation_destroy(operation);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        assert!(!notified.load(Ordering::SeqCst));
+        dts_destroy_engine(engine);
     }
 
     #[test]

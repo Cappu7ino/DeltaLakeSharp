@@ -440,6 +440,40 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_AsyncJsonOperations_RunConcurrently()
+        {
+            using var backend = new NativeRustBackend();
+            var tablePaths = new List<string>();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                });
+
+                Task<ExecuteResult>[] createTasks = Enumerable.Range(0, 4)
+                    .Select(i =>
+                    {
+                        string tablePath = CreateTempTablePath($"native_v3_async_json_concurrent_{i}");
+                        tablePaths.Add(tablePath);
+                        return backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                    })
+                    .ToArray();
+
+                ExecuteResult[] results = await Task.WhenAll(createTasks);
+
+                Assert.IsTrue(results.All(r => r.Success), "Expected all concurrent native create table operations to succeed.");
+            }
+            finally
+            {
+                foreach (string tablePath in tablePaths)
+                {
+                    CleanupTablePath(tablePath);
+                }
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_ReadTableAsDataReader_OverflowDecimalAsString_ReturnsStringForPrecision38()
         {
             string tablePath = CreateTempTablePath("native_v3_table_decimal_string");
