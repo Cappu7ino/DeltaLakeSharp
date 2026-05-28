@@ -15,8 +15,10 @@ use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 
+use arrow::error::ArrowError;
 use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use tracing_subscriber::EnvFilter;
 
 use crate::error::ServiceError;
@@ -89,6 +91,9 @@ impl AsyncOperationCompletion {
 enum AsyncOperationState {
     Pending,
     Succeeded(Option<CString>),
+    SucceededStream(
+        Option<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>>,
+    ),
     Failed(CString),
     Cancelled(CString),
 }
@@ -153,6 +158,12 @@ fn async_operation_succeeded(result: serde_json::Value) -> AsyncOperationState {
         Ok(result) => AsyncOperationState::Succeeded(Some(result)),
         Err(error) => async_operation_failed(error),
     }
+}
+
+fn async_operation_succeeded_stream(
+    reader: Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+) -> AsyncOperationState {
+    AsyncOperationState::SucceededStream(Some(reader))
 }
 
 impl DeltaServiceEngine {
@@ -386,6 +397,29 @@ pub extern "C" fn dts_read_table(
     .unwrap_or(0)
 }
 
+/// Starts table read stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_table_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_stream_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, runtime_handle| async move {
+            service
+                .read_batches(command.as_slice(), runtime_handle)
+                .await
+        },
+    )
+}
+
 /// Plans opaque read partitions for a pinned Delta snapshot and returns the JSON
 /// result payload as an owned UTF-8 string.
 #[unsafe(no_mangle)]
@@ -565,6 +599,59 @@ where
     .unwrap_or(ptr::null_mut())
 }
 
+fn start_stream_async_operation<F, Fut>(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    completion: AsyncOperationCompletion,
+    action: F,
+) -> *mut DeltaAsyncOperation
+where
+    F: FnOnce(DeltaService, Vec<u8>, tokio::runtime::Handle) -> Fut + Send + 'static,
+    Fut: Future<
+            Output = Result<
+                Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+                ServiceError,
+            >,
+        > + Send
+        + 'static,
+{
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let service = engine_ref.service.clone();
+        let runtime_handle = engine_ref.runtime_handle();
+        let operation = Box::new(DeltaAsyncOperation::new(completion));
+        let task_shared = Arc::clone(&operation.shared);
+        let operation_ptr = Box::into_raw(operation);
+        unsafe {
+            (*operation_ptr).set_operation_ptr(operation_ptr);
+        }
+        let task = engine_ref.runtime_handle.spawn(async move {
+            let next_state = match action(service, command, runtime_handle).await {
+                Ok(reader) => async_operation_succeeded_stream(reader),
+                Err(error) => async_operation_failed(error),
+            };
+
+            if set_async_operation_terminal_state(&task_shared.state, next_state) {
+                notify_async_operation_completion(&task_shared);
+            }
+        });
+
+        unsafe {
+            (*operation_ptr).set_task(task);
+        }
+
+        operation_ptr
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
 /// Returns the current status for an async operation.
 #[unsafe(no_mangle)]
 pub extern "C" fn dts_async_operation_status(operation: *mut DeltaAsyncOperation) -> i32 {
@@ -592,7 +679,9 @@ pub extern "C" fn dts_async_operation_status(operation: *mut DeltaAsyncOperation
                 ASYNC_OPERATION_FAILED
             }
             AsyncOperationState::Pending => ASYNC_OPERATION_PENDING,
-            AsyncOperationState::Succeeded(_) => ASYNC_OPERATION_SUCCEEDED,
+            AsyncOperationState::Succeeded(_) | AsyncOperationState::SucceededStream(_) => {
+                ASYNC_OPERATION_SUCCEEDED
+            }
             AsyncOperationState::Failed(_) => ASYNC_OPERATION_FAILED,
             AsyncOperationState::Cancelled(_) => ASYNC_OPERATION_CANCELLED,
         })
@@ -619,6 +708,39 @@ pub extern "C" fn dts_async_operation_take_result(
             _ => None,
         })
         .unwrap_or(ptr::null_mut())
+}
+
+/// Takes the successful stream result from an async operation into an Arrow C Stream.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_take_stream(
+    operation: *mut DeltaAsyncOperation,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> i32 {
+    if operation.is_null() || out_stream.is_null() {
+        return 0;
+    }
+
+    let operation_ref = unsafe { &*operation };
+    let reader = operation_ref
+        .shared
+        .state
+        .lock()
+        .ok()
+        .and_then(|mut state| match &mut *state {
+            AsyncOperationState::SucceededStream(reader) => reader.take(),
+            _ => None,
+        });
+
+    match reader {
+        Some(reader) => {
+            let ffi_stream = FFI_ArrowArrayStream::new(reader);
+            unsafe {
+                ptr::write(out_stream, ffi_stream);
+            }
+            1
+        }
+        None => 0,
+    }
 }
 
 /// Returns a borrowed UTF-8 error string for failed or cancelled operations.
@@ -1165,6 +1287,51 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&result).expect("parse json");
         assert_eq!(json["success"], true);
         assert_eq!(1, json["result"].as_array().expect("result array").len());
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_read_table_take_stream_is_single_use() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation =
+            dts_read_table_async_with_callback(engine, command.as_ptr(), None, ptr::null_mut());
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+        assert_eq!(
+            0,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async batches");
+        let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+        assert_eq!(3, total_rows);
 
         dts_async_operation_destroy(operation);
         dts_destroy_engine(engine);

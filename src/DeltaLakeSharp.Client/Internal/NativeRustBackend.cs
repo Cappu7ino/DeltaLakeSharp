@@ -160,7 +160,7 @@ namespace DeltaLakeSharp.Client.Internal
             }
         }
 
-        public Task<ArrowStreamResult> OpenReadTableStreamAsync(
+        public async Task<ArrowStreamResult> OpenReadTableStreamAsync(
             string path,
             StorageConfig? storageConfig = null,
             GenericStorageOptions? genericStorageOptions = null,
@@ -171,8 +171,12 @@ namespace DeltaLakeSharp.Client.Internal
         {
             cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildReadTableCommandJson(path, storageConfig, genericStorageOptions, numRows, batchSize, version, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenReadTableStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return await ExecuteNativeStreamOperationAsync(
+                nameof(OpenReadTableStreamAsync),
+                "read_table",
+                commandJson,
+                NativeMethods.ReadTableAsyncWithCallback,
+                cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
@@ -713,6 +717,78 @@ namespace DeltaLakeSharp.Client.Internal
             finally
             {
                 NativeMethods.FreeString(resultPtr);
+            }
+        }
+
+        private async Task<ArrowStreamResult> ExecuteNativeStreamOperationAsync(
+            string operationName,
+            string nativeOperationName,
+            string commandJson,
+            StartNativeAsyncOperationWithCallback startOperation,
+            CancellationToken cancellationToken)
+        {
+            IArrowArrayStream stream = await ExecuteNativeOperationAsync(
+                operationName,
+                nativeOperationName,
+                commandJson,
+                startOperation,
+                operation => TakeNativeAsyncStreamResult(operation, nativeOperationName),
+                cancellationToken).ConfigureAwait(false);
+
+            return new ArrowStreamResult(stream.Schema, stream);
+        }
+
+        private async Task<T> ExecuteNativeOperationAsync<T>(
+            string operationName,
+            string nativeOperationName,
+            string commandJson,
+            StartNativeAsyncOperationWithCallback startOperation,
+            Func<IntPtr, T> takeResult,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var context = new NativeAsyncOperationContext<T>(
+                operationName,
+                nativeOperationName,
+                cancellationToken,
+                takeResult);
+            IntPtr operationPtr = startOperation(
+                _engine.DangerousGetHandle(),
+                commandJson,
+                NativeAsyncOperationCompleted,
+                context.UserData);
+            if (operationPtr == IntPtr.Zero)
+            {
+                throw CreateNativeOperationFailedException(operationName);
+            }
+
+            context.SetOperation(operationPtr);
+            context.RegisterCancellation();
+            return await context.Task.ConfigureAwait(false);
+        }
+
+        private static unsafe IArrowArrayStream TakeNativeAsyncStreamResult(
+            IntPtr operation,
+            string nativeOperationName)
+        {
+            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            try
+            {
+                int result = NativeMethods.AsyncOperationTakeStream(operation, streamPtr);
+                if (result != 1)
+                {
+                    throw new InvalidOperationException($"Native async {nativeOperationName} returned null stream.");
+                }
+
+                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
+                CArrowArrayStream.Free(streamPtr);
+                return stream;
+            }
+            catch
+            {
+                CArrowArrayStream.Free(streamPtr);
+                throw;
             }
         }
 

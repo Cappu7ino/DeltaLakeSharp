@@ -40,6 +40,13 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int ReadTable(IntPtr engine, string commandJson, CArrowArrayStream* stream);
 
+        [DllImport(LibraryName, EntryPoint = "dts_read_table_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ReadTableAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [LibraryImport(LibraryName, EntryPoint = "dts_plan_read_partitions", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr PlanReadPartitions(IntPtr engine, string commandJson);
 
@@ -107,12 +114,25 @@ namespace DeltaLakeSharp.Client.Internal.Native
             return ExecuteDmlAsyncWithCallbackNative(engine, commandJson, callback, userData);
         }
 
+        internal static IntPtr ReadTableAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return ReadTableAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_status")]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static partial int AsyncOperationStatus(IntPtr operation);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_take_result")]
         internal static partial IntPtr AsyncOperationTakeResult(IntPtr operation);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_take_stream")]
+        [return: MarshalAs(UnmanagedType.I4)]
+        internal static unsafe partial int AsyncOperationTakeStream(IntPtr operation, CArrowArrayStream* stream);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_get_error")]
         internal static partial IntPtr AsyncOperationGetError(IntPtr operation);
