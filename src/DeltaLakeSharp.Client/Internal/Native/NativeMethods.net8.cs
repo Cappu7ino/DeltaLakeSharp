@@ -32,9 +32,12 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [LibraryImport(LibraryName, EntryPoint = "dts_get_last_error")]
         internal static partial IntPtr GetLastError(IntPtr engine);
 
-        [LibraryImport(LibraryName, EntryPoint = "dts_get_schema", StringMarshalling = StringMarshalling.Utf8)]
-        [return: MarshalAs(UnmanagedType.I4)]
-        internal static unsafe partial int GetSchema(IntPtr engine, string commandJson, CArrowSchema* schema);
+        [DllImport(LibraryName, EntryPoint = "dts_get_schema_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr GetSchemaAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_read_table", StringMarshalling = StringMarshalling.Utf8)]
         [return: MarshalAs(UnmanagedType.I4)]
@@ -122,6 +125,15 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return PlanReadPartitionsAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        internal static IntPtr GetSchemaAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return GetSchemaAsyncWithCallbackNative(engine, commandJson, callback, userData);
         }
 
         internal static IntPtr CreateTableAsyncWithCallback(
@@ -217,6 +229,10 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_take_stream")]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int AsyncOperationTakeStream(IntPtr operation, CArrowArrayStream* stream);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_take_schema")]
+        [return: MarshalAs(UnmanagedType.I4)]
+        internal static unsafe partial int AsyncOperationTakeSchema(IntPtr operation, CArrowSchema* schema);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_get_error")]
         internal static partial IntPtr AsyncOperationGetError(IntPtr operation);

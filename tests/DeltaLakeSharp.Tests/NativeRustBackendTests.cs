@@ -411,6 +411,58 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_GetArrowSchemaAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.GetArrowSchemaAsync("unused", cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetArrowSchemaAsync_ReturnsArrowSchema()
+        {
+            string tablePath = CreateTempTablePath("native_v3_schema_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                Schema schema = await backend.GetArrowSchemaAsync(tablePath);
+                Assert.AreEqual(2, schema.FieldsList.Count);
+                Assert.AreEqual("id", schema.GetFieldByIndex(0).Name);
+                Assert.AreEqual("name", schema.GetFieldByIndex(1).Name);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetArrowSchemaAsync_MissingTableThrowsNativeError()
+        {
+            string tablePath = CreateTempTablePath("native_v3_schema_async_missing");
+            CleanupTablePath(tablePath);
+            using var backend = new NativeRustBackend();
+
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+                backend.GetArrowSchemaAsync(tablePath));
+
+            StringAssert.Contains(ex.Message, "GetArrowSchemaAsync");
+            StringAssert.Contains(ex.Message, "Native error");
+        }
+
+        [TestMethod]
         public async Task NativeBackend_OpenReadTablePartitionStreamAsync_PreCanceledTokenThrows()
         {
             using var backend = new NativeRustBackend();

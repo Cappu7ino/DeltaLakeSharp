@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 
+use arrow::datatypes::Schema as ArrowSchema;
 use arrow::error::ArrowError;
 use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
@@ -92,6 +93,7 @@ impl AsyncOperationCompletion {
 enum AsyncOperationState {
     Pending,
     Succeeded(Option<CString>),
+    SucceededSchema(Option<ArrowSchema>),
     SucceededStream(
         Option<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>>,
     ),
@@ -160,6 +162,10 @@ fn async_operation_succeeded(result: serde_json::Value) -> AsyncOperationState {
         Ok(result) => AsyncOperationState::Succeeded(Some(result)),
         Err(error) => async_operation_failed(error),
     }
+}
+
+fn async_operation_succeeded_schema(schema: ArrowSchema) -> AsyncOperationState {
+    AsyncOperationState::SucceededSchema(Some(schema))
 }
 
 fn async_operation_succeeded_stream(
@@ -352,6 +358,26 @@ pub extern "C" fn dts_get_schema(
         1
     })
     .unwrap_or(0)
+}
+
+/// Starts schema resolution on the shared native runtime and invokes `callback`
+/// after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_get_schema_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_schema_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.get_schema(command.as_slice()).await },
+    )
 }
 
 /// Resolves a read/query command and exports the resulting batch stream via the
@@ -604,6 +630,55 @@ where
     .unwrap_or(ptr::null_mut())
 }
 
+fn start_schema_async_operation<F, Fut>(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    completion: AsyncOperationCompletion,
+    action: F,
+) -> *mut DeltaAsyncOperation
+where
+    F: FnOnce(DeltaService, Vec<u8>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<ArrowSchema, ServiceError>> + Send + 'static,
+{
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let service = engine_ref.service.clone();
+        let operation = Box::new(DeltaAsyncOperation::new(
+            completion,
+            engine_ref.runtime_handle(),
+        ));
+        let task_shared = Arc::clone(&operation.shared);
+        let operation_ptr = Box::into_raw(operation);
+        unsafe {
+            (*operation_ptr).set_operation_ptr(operation_ptr);
+        }
+        let task = engine_ref.runtime_handle.spawn(async move {
+            let next_state = match action(service, command).await {
+                Ok(schema) => async_operation_succeeded_schema(schema),
+                Err(error) => async_operation_failed(error),
+            };
+
+            if set_async_operation_terminal_state(&task_shared.state, next_state) {
+                notify_async_operation_completion(&task_shared);
+            }
+        });
+
+        unsafe {
+            (*operation_ptr).set_task(task);
+        }
+
+        operation_ptr
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
 fn start_stream_async_operation<F, Fut>(
     engine: *mut DeltaServiceEngine,
     command_json: *const c_char,
@@ -687,9 +762,9 @@ pub extern "C" fn dts_async_operation_status(operation: *mut DeltaAsyncOperation
                 ASYNC_OPERATION_FAILED
             }
             AsyncOperationState::Pending => ASYNC_OPERATION_PENDING,
-            AsyncOperationState::Succeeded(_) | AsyncOperationState::SucceededStream(_) => {
-                ASYNC_OPERATION_SUCCEEDED
-            }
+            AsyncOperationState::Succeeded(_)
+            | AsyncOperationState::SucceededSchema(_)
+            | AsyncOperationState::SucceededStream(_) => ASYNC_OPERATION_SUCCEEDED,
             AsyncOperationState::Failed(_) => ASYNC_OPERATION_FAILED,
             AsyncOperationState::Cancelled(_) => ASYNC_OPERATION_CANCELLED,
         })
@@ -716,6 +791,41 @@ pub extern "C" fn dts_async_operation_take_result(
             _ => None,
         })
         .unwrap_or(ptr::null_mut())
+}
+
+/// Takes the successful schema result from an async operation into an Arrow C Data schema.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_take_schema(
+    operation: *mut DeltaAsyncOperation,
+    out_schema: *mut FFI_ArrowSchema,
+) -> i32 {
+    if operation.is_null() || out_schema.is_null() {
+        return 0;
+    }
+
+    let operation_ref = unsafe { &*operation };
+    let schema = operation_ref
+        .shared
+        .state
+        .lock()
+        .ok()
+        .and_then(|mut state| match &mut *state {
+            AsyncOperationState::SucceededSchema(schema) => schema.take(),
+            _ => None,
+        });
+
+    match schema {
+        Some(schema) => match FFI_ArrowSchema::try_from(&schema) {
+            Ok(ffi_schema) => {
+                unsafe {
+                    ptr::write(out_schema, ffi_schema);
+                }
+                1
+            }
+            Err(_) => 0,
+        },
+        None => 0,
+    }
 }
 
 /// Takes the successful stream result from an async operation into an Arrow C Stream.
@@ -2053,6 +2163,50 @@ mod tests {
         assert_eq!("name", schema.field(1).name());
         assert_eq!(&DataType::Utf8, schema.field(1).data_type());
 
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_get_schema_take_schema_is_single_use() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "batch_size": 1,
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation =
+            dts_get_schema_async_with_callback(engine, command.as_ptr(), None, ptr::null_mut());
+        assert!(!operation.is_null(), "async operation should be created");
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_schema = FFI_ArrowSchema::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_schema(operation, &mut ffi_schema)
+        );
+        assert_eq!(
+            0,
+            dts_async_operation_take_schema(operation, &mut ffi_schema)
+        );
+
+        let schema = Schema::try_from(&ffi_schema).expect("import async schema");
+        assert_eq!(2, schema.fields().len());
+        assert_eq!("id", schema.field(0).name());
+        assert_eq!(&DataType::Int32, schema.field(0).data_type());
+        assert_eq!("name", schema.field(1).name());
+        assert_eq!(&DataType::Utf8, schema.field(1).data_type());
+
+        dts_async_operation_destroy(operation);
         dts_destroy_engine(engine);
     }
 

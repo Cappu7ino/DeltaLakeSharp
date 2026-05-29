@@ -62,21 +62,21 @@ namespace DeltaLakeSharp.Client.Internal
             return Task.FromResult(healthy);
         }
 
-        public Task<TableSchema> GetSchemaAsync(
+        public async Task<TableSchema> GetSchemaAsync(
             string path,
             StorageConfig? storageConfig = null,
             GenericStorageOptions? genericStorageOptions = null,
             long? version = null,
             CancellationToken cancellationToken = default)
         {
-            Schema arrowSchema = GetArrowSchema(
+            Schema arrowSchema = await GetArrowSchemaAsync(
                 path,
                 storageConfig,
                 genericStorageOptions,
                 version,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
 
-            return Task.FromResult(ArrowConverter.ToTableSchema(arrowSchema));
+            return ArrowConverter.ToTableSchema(arrowSchema);
         }
 
         public Task<Schema> GetArrowSchemaAsync(
@@ -85,16 +85,6 @@ namespace DeltaLakeSharp.Client.Internal
             GenericStorageOptions? genericStorageOptions = null,
             long? version = null,
             CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(GetArrowSchema(path, storageConfig, genericStorageOptions, version, cancellationToken));
-        }
-
-        private Schema GetArrowSchema(
-            string path,
-            StorageConfig? storageConfig,
-            GenericStorageOptions? genericStorageOptions,
-            long? version,
-            CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -110,30 +100,13 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             string commandJson = JsonSerializer.Serialize(command);
-
-            unsafe
-            {
-                CArrowSchema* schemaPtr = CArrowSchema.Create();
-                try
-                {
-                    int result = NativeMethods.GetSchema(
-                        _engine.DangerousGetHandle(),
-                        commandJson,
-                        schemaPtr);
-
-                    if (result != 1)
-                    {
-                        throw CreateNativeOperationFailedException(nameof(GetSchemaAsync));
-                    }
-
-                    Schema schema = CArrowSchemaImporter.ImportSchema(schemaPtr);
-                    return schema;
-                }
-                finally
-                {
-                    CArrowSchema.Free(schemaPtr);
-                }
-            }
+            return ExecuteNativeOperationAsync(
+                nameof(GetArrowSchemaAsync),
+                "get_schema",
+                commandJson,
+                NativeMethods.GetSchemaAsyncWithCallback,
+                operation => TakeNativeAsyncSchemaResult(operation, "get_schema"),
+                cancellationToken);
         }
 
         public async IAsyncEnumerable<RecordBatch> ReadTableAsync(
@@ -838,6 +811,27 @@ namespace DeltaLakeSharp.Client.Internal
             {
                 CArrowArrayStream.Free(streamPtr);
                 throw;
+            }
+        }
+
+        private static unsafe Schema TakeNativeAsyncSchemaResult(
+            IntPtr operation,
+            string nativeOperationName)
+        {
+            CArrowSchema* schemaPtr = CArrowSchema.Create();
+            try
+            {
+                int result = NativeMethods.AsyncOperationTakeSchema(operation, schemaPtr);
+                if (result != 1)
+                {
+                    throw new InvalidOperationException($"Native async {nativeOperationName} returned null schema.");
+                }
+
+                return CArrowSchemaImporter.ImportSchema(schemaPtr);
+            }
+            finally
+            {
+                CArrowSchema.Free(schemaPtr);
             }
         }
 

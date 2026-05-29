@@ -28,8 +28,12 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [DllImport(LibraryName, EntryPoint = "dts_get_last_error", CallingConvention = CallingConvention.Cdecl)]
         internal static extern IntPtr GetLastError(IntPtr engine);
 
-        [DllImport(LibraryName, EntryPoint = "dts_get_schema", CallingConvention = CallingConvention.Cdecl)]
-        private static extern unsafe int GetSchemaNative(IntPtr engine, IntPtr commandJson, CArrowSchema* schema);
+        [DllImport(LibraryName, EntryPoint = "dts_get_schema_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr GetSchemaAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
 
         [DllImport(LibraryName, EntryPoint = "dts_read_table", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe int ReadTableNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
@@ -118,6 +122,9 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [DllImport(LibraryName, EntryPoint = "dts_async_operation_take_stream", CallingConvention = CallingConvention.Cdecl)]
         internal static extern unsafe int AsyncOperationTakeStream(IntPtr operation, CArrowArrayStream* stream);
 
+        [DllImport(LibraryName, EntryPoint = "dts_async_operation_take_schema", CallingConvention = CallingConvention.Cdecl)]
+        internal static extern unsafe int AsyncOperationTakeSchema(IntPtr operation, CArrowSchema* schema);
+
         [DllImport(LibraryName, EntryPoint = "dts_async_operation_get_error", CallingConvention = CallingConvention.Cdecl)]
         internal static extern IntPtr AsyncOperationGetError(IntPtr operation);
 
@@ -144,11 +151,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
 
         [DllImport(LibraryName, EntryPoint = "dts_free_string", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void FreeString(IntPtr value);
-
-        internal static unsafe int GetSchema(IntPtr engine, string commandJson, CArrowSchema* schema)
-        {
-            return WithUtf8String(commandJson, ptr => GetSchemaNative(engine, ptr, schema));
-        }
 
         internal static unsafe int ReadTable(IntPtr engine, string commandJson, CArrowArrayStream* stream)
         {
@@ -185,6 +187,15 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return WithUtf8String(commandJson, ptr => PlanReadPartitionsAsyncWithCallbackNative(engine, ptr, callback, userData));
+        }
+
+        internal static IntPtr GetSchemaAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return WithUtf8String(commandJson, ptr => GetSchemaAsyncWithCallbackNative(engine, ptr, callback, userData));
         }
 
         internal static IntPtr CreateTableAsyncWithCallback(
