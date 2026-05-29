@@ -93,6 +93,14 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_insert_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr InsertAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            IntPtr sourceStream,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [DllImport(LibraryName, EntryPoint = "dts_async_operation_status", CallingConvention = CallingConvention.Cdecl)]
         internal static extern int AsyncOperationStatus(IntPtr operation);
 
@@ -116,9 +124,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
 
         [DllImport(LibraryName, EntryPoint = "dts_execute_query", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe int ExecuteQueryNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
-
-        [DllImport(LibraryName, EntryPoint = "dts_insert", CallingConvention = CallingConvention.Cdecl)]
-        private static extern unsafe int InsertNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
 
         [DllImport(LibraryName, EntryPoint = "dts_merge_stream", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe IntPtr MergeStreamNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
@@ -222,6 +227,16 @@ namespace DeltaLakeSharp.Client.Internal.Native
             return WithUtf8String(commandJson, ptr => ReadTablePartitionAsyncWithCallbackNative(engine, ptr, callback, userData));
         }
 
+        internal static IntPtr InsertAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            IntPtr sourceStream,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return WithUtf8String(commandJson, ptr => InsertAsyncWithCallbackNative(engine, ptr, sourceStream, callback, userData));
+        }
+
         internal static unsafe int ReadChangeData(IntPtr engine, string commandJson, CArrowArrayStream* stream)
         {
             return WithUtf8String(commandJson, ptr => ReadChangeDataNative(engine, ptr, stream));
@@ -230,11 +245,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
         internal static unsafe int ExecuteQuery(IntPtr engine, string commandJson, CArrowArrayStream* stream)
         {
             return WithUtf8String(commandJson, ptr => ExecuteQueryNative(engine, ptr, stream));
-        }
-
-        internal static unsafe int Insert(IntPtr engine, string commandJson, CArrowArrayStream* stream)
-        {
-            return WithUtf8String(commandJson, ptr => InsertNative(engine, ptr, stream));
         }
 
         internal static unsafe IntPtr MergeStream(IntPtr engine, string commandJson, CArrowArrayStream* stream)

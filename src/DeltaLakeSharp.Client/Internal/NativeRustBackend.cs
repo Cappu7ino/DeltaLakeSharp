@@ -39,6 +39,13 @@ namespace DeltaLakeSharp.Client.Internal
             NativeMethods.NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        private delegate IntPtr StartNativeAsyncOperationWithSourceStreamCallback(
+            IntPtr engine,
+            string commandJson,
+            IntPtr sourceStream,
+            NativeMethods.NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         private readonly NativeEngineHandle _engine;
         private readonly bool _enableReadPrefetch;
 
@@ -778,6 +785,38 @@ namespace DeltaLakeSharp.Client.Internal
             return await context.Task.ConfigureAwait(false);
         }
 
+        private async Task<T> ExecuteNativeSourceStreamJsonOperationAsync<T>(
+            string operationName,
+            string nativeOperationName,
+            string commandJson,
+            IntPtr sourceStream,
+            StartNativeAsyncOperationWithSourceStreamCallback startOperation,
+            Func<string, T> parseResult,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var context = new NativeAsyncOperationContext<T>(
+                operationName,
+                nativeOperationName,
+                cancellationToken,
+                operation => TakeNativeAsyncJsonResult(operation, nativeOperationName, parseResult));
+            IntPtr operationPtr = startOperation(
+                _engine.DangerousGetHandle(),
+                commandJson,
+                sourceStream,
+                NativeAsyncOperationCompleted,
+                context.UserData);
+            if (operationPtr == IntPtr.Zero)
+            {
+                throw CreateNativeOperationFailedException(operationName);
+            }
+
+            context.SetOperation(operationPtr);
+            context.RegisterCancellation();
+            return await context.Task.ConfigureAwait(false);
+        }
+
         private static unsafe IArrowArrayStream TakeNativeAsyncStreamResult(
             IntPtr operation,
             string nativeOperationName)
@@ -873,34 +912,46 @@ namespace DeltaLakeSharp.Client.Internal
         /// Exports a managed Arrow stream to the native Rust backend using the
         /// Arrow C Stream interface.
         /// </summary>
-        private unsafe Task InsertCoreAsync(
+        private async Task InsertCoreAsync(
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             string commandJson,
             CancellationToken cancellationToken)
         {
             IArrowArrayStream stream = new AsyncEnumerableArrowArrayStream(schema, batches, cancellationToken);
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            IntPtr streamPtr = CreateNativeArrowArrayStream();
             try
             {
-                CArrowArrayStreamExporter.ExportArrayStream(stream, streamPtr);
-                int result = NativeMethods.Insert(
-                    _engine.DangerousGetHandle(),
+                ExportArrowArrayStream(stream, streamPtr);
+                await ExecuteNativeSourceStreamJsonOperationAsync(
+                    nameof(InsertAsync),
+                    "insert",
                     commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(InsertAsync));
-                }
-
-                return Task.CompletedTask;
+                    streamPtr,
+                    NativeMethods.InsertAsyncWithCallback,
+                    ParseExecuteResult,
+                    cancellationToken).ConfigureAwait(false);
             }
             finally
             {
                 stream.Dispose();
-                CArrowArrayStream.Free(streamPtr);
+                FreeNativeArrowArrayStream(streamPtr);
             }
+        }
+
+        private static unsafe IntPtr CreateNativeArrowArrayStream()
+        {
+            return (IntPtr)CArrowArrayStream.Create();
+        }
+
+        private static unsafe void ExportArrowArrayStream(IArrowArrayStream stream, IntPtr streamPtr)
+        {
+            CArrowArrayStreamExporter.ExportArrayStream(stream, (CArrowArrayStream*)streamPtr);
+        }
+
+        private static unsafe void FreeNativeArrowArrayStream(IntPtr streamPtr)
+        {
+            CArrowArrayStream.Free((CArrowArrayStream*)streamPtr);
         }
 
         /// <summary>

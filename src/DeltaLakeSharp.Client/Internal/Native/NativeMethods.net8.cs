@@ -99,6 +99,14 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_insert_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr InsertAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            IntPtr sourceStream,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         internal static IntPtr PlanReadPartitionsAsyncWithCallback(
             IntPtr engine,
             string commandJson,
@@ -171,6 +179,16 @@ namespace DeltaLakeSharp.Client.Internal.Native
             return ReadTablePartitionAsyncWithCallbackNative(engine, commandJson, callback, userData);
         }
 
+        internal static IntPtr InsertAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            IntPtr sourceStream,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return InsertAsyncWithCallbackNative(engine, commandJson, sourceStream, callback, userData);
+        }
+
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_status")]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static partial int AsyncOperationStatus(IntPtr operation);
@@ -198,10 +216,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [LibraryImport(LibraryName, EntryPoint = "dts_execute_query", StringMarshalling = StringMarshalling.Utf8)]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static unsafe partial int ExecuteQuery(IntPtr engine, string commandJson, CArrowArrayStream* stream);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_insert", StringMarshalling = StringMarshalling.Utf8)]
-        [return: MarshalAs(UnmanagedType.I4)]
-        internal static unsafe partial int Insert(IntPtr engine, string commandJson, CArrowArrayStream* stream);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_merge_stream", StringMarshalling = StringMarshalling.Utf8)]
         internal static unsafe partial IntPtr MergeStream(IntPtr engine, string commandJson, CArrowArrayStream* stream);

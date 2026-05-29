@@ -7,6 +7,7 @@ using System.Data.Common;
 using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
@@ -962,6 +963,117 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_InsertAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+            });
+            RecordBatch batch = ArrowConverter.FromRows(
+                new[] { new object[] { 1 } },
+                tableSchema);
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.InsertAsync(
+                    "unused",
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_WithDelayedSource_WritesData()
+        {
+            string tablePath = CreateTempTablePath("native_v3_async_insert_delayed_source");
+            CleanupTablePath(tablePath);
+
+            var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                }, tableSchema);
+
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    YieldDelayedBatch(batch),
+                    mode: "overwrite");
+
+                var rows = new List<(int id, string name)>();
+                await foreach (RecordBatch readBatch in backend.ReadTableAsync(tablePath))
+                {
+                    var idArray = (Int32Array)readBatch.Column(0);
+                    for (int i = 0; i < readBatch.Length; i++)
+                    {
+                        rows.Add((idArray.GetValue(i) ?? -1, V3TestHelpers.ReadStringValue(readBatch.Column(1), i)));
+                    }
+                }
+
+                rows = rows.OrderBy(r => r.id).ToList();
+                Assert.AreEqual(2, rows.Count);
+                Assert.AreEqual((1, "Alice"), rows[0]);
+                Assert.AreEqual((2, "Bob"), rows[1]);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_CancelAfterNativeStartThrowsOperationCanceled()
+        {
+            string tablePath = CreateTempTablePath("native_v3_async_insert_cancel_after_start");
+            CleanupTablePath(tablePath);
+
+            var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                }, tableSchema);
+                var sourceStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                Task insertTask = backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    YieldAfterSourceStarts(batch, sourceStarted, cancellationTokenSource.Token),
+                    mode: "overwrite",
+                    cancellationToken: cancellationTokenSource.Token);
+
+                await sourceStarted.Task.ConfigureAwait(false);
+                cancellationTokenSource.Cancel();
+
+                await Assert.ThrowsExceptionAsync<TaskCanceledException>(() => insertTask);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_InsertAsync_ToMissingPartitionedTable_CreatesPartitionedTableAndWritesData()
         {
             string tablePath = CreateTempTablePath("native_v3_implicit_partitioned");
@@ -1373,6 +1485,22 @@ namespace DeltaLakeSharp.Tests
                 .Build();
 
             await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append).ConfigureAwait(false);
+        }
+
+        private static async IAsyncEnumerable<RecordBatch> YieldDelayedBatch(RecordBatch batch)
+        {
+            await Task.Delay(25).ConfigureAwait(false);
+            yield return batch;
+        }
+
+        private static async IAsyncEnumerable<RecordBatch> YieldAfterSourceStarts(
+            RecordBatch batch,
+            TaskCompletionSource<bool> sourceStarted,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            sourceStarted.TrySetResult(true);
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+            yield return batch;
         }
 
         private static List<Dictionary<string, object?>> FlattenRows(IEnumerable<RecordBatch> batches)
