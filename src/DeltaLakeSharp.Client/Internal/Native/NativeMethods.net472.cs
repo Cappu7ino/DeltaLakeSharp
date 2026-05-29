@@ -55,6 +55,13 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_read_table_partition_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ReadTablePartitionAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr PlanReadPartitionsNative(IntPtr engine, IntPtr commandJson);
 
@@ -103,9 +110,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
 
         [DllImport(LibraryName, EntryPoint = "dts_async_operation_destroy", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void AsyncOperationDestroy(IntPtr operation);
-
-        [DllImport(LibraryName, EntryPoint = "dts_read_table_partition", CallingConvention = CallingConvention.Cdecl)]
-        private static extern unsafe int ReadTablePartitionNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
 
         [DllImport(LibraryName, EntryPoint = "dts_read_change_data", CallingConvention = CallingConvention.Cdecl)]
         private static extern unsafe int ReadChangeDataNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
@@ -209,9 +213,13 @@ namespace DeltaLakeSharp.Client.Internal.Native
             return WithUtf8String(commandJson, ptr => ReadChangeDataAsyncWithCallbackNative(engine, ptr, callback, userData));
         }
 
-        internal static unsafe int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream)
+        internal static IntPtr ReadTablePartitionAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
         {
-            return WithUtf8String(commandJson, ptr => ReadTablePartitionNative(engine, ptr, stream));
+            return WithUtf8String(commandJson, ptr => ReadTablePartitionAsyncWithCallbackNative(engine, ptr, callback, userData));
         }
 
         internal static unsafe int ReadChangeData(IntPtr engine, string commandJson, CArrowArrayStream* stream)

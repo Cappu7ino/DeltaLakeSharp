@@ -69,6 +69,12 @@ Descriptor fields:
 - total partition count
 - file count
 
+Runtime behavior:
+
+- V3 partition planning returns JSON through the native async operation handle path.
+- V3 partition stream setup also uses native async operation handles before returning an Arrow C Stream.
+- Partition stream batch consumption remains Arrow C Stream based.
+
 ## Partition Token Rules
 
 - Tokens are opaque.

@@ -58,7 +58,7 @@ Most SDK operations are asynchronous and stream Arrow `RecordBatch` values. Help
 - Treat `IAsyncEnumerable<RecordBatch>` and `IArrowArrayStream` results as streaming resources.
 - Avoid buffering full tables unless data volume is known to be small.
 - Use per-request storage options for SAS/OneLake authentication instead of global mutable state.
-- For V3 native operations, partition planning, JSON-result table operations, and table/query/CDF stream setup use callback-notified native async operation handles. Batch consumption still uses Arrow C Stream ownership rules.
+- For V3 native operations, partition planning, JSON-result table operations, and table/query/CDF/partition stream setup use callback-notified native async operation handles. Batch consumption still uses Arrow C Stream ownership rules.
 
 ## Major Tradeoffs
 

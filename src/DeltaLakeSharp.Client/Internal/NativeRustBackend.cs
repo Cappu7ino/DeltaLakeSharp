@@ -289,10 +289,13 @@ namespace DeltaLakeSharp.Client.Internal
             int? batchSize = null,
             CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildReadTablePartitionCommandJson(path, partition, storageConfig, genericStorageOptions, batchSize, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return ExecuteNativeStreamOperationAsync(
+                nameof(OpenReadTablePartitionStreamAsync),
+                "read_table_partition",
+                commandJson,
+                NativeMethods.ReadTablePartitionAsyncWithCallback,
+                cancellationToken);
         }
 
         public Task<ArrowStreamResult> OpenReadTablePartitionStreamByTokenAsync(
@@ -303,10 +306,13 @@ namespace DeltaLakeSharp.Client.Internal
             int? batchSize = null,
             CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildReadTablePartitionCommandJson(path, partitionToken, storageConfig, genericStorageOptions, batchSize, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return ExecuteNativeStreamOperationAsync(
+                nameof(OpenReadTablePartitionStreamByTokenAsync),
+                "read_table_partition",
+                commandJson,
+                NativeMethods.ReadTablePartitionAsyncWithCallback,
+                cancellationToken);
         }
 
         public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
@@ -819,32 +825,6 @@ namespace DeltaLakeSharp.Client.Internal
                 if (result != 1)
                 {
                     throw CreateNativeOperationFailedException(nameof(ReadTableAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
-        private unsafe IArrowArrayStream OpenReadTablePartitionStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ReadTablePartition(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ReadTablePartitionAsync));
                 }
 
                 IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);

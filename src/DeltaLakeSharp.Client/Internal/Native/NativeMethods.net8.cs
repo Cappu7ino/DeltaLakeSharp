@@ -61,6 +61,13 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_read_table_partition_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ReadTablePartitionAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [LibraryImport(LibraryName, EntryPoint = "dts_plan_read_partitions", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr PlanReadPartitions(IntPtr engine, string commandJson);
 
@@ -155,6 +162,15 @@ namespace DeltaLakeSharp.Client.Internal.Native
             return ReadChangeDataAsyncWithCallbackNative(engine, commandJson, callback, userData);
         }
 
+        internal static IntPtr ReadTablePartitionAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return ReadTablePartitionAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_status")]
         [return: MarshalAs(UnmanagedType.I4)]
         internal static partial int AsyncOperationStatus(IntPtr operation);
@@ -174,10 +190,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_destroy")]
         internal static partial void AsyncOperationDestroy(IntPtr operation);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_read_table_partition", StringMarshalling = StringMarshalling.Utf8)]
-        [return: MarshalAs(UnmanagedType.I4)]
-        internal static unsafe partial int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_read_change_data", StringMarshalling = StringMarshalling.Utf8)]
         [return: MarshalAs(UnmanagedType.I4)]

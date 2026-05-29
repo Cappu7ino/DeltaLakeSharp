@@ -820,6 +820,17 @@ pub extern "C" fn dts_read_table_partition(
     dts_read_table(engine, command_json, out_stream)
 }
 
+/// Starts partition-scoped read stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_table_partition_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    dts_read_table_async_with_callback(engine, command_json, callback, user_data)
+}
+
 /// Resolves a SQL/read command and exports the resulting batch stream via the
 /// Arrow C Stream interface.
 #[unsafe(no_mangle)]
@@ -1376,6 +1387,86 @@ mod tests {
         let batches = reader
             .collect::<Result<Vec<_>, _>>()
             .expect("collect async batches");
+        let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+        assert_eq!(3, total_rows);
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_read_table_partition_take_stream_returns_rows() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let plan_command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("plan json");
+
+        let engine = dts_create_engine();
+        let plan_operation = dts_plan_read_partitions_async(engine, plan_command.as_ptr());
+        assert!(
+            !plan_operation.is_null(),
+            "async operation should be created"
+        );
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(plan_operation)
+        );
+        let result_ptr = dts_async_operation_take_result(plan_operation);
+        assert!(
+            !result_ptr.is_null(),
+            "async plan result should be available"
+        );
+        let result = unsafe { CStr::from_ptr(result_ptr) }
+            .to_str()
+            .expect("utf8 json")
+            .to_string();
+        dts_free_string(result_ptr);
+        dts_async_operation_destroy(plan_operation);
+
+        let json: serde_json::Value = serde_json::from_str(&result).expect("parse json");
+        let token = json["result"][0]["token"]
+            .as_str()
+            .expect("partition token");
+        let partition_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "partition_token": token,
+            })
+            .to_string(),
+        )
+        .expect("partition json");
+
+        let operation = dts_read_table_partition_async_with_callback(
+            engine,
+            partition_command.as_ptr(),
+            None,
+            ptr::null_mut(),
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async partition stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async partition batches");
         let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
         assert_eq!(3, total_rows);
 
