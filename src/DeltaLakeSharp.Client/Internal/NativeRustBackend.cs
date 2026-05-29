@@ -959,42 +959,30 @@ namespace DeltaLakeSharp.Client.Internal
         /// This mirrors the insert path but returns the standard action result
         /// envelope containing merge metrics.
         /// </summary>
-        private unsafe Task<ExecuteResult> MergeCoreAsync(
+        private async Task<ExecuteResult> MergeCoreAsync(
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             string commandJson,
             CancellationToken cancellationToken)
         {
             IArrowArrayStream stream = new AsyncEnumerableArrowArrayStream(schema, batches, cancellationToken);
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            IntPtr streamPtr = CreateNativeArrowArrayStream();
             try
             {
-                CArrowArrayStreamExporter.ExportArrayStream(stream, streamPtr);
-                IntPtr resultPtr = NativeMethods.MergeStream(
-                    _engine.DangerousGetHandle(),
+                ExportArrowArrayStream(stream, streamPtr);
+                return await ExecuteNativeSourceStreamJsonOperationAsync(
+                    nameof(MergeDataAsync),
+                    "merge_stream",
                     commandJson,
-                    streamPtr);
-
-                if (resultPtr == IntPtr.Zero)
-                {
-                    throw CreateNativeOperationFailedException(nameof(MergeDataAsync));
-                }
-
-                try
-                {
-                    string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
-                        ?? throw new InvalidOperationException("Native merge_stream returned null JSON.");
-                    return Task.FromResult(ParseExecuteResult(resultJson));
-                }
-                finally
-                {
-                    NativeMethods.FreeString(resultPtr);
-                }
+                    streamPtr,
+                    NativeMethods.MergeStreamAsyncWithCallback,
+                    ParseExecuteResult,
+                    cancellationToken).ConfigureAwait(false);
             }
             finally
             {
                 stream.Dispose();
-                CArrowArrayStream.Free(streamPtr);
+                FreeNativeArrowArrayStream(streamPtr);
             }
         }
 
@@ -1427,6 +1415,12 @@ namespace DeltaLakeSharp.Client.Internal
                             break;
 
                         case NativeAsyncOperationFailed:
+                            if (_cancellationToken.IsCancellationRequested && IsNativeCancellationFailure(operation))
+                            {
+                                _completion.TrySetCanceled(_cancellationToken);
+                                break;
+                            }
+
                             _completion.TrySetException(CreateNativeAsyncOperationFailedException(
                                 operation,
                                 _operationName));
@@ -1479,6 +1473,13 @@ namespace DeltaLakeSharp.Client.Internal
                 {
                     NativeMethods.AsyncOperationCancel(operation.DangerousGetHandle());
                 }
+            }
+
+            private static bool IsNativeCancellationFailure(IntPtr operation)
+            {
+                string? error = NativeMethods.PtrToStringUtf8(NativeMethods.AsyncOperationGetError(operation));
+                return error != null
+                    && error.IndexOf("cancel", StringComparison.OrdinalIgnoreCase) >= 0;
             }
         }
 

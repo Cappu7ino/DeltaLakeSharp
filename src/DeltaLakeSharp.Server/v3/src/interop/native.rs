@@ -1178,6 +1178,28 @@ pub extern "C" fn dts_merge_stream(
     .unwrap_or(ptr::null_mut())
 }
 
+/// Starts native merge from an imported Arrow C Stream and invokes `callback`
+/// after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_merge_stream_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    source_stream: *mut FFI_ArrowArrayStream,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_source_stream_json_async_operation(
+        engine,
+        command_json,
+        source_stream,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, reader| async move { service.merge_reader(command.as_slice(), reader).await },
+    )
+}
+
 /// Executes a create-table command using the transport-neutral V3 core and
 /// returns the standard JSON result payload as an owned UTF-8 string.
 #[unsafe(no_mangle)]
@@ -1966,6 +1988,21 @@ mod tests {
     }
 
     #[test]
+    fn async_merge_stream_rejects_null_arguments() {
+        let engine = dts_create_engine();
+        let operation = dts_merge_stream_async_with_callback(
+            engine,
+            ptr::null(),
+            ptr::null_mut(),
+            None,
+            ptr::null_mut(),
+        );
+        assert!(operation.is_null());
+        assert!(!dts_get_last_error(engine).is_null());
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
     fn create_table_rejects_null_arguments() {
         let engine = dts_create_engine();
         assert!(dts_create_table(engine, ptr::null()).is_null());
@@ -2392,6 +2429,136 @@ mod tests {
         let result_ptr = dts_merge_stream(engine, merge_command.as_ptr(), &mut merge_stream);
         assert!(!result_ptr.is_null(), "native merge_stream should succeed");
         dts_free_string(result_ptr);
+
+        let read_command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("read json");
+        let mut read_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_read_table(engine, read_command.as_ptr(), &mut read_stream)
+        );
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut read_stream) }
+            .expect("import read stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect read batches");
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(4, total_rows);
+
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_merge_stream_imports_arrow_array_stream() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let table_path = tmp.path().join("native_async_merge_table");
+        std::fs::create_dir(&table_path).expect("create table dir");
+
+        let path = table_path.to_string_lossy().to_string();
+        let create_body = serde_json::json!({
+            "path": path,
+            "schema": [
+                {"name": "id", "type": "int32"},
+                {"name": "name", "type": "string"}
+            ]
+        });
+        let create_body_bytes = serde_json::to_vec(&create_body).unwrap();
+
+        let engine = dts_create_engine();
+        let create_status = runtime
+            .block_on(unsafe { (*engine).service.create_table(create_body_bytes.as_slice()) });
+        assert!(create_status.is_ok(), "create table should succeed");
+
+        let target_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let target_batch = RecordBatch::try_new(
+            Arc::clone(&target_schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .expect("target batch");
+        let target_reader = arrow::record_batch::RecordBatchIterator::new(
+            vec![Ok(target_batch)].into_iter(),
+            Arc::clone(&target_schema),
+        );
+        let mut target_stream = FFI_ArrowArrayStream::new(Box::new(target_reader));
+
+        let insert_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "mode": "append"
+            })
+            .to_string(),
+        )
+        .expect("insert json");
+        assert_eq!(
+            1,
+            dts_insert(engine, insert_command.as_ptr(), &mut target_stream)
+        );
+
+        let merge_source_batch = RecordBatch::try_new(
+            target_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![2, 4])),
+                Arc::new(StringArray::from(vec!["updated_b", "d"])),
+            ],
+        )
+        .expect("merge source batch");
+        let merge_source_reader = arrow::record_batch::RecordBatchIterator::new(
+            vec![Ok(merge_source_batch)].into_iter(),
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("name", DataType::Utf8, true),
+            ])),
+        );
+        let mut merge_stream = FFI_ArrowArrayStream::new(Box::new(merge_source_reader));
+
+        let merge_command = CString::new(
+            serde_json::json!({
+                "operation": "merge",
+                "path": path,
+                "predicate": "target.id = source.id",
+                "source_alias": "source",
+                "target_alias": "target",
+                "when_matched_update_all": true,
+                "when_not_matched_insert_all": true
+            })
+            .to_string(),
+        )
+        .expect("merge json");
+
+        let operation = dts_merge_stream_async_with_callback(
+            engine,
+            merge_command.as_ptr(),
+            &mut merge_stream,
+            None,
+            ptr::null_mut(),
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+        let result_ptr = dts_async_operation_take_result(operation);
+        assert!(!result_ptr.is_null());
+        let result = unsafe { CStr::from_ptr(result_ptr) }
+            .to_str()
+            .expect("utf8 json")
+            .to_string();
+        dts_free_string(result_ptr);
+        dts_async_operation_destroy(operation);
+        let json: serde_json::Value = serde_json::from_str(&result).expect("parse json");
+        assert_eq!(json["success"], true);
 
         let read_command = CString::new(
             serde_json::json!({

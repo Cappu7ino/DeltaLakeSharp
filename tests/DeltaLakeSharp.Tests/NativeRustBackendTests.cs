@@ -1915,6 +1915,92 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_MergeDataAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            RecordBatch batch = ArrowConverter.FromRows(
+                new[] { new object[] { 1, "Alice" } },
+                tableSchema);
+            var mergeOptions = new MergeOptions("target.id = source.id")
+            {
+                WhenMatchedUpdateAll = true,
+                WhenNotMatchedInsertAll = true,
+            };
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.MergeDataAsync(
+                    "unused",
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mergeOptions,
+                    cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_MergeDataAsync_CancelAfterNativeStartThrowsTaskCanceled()
+        {
+            string tablePath = CreateTempTablePath("native_v3_merge_cancel_after_start");
+            var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch targetBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "a" },
+                }, tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    targetBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(targetBatch),
+                    mode: "append");
+
+                RecordBatch mergeBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "updated_a" },
+                }, tableSchema);
+                var mergeOptions = new MergeOptions("target.id = source.id")
+                {
+                    WhenMatchedUpdateAll = true,
+                    WhenNotMatchedInsertAll = true,
+                };
+                var sourceStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                Task<ExecuteResult> mergeTask = backend.MergeDataAsync(
+                    tablePath,
+                    mergeBatch.Schema,
+                    YieldAfterSourceStarts(mergeBatch, sourceStarted, cancellationTokenSource.Token),
+                    mergeOptions,
+                    cancellationToken: cancellationTokenSource.Token);
+
+                await sourceStarted.Task.ConfigureAwait(false);
+                cancellationTokenSource.Cancel();
+
+                await Assert.ThrowsExceptionAsync<TaskCanceledException>(() => mergeTask);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_MergeAsync_ThrowsNotSupported()
         {
             using var backend = new NativeRustBackend();
