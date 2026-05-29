@@ -54,6 +54,13 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_read_change_data_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ReadChangeDataAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [LibraryImport(LibraryName, EntryPoint = "dts_plan_read_partitions", StringMarshalling = StringMarshalling.Utf8)]
         internal static partial IntPtr PlanReadPartitions(IntPtr engine, string commandJson);
 
@@ -137,6 +144,15 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return ExecuteQueryAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        internal static IntPtr ReadChangeDataAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return ReadChangeDataAsyncWithCallbackNative(engine, commandJson, callback, userData);
         }
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_status")]

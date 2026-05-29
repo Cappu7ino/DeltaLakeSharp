@@ -30,6 +30,11 @@ Constraints:
 - The table must have CDF enabled.
 - V1/V2 Flight wrappers throw for CDF APIs.
 
+Runtime behavior:
+
+- V3 CDF stream setup uses the native async operation handle path, matching table and SQL stream setup.
+- Batch consumption remains Arrow C Stream based; consumers should dispose stream and reader resources promptly.
+
 ## CDF Result Shape
 
 CDF rows include regular table columns plus metadata such as:

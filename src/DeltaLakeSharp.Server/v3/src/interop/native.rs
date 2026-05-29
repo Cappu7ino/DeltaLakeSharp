@@ -933,6 +933,29 @@ pub extern "C" fn dts_read_change_data(
     .unwrap_or(0)
 }
 
+/// Starts change-data-feed stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_change_data_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_stream_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, runtime_handle| async move {
+            service
+                .read_change_data_batches(command.as_slice(), runtime_handle)
+                .await
+        },
+    )
+}
+
 /// Imports a source Arrow C Stream from the caller and writes it into a Delta
 /// table using the existing V3 insert semantics.
 #[unsafe(no_mangle)]
@@ -1414,6 +1437,110 @@ mod tests {
                 vec![arr.value(0), arr.value(1)]
             });
         assert_eq!(vec!["Bob", "Charlie"], names);
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_read_change_data_take_stream_returns_cdf_rows() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let table_path = tmp.path().join("native_async_cdf_table");
+        std::fs::create_dir(&table_path).expect("create table dir");
+        let path = table_path.to_string_lossy().to_string();
+
+        let engine = dts_create_engine();
+        let create_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "schema": [
+                    {"name": "id", "type": "int32"},
+                    {"name": "name", "type": "string"}
+                ],
+                "configuration": {
+                    "delta.enableChangeDataFeed": "true"
+                }
+            })
+            .to_string(),
+        )
+        .expect("create table json");
+        let create_result = dts_create_table(engine, create_command.as_ptr());
+        assert!(
+            !create_result.is_null(),
+            "native create_table should succeed"
+        );
+        dts_free_string(create_result);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["Alice", "Bob"])),
+            ],
+        )
+        .expect("record batch");
+        let reader =
+            arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+        let mut insert_stream = FFI_ArrowArrayStream::new(Box::new(reader));
+        let insert_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "mode": "append"
+            })
+            .to_string(),
+        )
+        .expect("insert json");
+        assert_eq!(
+            1,
+            dts_insert(engine, insert_command.as_ptr(), &mut insert_stream)
+        );
+
+        let cdf_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "starting_version": 1
+            })
+            .to_string(),
+        )
+        .expect("cdf json");
+        let operation = dts_read_change_data_async_with_callback(
+            engine,
+            cdf_command.as_ptr(),
+            None,
+            ptr::null_mut(),
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async CDF stream");
+        let schema = reader.schema();
+        assert!(
+            schema
+                .fields()
+                .iter()
+                .any(|field| field.name() == "_change_type"),
+            "expected CDF metadata column"
+        );
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async CDF batches");
+        let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+        assert!(total_rows > 0, "expected CDF stream to contain rows");
 
         dts_async_operation_destroy(operation);
         dts_destroy_engine(engine);

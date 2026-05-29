@@ -889,32 +889,6 @@ namespace DeltaLakeSharp.Client.Internal
             }
         }
 
-        private unsafe IArrowArrayStream OpenChangeDataStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ReadChangeData(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ReadChangeDataAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
         /// <summary>
         /// Exports a managed Arrow stream to the native Rust backend using the
         /// Arrow C Stream interface.
@@ -1252,8 +1226,12 @@ namespace DeltaLakeSharp.Client.Internal
             AddReadPrefetch(command, _enableReadPrefetch);
 
             string commandJson = JsonSerializer.Serialize(command);
-            IArrowArrayStream stream = OpenChangeDataStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return ExecuteNativeStreamOperationAsync(
+                nameof(OpenChangeDataCoreStreamAsync),
+                "read_change_data",
+                commandJson,
+                NativeMethods.ReadChangeDataAsyncWithCallback,
+                cancellationToken);
         }
 
         private static string BuildExecuteQueryCommandJson(

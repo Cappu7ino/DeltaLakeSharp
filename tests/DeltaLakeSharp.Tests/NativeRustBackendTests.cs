@@ -522,6 +522,69 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_OpenReadChangeDataStreamAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.OpenReadChangeDataStreamAsync("unused", startingVersion: 1, cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenReadChangeDataStreamAsync_ReturnsArrowStream()
+        {
+            string tablePath = CreateTempTablePath("native_v3_open_cdf_stream_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(
+                    tablePath,
+                    tableSchema,
+                    configuration: new Dictionary<string, string>
+                    {
+                        ["delta.enableChangeDataFeed"] = "true",
+                    });
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "Alice" },
+                        new object[] { 2, "Bob" },
+                    },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                using ArrowStreamResult streamResult = await backend.OpenReadChangeDataStreamAsync(
+                    tablePath,
+                    startingVersion: 1);
+                CollectionAssert.Contains(
+                    streamResult.Schema.FieldsList.Select(field => field.Name).ToList(),
+                    "_change_type");
+
+                RecordBatch? readBatch = await streamResult.Stream.ReadNextRecordBatchAsync();
+                Assert.IsNotNull(readBatch, "Expected at least one batch from async-opened CDF stream.");
+                Assert.IsTrue(readBatch!.Length > 0, "Expected CDF stream to contain inserted rows.");
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_AsyncJsonOperations_PreCanceledTokenThrows()
         {
             using var backend = new NativeRustBackend();

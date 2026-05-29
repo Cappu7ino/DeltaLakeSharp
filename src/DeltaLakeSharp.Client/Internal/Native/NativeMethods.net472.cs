@@ -48,6 +48,13 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_read_change_data_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr ReadChangeDataAsyncWithCallbackNative(
+            IntPtr engine,
+            IntPtr commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr PlanReadPartitionsNative(IntPtr engine, IntPtr commandJson);
 
@@ -191,6 +198,15 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return WithUtf8String(commandJson, ptr => ExecuteDmlAsyncWithCallbackNative(engine, ptr, callback, userData));
+        }
+
+        internal static IntPtr ReadChangeDataAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return WithUtf8String(commandJson, ptr => ReadChangeDataAsyncWithCallbackNative(engine, ptr, callback, userData));
         }
 
         internal static unsafe int ReadTablePartition(IntPtr engine, string commandJson, CArrowArrayStream* stream)
