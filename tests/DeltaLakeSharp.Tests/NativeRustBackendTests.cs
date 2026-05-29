@@ -7,6 +7,8 @@ using System.Data.Common;
 using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Apache.Arrow.Types;
@@ -51,7 +53,7 @@ namespace DeltaLakeSharp.Tests
         public async Task NativeBackend_HealthCheck_ReturnsTrue()
         {
             using var backend = new NativeRustBackend();
-            
+
 
             bool healthy = await backend.HealthCheckAsync();
 
@@ -360,6 +362,414 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_GetReadPartitionsAsync_ReturnsPlannedPartitions()
+        {
+            string tablePath = CreateTempTablePath("native_v3_partitions_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[] { new object[] { 1, "Alice" } },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                IReadOnlyList<DeltaReadPartition> partitions = await backend.GetReadPartitionsAsync(tablePath);
+
+                Assert.AreEqual(1, partitions.Count);
+                Assert.AreEqual(0, partitions[0].Ordinal);
+                Assert.AreEqual(1, partitions[0].TotalPartitions);
+                Assert.IsFalse(string.IsNullOrWhiteSpace(partitions[0].Token));
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetReadPartitionsAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.GetReadPartitionsAsync("unused", cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetArrowSchemaAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.GetArrowSchemaAsync("unused", cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetArrowSchemaAsync_ReturnsArrowSchema()
+        {
+            string tablePath = CreateTempTablePath("native_v3_schema_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                Schema schema = await backend.GetArrowSchemaAsync(tablePath);
+                Assert.AreEqual(2, schema.FieldsList.Count);
+                Assert.AreEqual("id", schema.GetFieldByIndex(0).Name);
+                Assert.AreEqual("name", schema.GetFieldByIndex(1).Name);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_GetArrowSchemaAsync_MissingTableThrowsNativeError()
+        {
+            string tablePath = CreateTempTablePath("native_v3_schema_async_missing");
+            CleanupTablePath(tablePath);
+            using var backend = new NativeRustBackend();
+
+            var ex = await Assert.ThrowsExceptionAsync<InvalidOperationException>(() =>
+                backend.GetArrowSchemaAsync(tablePath));
+
+            StringAssert.Contains(ex.Message, "GetArrowSchemaAsync");
+            StringAssert.Contains(ex.Message, "Native error");
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenReadTablePartitionStreamAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+            var partition = new DeltaReadPartition("unused", version: 0, ordinal: 0, totalPartitions: 1, fileCount: 0);
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.OpenReadTablePartitionStreamAsync("unused", partition, cancellationToken: cancellationTokenSource.Token));
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.OpenReadTablePartitionStreamByTokenAsync("unused", "unused", cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenReadTablePartitionStreamAsync_ReturnsArrowStream()
+        {
+            string tablePath = CreateTempTablePath("native_v3_open_partition_stream_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "Alice" },
+                        new object[] { 2, "Bob" },
+                    },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                IReadOnlyList<DeltaReadPartition> partitions = await backend.GetReadPartitionsAsync(tablePath);
+                Assert.AreEqual(1, partitions.Count);
+
+                using ArrowStreamResult partitionStreamResult = await backend.OpenReadTablePartitionStreamAsync(
+                    tablePath,
+                    partitions[0]);
+                Assert.AreEqual(2, partitionStreamResult.Schema.FieldsList.Count);
+                RecordBatch? partitionBatch = await partitionStreamResult.Stream.ReadNextRecordBatchAsync();
+                Assert.IsNotNull(partitionBatch, "Expected at least one batch from async-opened partition stream.");
+                Assert.AreEqual(2, partitionBatch!.Length);
+
+                using ArrowStreamResult tokenStreamResult = await backend.OpenReadTablePartitionStreamByTokenAsync(
+                    tablePath,
+                    partitions[0].Token);
+                Assert.AreEqual(2, tokenStreamResult.Schema.FieldsList.Count);
+                RecordBatch? tokenBatch = await tokenStreamResult.Stream.ReadNextRecordBatchAsync();
+                Assert.IsNotNull(tokenBatch, "Expected at least one batch from async-opened token partition stream.");
+                Assert.AreEqual(2, tokenBatch!.Length);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenReadTableStreamAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.OpenReadTableStreamAsync("unused", cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenReadTableStreamAsync_ReturnsArrowStream()
+        {
+            string tablePath = CreateTempTablePath("native_v3_open_stream_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "Alice" },
+                        new object[] { 2, "Bob" },
+                    },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                using ArrowStreamResult streamResult = await backend.OpenReadTableStreamAsync(tablePath);
+                Assert.AreEqual(2, streamResult.Schema.FieldsList.Count);
+                Assert.AreEqual("id", streamResult.Schema.GetFieldByIndex(0).Name);
+                Assert.AreEqual("name", streamResult.Schema.GetFieldByIndex(1).Name);
+
+                RecordBatch? readBatch = await streamResult.Stream.ReadNextRecordBatchAsync();
+                Assert.IsNotNull(readBatch, "Expected at least one batch from async-opened stream.");
+                Assert.AreEqual(2, readBatch!.Length);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenExecuteQueryStreamAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.OpenExecuteQueryStreamAsync("SELECT 1", cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenExecuteQueryStreamAsync_ReturnsArrowStream()
+        {
+            string tablePath = CreateTempTablePath("native_v3_open_query_stream_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "Alice" },
+                        new object[] { 2, "Bob" },
+                    },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                using ArrowStreamResult streamResult = await backend.OpenExecuteQueryStreamAsync(
+                    "SELECT name FROM tbl WHERE id = 2",
+                    tablePath,
+                    "tbl");
+                Assert.AreEqual(1, streamResult.Schema.FieldsList.Count);
+                Assert.AreEqual("name", streamResult.Schema.GetFieldByIndex(0).Name);
+
+                RecordBatch? readBatch = await streamResult.Stream.ReadNextRecordBatchAsync();
+                Assert.IsNotNull(readBatch, "Expected at least one batch from async-opened query stream.");
+                Assert.AreEqual(1, readBatch!.Length);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenReadChangeDataStreamAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.OpenReadChangeDataStreamAsync("unused", startingVersion: 1, cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenReadChangeDataStreamAsync_ReturnsArrowStream()
+        {
+            string tablePath = CreateTempTablePath("native_v3_open_cdf_stream_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(
+                    tablePath,
+                    tableSchema,
+                    configuration: new Dictionary<string, string>
+                    {
+                        ["delta.enableChangeDataFeed"] = "true",
+                    });
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "Alice" },
+                        new object[] { 2, "Bob" },
+                    },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                using ArrowStreamResult streamResult = await backend.OpenReadChangeDataStreamAsync(
+                    tablePath,
+                    startingVersion: 1);
+                CollectionAssert.Contains(
+                    streamResult.Schema.FieldsList.Select(field => field.Name).ToList(),
+                    "_change_type");
+
+                RecordBatch? readBatch = await streamResult.Stream.ReadNextRecordBatchAsync();
+                Assert.IsNotNull(readBatch, "Expected at least one batch from async-opened CDF stream.");
+                Assert.IsTrue(readBatch!.Length > 0, "Expected CDF stream to contain inserted rows.");
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_AsyncJsonOperations_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+            });
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.CreateEmptyTableAsync("unused", tableSchema, cancellationToken: cancellationTokenSource.Token));
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.UpgradeTableProtocolAsync(
+                    "unused",
+                    readerVersion: 1,
+                    writerVersion: 5,
+                    cancellationToken: cancellationTokenSource.Token));
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.DeleteAsync(
+                    "DELETE FROM tbl WHERE id = 1",
+                    "unused",
+                    "tbl",
+                    cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_AsyncJsonOperations_RunConcurrently()
+        {
+            using var backend = new NativeRustBackend();
+            var tablePaths = new List<string>();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                });
+
+                Task<ExecuteResult>[] createTasks = Enumerable.Range(0, 4)
+                    .Select(i =>
+                    {
+                        string tablePath = CreateTempTablePath($"native_v3_async_json_concurrent_{i}");
+                        tablePaths.Add(tablePath);
+                        return backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                    })
+                    .ToArray();
+
+                ExecuteResult[] results = await Task.WhenAll(createTasks);
+
+                Assert.IsTrue(results.All(r => r.Success), "Expected all concurrent native create table operations to succeed.");
+            }
+            finally
+            {
+                foreach (string tablePath in tablePaths)
+                {
+                    CleanupTablePath(tablePath);
+                }
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_ReadTableAsDataReader_OverflowDecimalAsString_ReturnsStringForPrecision38()
         {
             string tablePath = CreateTempTablePath("native_v3_table_decimal_string");
@@ -596,6 +1006,117 @@ namespace DeltaLakeSharp.Tests
                 Assert.AreEqual((1, "Alice"), rows[0]);
                 Assert.AreEqual((2, "Bob"), rows[1]);
                 Assert.AreEqual((3, "Charlie"), rows[2]);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+            });
+            RecordBatch batch = ArrowConverter.FromRows(
+                new[] { new object[] { 1 } },
+                tableSchema);
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.InsertAsync(
+                    "unused",
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_WithDelayedSource_WritesData()
+        {
+            string tablePath = CreateTempTablePath("native_v3_async_insert_delayed_source");
+            CleanupTablePath(tablePath);
+
+            var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                    new object[] { 2, "Bob" },
+                }, tableSchema);
+
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    YieldDelayedBatch(batch),
+                    mode: "overwrite");
+
+                var rows = new List<(int id, string name)>();
+                await foreach (RecordBatch readBatch in backend.ReadTableAsync(tablePath))
+                {
+                    var idArray = (Int32Array)readBatch.Column(0);
+                    for (int i = 0; i < readBatch.Length; i++)
+                    {
+                        rows.Add((idArray.GetValue(i) ?? -1, V3TestHelpers.ReadStringValue(readBatch.Column(1), i)));
+                    }
+                }
+
+                rows = rows.OrderBy(r => r.id).ToList();
+                Assert.AreEqual(2, rows.Count);
+                Assert.AreEqual((1, "Alice"), rows[0]);
+                Assert.AreEqual((2, "Bob"), rows[1]);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_InsertAsync_CancelAfterNativeStartThrowsOperationCanceled()
+        {
+            string tablePath = CreateTempTablePath("native_v3_async_insert_cancel_after_start");
+            CleanupTablePath(tablePath);
+
+            var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+                RecordBatch batch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "Alice" },
+                }, tableSchema);
+                var sourceStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                Task insertTask = backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    YieldAfterSourceStarts(batch, sourceStarted, cancellationTokenSource.Token),
+                    mode: "overwrite",
+                    cancellationToken: cancellationTokenSource.Token);
+
+                await sourceStarted.Task.ConfigureAwait(false);
+                cancellationTokenSource.Cancel();
+
+                await Assert.ThrowsExceptionAsync<TaskCanceledException>(() => insertTask);
             }
             finally
             {
@@ -1018,6 +1539,22 @@ namespace DeltaLakeSharp.Tests
             await client.InsertAsync(tablePath, batch.Schema, ArrowConverter.ToAsyncEnumerable(batch), SaveMode.Append).ConfigureAwait(false);
         }
 
+        private static async IAsyncEnumerable<RecordBatch> YieldDelayedBatch(RecordBatch batch)
+        {
+            await Task.Delay(25).ConfigureAwait(false);
+            yield return batch;
+        }
+
+        private static async IAsyncEnumerable<RecordBatch> YieldAfterSourceStarts(
+            RecordBatch batch,
+            TaskCompletionSource<bool> sourceStarted,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            sourceStarted.TrySetResult(true);
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+            yield return batch;
+        }
+
         private static List<Dictionary<string, object?>> FlattenRows(IEnumerable<RecordBatch> batches)
         {
             var rows = new List<Dictionary<string, object?>>();
@@ -1421,6 +1958,92 @@ namespace DeltaLakeSharp.Tests
                 Assert.AreEqual("updated_b", rowsById[2]);
                 Assert.AreEqual("c", rowsById[3]);
                 Assert.AreEqual("d", rowsById[4]);
+            }
+            finally
+            {
+                backend.Dispose();
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_MergeDataAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+            var tableSchema = new TableSchema(new List<ColumnDefinition>
+            {
+                new ColumnDefinition("id", "int32"),
+                new ColumnDefinition("name", "string"),
+            });
+            RecordBatch batch = ArrowConverter.FromRows(
+                new[] { new object[] { 1, "Alice" } },
+                tableSchema);
+            var mergeOptions = new MergeOptions("target.id = source.id")
+            {
+                WhenMatchedUpdateAll = true,
+                WhenNotMatchedInsertAll = true,
+            };
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.MergeDataAsync(
+                    "unused",
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mergeOptions,
+                    cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_MergeDataAsync_CancelAfterNativeStartThrowsTaskCanceled()
+        {
+            string tablePath = CreateTempTablePath("native_v3_merge_cancel_after_start");
+            var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch targetBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "a" },
+                }, tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    targetBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(targetBatch),
+                    mode: "append");
+
+                RecordBatch mergeBatch = ArrowConverter.FromRows(new[]
+                {
+                    new object[] { 1, "updated_a" },
+                }, tableSchema);
+                var mergeOptions = new MergeOptions("target.id = source.id")
+                {
+                    WhenMatchedUpdateAll = true,
+                    WhenNotMatchedInsertAll = true,
+                };
+                var sourceStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+                Task<ExecuteResult> mergeTask = backend.MergeDataAsync(
+                    tablePath,
+                    mergeBatch.Schema,
+                    YieldAfterSourceStarts(mergeBatch, sourceStarted, cancellationTokenSource.Token),
+                    mergeOptions,
+                    cancellationToken: cancellationTokenSource.Token);
+
+                await sourceStarted.Task.ConfigureAwait(false);
+                cancellationTokenSource.Cancel();
+
+                await Assert.ThrowsExceptionAsync<TaskCanceledException>(() => mergeTask);
             }
             finally
             {

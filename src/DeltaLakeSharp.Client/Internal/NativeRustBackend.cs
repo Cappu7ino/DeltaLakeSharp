@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
@@ -25,6 +26,26 @@ namespace DeltaLakeSharp.Client.Internal
     /// </summary>
     internal sealed class NativeRustBackend : IDeltaLakeBackend
     {
+        private const int NativeAsyncOperationPending = 0;
+        private const int NativeAsyncOperationSucceeded = 1;
+        private const int NativeAsyncOperationFailed = 2;
+        private const int NativeAsyncOperationCancelled = 3;
+
+        private static readonly NativeMethods.NativeAsyncOperationCompletedCallback NativeAsyncOperationCompleted = OnNativeAsyncOperationCompleted;
+
+        private delegate IntPtr StartNativeAsyncOperationWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeMethods.NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        private delegate IntPtr StartNativeAsyncOperationWithSourceStreamCallback(
+            IntPtr engine,
+            string commandJson,
+            IntPtr sourceStream,
+            NativeMethods.NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         private readonly NativeEngineHandle _engine;
         private readonly bool _enableReadPrefetch;
 
@@ -41,21 +62,21 @@ namespace DeltaLakeSharp.Client.Internal
             return Task.FromResult(healthy);
         }
 
-        public Task<TableSchema> GetSchemaAsync(
+        public async Task<TableSchema> GetSchemaAsync(
             string path,
             StorageConfig? storageConfig = null,
             GenericStorageOptions? genericStorageOptions = null,
             long? version = null,
             CancellationToken cancellationToken = default)
         {
-            Schema arrowSchema = GetArrowSchema(
+            Schema arrowSchema = await GetArrowSchemaAsync(
                 path,
                 storageConfig,
                 genericStorageOptions,
                 version,
-                cancellationToken);
+                cancellationToken).ConfigureAwait(false);
 
-            return Task.FromResult(ArrowConverter.ToTableSchema(arrowSchema));
+            return ArrowConverter.ToTableSchema(arrowSchema);
         }
 
         public Task<Schema> GetArrowSchemaAsync(
@@ -64,16 +85,6 @@ namespace DeltaLakeSharp.Client.Internal
             GenericStorageOptions? genericStorageOptions = null,
             long? version = null,
             CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(GetArrowSchema(path, storageConfig, genericStorageOptions, version, cancellationToken));
-        }
-
-        private Schema GetArrowSchema(
-            string path,
-            StorageConfig? storageConfig,
-            GenericStorageOptions? genericStorageOptions,
-            long? version,
-            CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -89,30 +100,13 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             string commandJson = JsonSerializer.Serialize(command);
-
-            unsafe
-            {
-                CArrowSchema* schemaPtr = CArrowSchema.Create();
-                try
-                {
-                    int result = NativeMethods.GetSchema(
-                        _engine.DangerousGetHandle(),
-                        commandJson,
-                        schemaPtr);
-
-                    if (result != 1)
-                    {
-                        throw CreateNativeOperationFailedException(nameof(GetSchemaAsync));
-                    }
-
-                    Schema schema = CArrowSchemaImporter.ImportSchema(schemaPtr);
-                    return schema;
-                }
-                finally
-                {
-                    CArrowSchema.Free(schemaPtr);
-                }
-            }
+            return ExecuteNativeOperationAsync(
+                nameof(GetArrowSchemaAsync),
+                "get_schema",
+                commandJson,
+                NativeMethods.GetSchemaAsyncWithCallback,
+                operation => TakeNativeAsyncSchemaResult(operation, "get_schema"),
+                cancellationToken);
         }
 
         public async IAsyncEnumerable<RecordBatch> ReadTableAsync(
@@ -146,7 +140,7 @@ namespace DeltaLakeSharp.Client.Internal
             }
         }
 
-        public Task<ArrowStreamResult> OpenReadTableStreamAsync(
+        public async Task<ArrowStreamResult> OpenReadTableStreamAsync(
             string path,
             StorageConfig? storageConfig = null,
             GenericStorageOptions? genericStorageOptions = null,
@@ -157,11 +151,15 @@ namespace DeltaLakeSharp.Client.Internal
         {
             cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildReadTableCommandJson(path, storageConfig, genericStorageOptions, numRows, batchSize, version, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenReadTableStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return await ExecuteNativeStreamOperationAsync(
+                nameof(OpenReadTableStreamAsync),
+                "read_table",
+                commandJson,
+                NativeMethods.ReadTableAsyncWithCallback,
+                cancellationToken).ConfigureAwait(false);
         }
 
-        public Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
+        public async Task<IReadOnlyList<DeltaReadPartition>> GetReadPartitionsAsync(
             string path,
             StorageConfig? storageConfig = null,
             GenericStorageOptions? genericStorageOptions = null,
@@ -182,22 +180,27 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             string commandJson = JsonSerializer.Serialize(command);
-            IntPtr resultPtr = NativeMethods.PlanReadPartitions(_engine.DangerousGetHandle(), commandJson);
-            if (resultPtr == IntPtr.Zero)
+            using var context = new NativeAsyncOperationContext<IReadOnlyList<DeltaReadPartition>>(
+                nameof(GetReadPartitionsAsync),
+                "plan_read_partitions",
+                cancellationToken,
+                static operation => TakeNativeAsyncJsonResult(
+                    operation,
+                    "plan_read_partitions",
+                    ParseReadPartitions));
+            IntPtr operationPtr = NativeMethods.PlanReadPartitionsAsyncWithCallback(
+                _engine.DangerousGetHandle(),
+                commandJson,
+                NativeAsyncOperationCompleted,
+                context.UserData);
+            if (operationPtr == IntPtr.Zero)
             {
                 throw CreateNativeOperationFailedException(nameof(GetReadPartitionsAsync));
             }
 
-            try
-            {
-                string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
-                    ?? throw new InvalidOperationException("Native plan_read_partitions returned null JSON.");
-                return Task.FromResult(ParseReadPartitions(resultJson));
-            }
-            finally
-            {
-                NativeMethods.FreeString(resultPtr);
-            }
+            context.SetOperation(operationPtr);
+            context.RegisterCancellation();
+            return await context.Task.ConfigureAwait(false);
         }
 
         public async IAsyncEnumerable<RecordBatch> ReadTablePartitionAsync(
@@ -266,10 +269,13 @@ namespace DeltaLakeSharp.Client.Internal
             int? batchSize = null,
             CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildReadTablePartitionCommandJson(path, partition, storageConfig, genericStorageOptions, batchSize, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return ExecuteNativeStreamOperationAsync(
+                nameof(OpenReadTablePartitionStreamAsync),
+                "read_table_partition",
+                commandJson,
+                NativeMethods.ReadTablePartitionAsyncWithCallback,
+                cancellationToken);
         }
 
         public Task<ArrowStreamResult> OpenReadTablePartitionStreamByTokenAsync(
@@ -280,10 +286,13 @@ namespace DeltaLakeSharp.Client.Internal
             int? batchSize = null,
             CancellationToken cancellationToken = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildReadTablePartitionCommandJson(path, partitionToken, storageConfig, genericStorageOptions, batchSize, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenReadTablePartitionStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return ExecuteNativeStreamOperationAsync(
+                nameof(OpenReadTablePartitionStreamByTokenAsync),
+                "read_table_partition",
+                commandJson,
+                NativeMethods.ReadTablePartitionAsyncWithCallback,
+                cancellationToken);
         }
 
         public async IAsyncEnumerable<RecordBatch> ReadChangeDataAsync(
@@ -416,7 +425,7 @@ namespace DeltaLakeSharp.Client.Internal
             }
         }
 
-        public Task<ArrowStreamResult> OpenExecuteQueryStreamAsync(
+        public async Task<ArrowStreamResult> OpenExecuteQueryStreamAsync(
             string sql,
             string? tablePath = null,
             string? tableName = null,
@@ -428,11 +437,15 @@ namespace DeltaLakeSharp.Client.Internal
         {
             cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildExecuteQueryCommandJson(sql, tablePath, tableName, storageConfig, genericStorageOptions, batchSize, version, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenExecuteQueryStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return await ExecuteNativeStreamOperationAsync(
+                nameof(OpenExecuteQueryStreamAsync),
+                "execute_query",
+                commandJson,
+                NativeMethods.ExecuteQueryAsyncWithCallback,
+                cancellationToken).ConfigureAwait(false);
         }
 
-        public Task<ExecuteResult> CreateEmptyTableAsync(
+        public async Task<ExecuteResult> CreateEmptyTableAsync(
             string path,
             TableSchema schema,
             StorageConfig? storageConfig = null,
@@ -459,22 +472,13 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             string commandJson = JsonSerializer.Serialize(command);
-            IntPtr resultPtr = NativeMethods.CreateTable(_engine.DangerousGetHandle(), commandJson);
-            if (resultPtr == IntPtr.Zero)
-            {
-                throw CreateNativeOperationFailedException(nameof(CreateEmptyTableAsync));
-            }
-
-            try
-            {
-                string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
-                    ?? throw new InvalidOperationException("Native create_table returned null JSON.");
-                return Task.FromResult(ParseExecuteResult(resultJson));
-            }
-            finally
-            {
-                NativeMethods.FreeString(resultPtr);
-            }
+            return await ExecuteNativeJsonOperationAsync(
+                nameof(CreateEmptyTableAsync),
+                "create_table",
+                commandJson,
+                NativeMethods.CreateTableAsyncWithCallback,
+                ParseExecuteResult,
+                cancellationToken).ConfigureAwait(false);
         }
 
         public Task InsertAsync(
@@ -561,7 +565,7 @@ namespace DeltaLakeSharp.Client.Internal
             return MergeCoreAsync(schema, batches, commandJson, cancellationToken);
         }
 
-        public Task<ExecuteResult> UpgradeTableProtocolAsync(
+        public async Task<ExecuteResult> UpgradeTableProtocolAsync(
             string path,
             int readerVersion,
             int writerVersion,
@@ -590,22 +594,13 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             string commandJson = JsonSerializer.Serialize(command);
-            IntPtr resultPtr = NativeMethods.UpgradeProtocol(_engine.DangerousGetHandle(), commandJson);
-            if (resultPtr == IntPtr.Zero)
-            {
-                throw CreateNativeOperationFailedException(nameof(UpgradeTableProtocolAsync));
-            }
-
-            try
-            {
-                string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
-                    ?? throw new InvalidOperationException("Native upgrade_protocol returned null JSON.");
-                return Task.FromResult(ParseExecuteResult(resultJson));
-            }
-            finally
-            {
-                NativeMethods.FreeString(resultPtr);
-            }
+            return await ExecuteNativeJsonOperationAsync(
+                nameof(UpgradeTableProtocolAsync),
+                "upgrade_protocol",
+                commandJson,
+                NativeMethods.UpgradeProtocolAsyncWithCallback,
+                ParseExecuteResult,
+                cancellationToken).ConfigureAwait(false);
         }
 
         public void Dispose()
@@ -626,6 +621,220 @@ namespace DeltaLakeSharp.Client.Internal
             return new InvalidOperationException(message);
         }
 
+        private static InvalidOperationException CreateNativeAsyncOperationFailedException(
+            IntPtr operation,
+            string operationName)
+        {
+            IntPtr errorPtr = NativeMethods.AsyncOperationGetError(operation);
+            string? error = NativeMethods.PtrToStringUtf8(errorPtr);
+            string message = $"Native V3 backend operation '{operationName}' failed.";
+
+            if (!string.IsNullOrWhiteSpace(error))
+            {
+                message += $" Native error: {error}";
+            }
+
+            return new InvalidOperationException(message);
+        }
+
+        private static void OnNativeAsyncOperationCompleted(IntPtr operation, IntPtr userData)
+        {
+            if (userData == IntPtr.Zero)
+            {
+                return;
+            }
+
+            GCHandle handle = GCHandle.FromIntPtr(userData);
+            if (handle.Target is INativeAsyncOperationContext context)
+            {
+                ThreadPool.QueueUserWorkItem(
+                    static state =>
+                    {
+                        var callbackState = (NativeAsyncOperationCallbackState)state!;
+                        callbackState.Context.Complete(callbackState.Operation);
+                    },
+                    new NativeAsyncOperationCallbackState(context, operation));
+            }
+        }
+
+        private async Task<T> ExecuteNativeJsonOperationAsync<T>(
+            string operationName,
+            string nativeOperationName,
+            string commandJson,
+            StartNativeAsyncOperationWithCallback startOperation,
+            Func<string, T> parseResult,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var context = new NativeAsyncOperationContext<T>(
+                operationName,
+                nativeOperationName,
+                cancellationToken,
+                operation => TakeNativeAsyncJsonResult(operation, nativeOperationName, parseResult));
+            IntPtr operationPtr = startOperation(
+                _engine.DangerousGetHandle(),
+                commandJson,
+                NativeAsyncOperationCompleted,
+                context.UserData);
+            if (operationPtr == IntPtr.Zero)
+            {
+                throw CreateNativeOperationFailedException(operationName);
+            }
+
+            context.SetOperation(operationPtr);
+            context.RegisterCancellation();
+            return await context.Task.ConfigureAwait(false);
+        }
+
+        private static T TakeNativeAsyncJsonResult<T>(
+            IntPtr operation,
+            string nativeOperationName,
+            Func<string, T> parseResult)
+        {
+            IntPtr resultPtr = NativeMethods.AsyncOperationTakeResult(operation);
+            if (resultPtr == IntPtr.Zero)
+            {
+                throw new InvalidOperationException($"Native async {nativeOperationName} returned null JSON.");
+            }
+
+            try
+            {
+                string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
+                    ?? throw new InvalidOperationException($"Native async {nativeOperationName} returned null JSON.");
+                return parseResult(resultJson);
+            }
+            finally
+            {
+                NativeMethods.FreeString(resultPtr);
+            }
+        }
+
+        private async Task<ArrowStreamResult> ExecuteNativeStreamOperationAsync(
+            string operationName,
+            string nativeOperationName,
+            string commandJson,
+            StartNativeAsyncOperationWithCallback startOperation,
+            CancellationToken cancellationToken)
+        {
+            IArrowArrayStream stream = await ExecuteNativeOperationAsync(
+                operationName,
+                nativeOperationName,
+                commandJson,
+                startOperation,
+                operation => TakeNativeAsyncStreamResult(operation, nativeOperationName),
+                cancellationToken).ConfigureAwait(false);
+
+            return new ArrowStreamResult(stream.Schema, stream);
+        }
+
+        private async Task<T> ExecuteNativeOperationAsync<T>(
+            string operationName,
+            string nativeOperationName,
+            string commandJson,
+            StartNativeAsyncOperationWithCallback startOperation,
+            Func<IntPtr, T> takeResult,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var context = new NativeAsyncOperationContext<T>(
+                operationName,
+                nativeOperationName,
+                cancellationToken,
+                takeResult);
+            IntPtr operationPtr = startOperation(
+                _engine.DangerousGetHandle(),
+                commandJson,
+                NativeAsyncOperationCompleted,
+                context.UserData);
+            if (operationPtr == IntPtr.Zero)
+            {
+                throw CreateNativeOperationFailedException(operationName);
+            }
+
+            context.SetOperation(operationPtr);
+            context.RegisterCancellation();
+            return await context.Task.ConfigureAwait(false);
+        }
+
+        private async Task<T> ExecuteNativeSourceStreamJsonOperationAsync<T>(
+            string operationName,
+            string nativeOperationName,
+            string commandJson,
+            IntPtr sourceStream,
+            StartNativeAsyncOperationWithSourceStreamCallback startOperation,
+            Func<string, T> parseResult,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using var context = new NativeAsyncOperationContext<T>(
+                operationName,
+                nativeOperationName,
+                cancellationToken,
+                operation => TakeNativeAsyncJsonResult(operation, nativeOperationName, parseResult));
+            IntPtr operationPtr = startOperation(
+                _engine.DangerousGetHandle(),
+                commandJson,
+                sourceStream,
+                NativeAsyncOperationCompleted,
+                context.UserData);
+            if (operationPtr == IntPtr.Zero)
+            {
+                throw CreateNativeOperationFailedException(operationName);
+            }
+
+            context.SetOperation(operationPtr);
+            context.RegisterCancellation();
+            return await context.Task.ConfigureAwait(false);
+        }
+
+        private static unsafe IArrowArrayStream TakeNativeAsyncStreamResult(
+            IntPtr operation,
+            string nativeOperationName)
+        {
+            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            try
+            {
+                int result = NativeMethods.AsyncOperationTakeStream(operation, streamPtr);
+                if (result != 1)
+                {
+                    throw new InvalidOperationException($"Native async {nativeOperationName} returned null stream.");
+                }
+
+                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
+                CArrowArrayStream.Free(streamPtr);
+                return stream;
+            }
+            catch
+            {
+                CArrowArrayStream.Free(streamPtr);
+                throw;
+            }
+        }
+
+        private static unsafe Schema TakeNativeAsyncSchemaResult(
+            IntPtr operation,
+            string nativeOperationName)
+        {
+            CArrowSchema* schemaPtr = CArrowSchema.Create();
+            try
+            {
+                int result = NativeMethods.AsyncOperationTakeSchema(operation, schemaPtr);
+                if (result != 1)
+                {
+                    throw new InvalidOperationException($"Native async {nativeOperationName} returned null schema.");
+                }
+
+                return CArrowSchemaImporter.ImportSchema(schemaPtr);
+            }
+            finally
+            {
+                CArrowSchema.Free(schemaPtr);
+            }
+        }
+
         private string? GetLastErrorMessage()
         {
             return NativeMethods.PtrToStringUtf8(
@@ -633,150 +842,49 @@ namespace DeltaLakeSharp.Client.Internal
         }
 
         /// <summary>
-        /// Performs the unsafe Arrow C Stream import and returns a managed Arrow
-        /// stream object that owns the native release callback lifecycle.
-        /// </summary>
-        private unsafe IArrowArrayStream OpenReadTableStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ReadTable(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ReadTableAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
-        private unsafe IArrowArrayStream OpenReadTablePartitionStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ReadTablePartition(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ReadTablePartitionAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Imports the result stream for a SQL/read query from the native backend.
-        /// The logic mirrors <see cref="OpenReadTableStream"/> so both table reads
-        /// and query execution share the same Arrow C Stream transport pattern.
-        /// </summary>
-        private unsafe IArrowArrayStream OpenExecuteQueryStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ExecuteQuery(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ExecuteQueryAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
-        private unsafe IArrowArrayStream OpenChangeDataStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ReadChangeData(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ReadChangeDataAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
-        /// <summary>
         /// Exports a managed Arrow stream to the native Rust backend using the
         /// Arrow C Stream interface.
         /// </summary>
-        private unsafe Task InsertCoreAsync(
+        private async Task InsertCoreAsync(
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             string commandJson,
             CancellationToken cancellationToken)
         {
             IArrowArrayStream stream = new AsyncEnumerableArrowArrayStream(schema, batches, cancellationToken);
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            IntPtr streamPtr = CreateNativeArrowArrayStream();
             try
             {
-                CArrowArrayStreamExporter.ExportArrayStream(stream, streamPtr);
-                int result = NativeMethods.Insert(
-                    _engine.DangerousGetHandle(),
+                ExportArrowArrayStream(stream, streamPtr);
+                await ExecuteNativeSourceStreamJsonOperationAsync(
+                    nameof(InsertAsync),
+                    "insert",
                     commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(InsertAsync));
-                }
-
-                return Task.CompletedTask;
+                    streamPtr,
+                    NativeMethods.InsertAsyncWithCallback,
+                    ParseExecuteResult,
+                    cancellationToken).ConfigureAwait(false);
             }
             finally
             {
                 stream.Dispose();
-                CArrowArrayStream.Free(streamPtr);
+                FreeNativeArrowArrayStream(streamPtr);
             }
+        }
+
+        private static unsafe IntPtr CreateNativeArrowArrayStream()
+        {
+            return (IntPtr)CArrowArrayStream.Create();
+        }
+
+        private static unsafe void ExportArrowArrayStream(IArrowArrayStream stream, IntPtr streamPtr)
+        {
+            CArrowArrayStreamExporter.ExportArrayStream(stream, (CArrowArrayStream*)streamPtr);
+        }
+
+        private static unsafe void FreeNativeArrowArrayStream(IntPtr streamPtr)
+        {
+            CArrowArrayStream.Free((CArrowArrayStream*)streamPtr);
         }
 
         /// <summary>
@@ -784,42 +892,30 @@ namespace DeltaLakeSharp.Client.Internal
         /// This mirrors the insert path but returns the standard action result
         /// envelope containing merge metrics.
         /// </summary>
-        private unsafe Task<ExecuteResult> MergeCoreAsync(
+        private async Task<ExecuteResult> MergeCoreAsync(
             Schema schema,
             IAsyncEnumerable<RecordBatch> batches,
             string commandJson,
             CancellationToken cancellationToken)
         {
             IArrowArrayStream stream = new AsyncEnumerableArrowArrayStream(schema, batches, cancellationToken);
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
+            IntPtr streamPtr = CreateNativeArrowArrayStream();
             try
             {
-                CArrowArrayStreamExporter.ExportArrayStream(stream, streamPtr);
-                IntPtr resultPtr = NativeMethods.MergeStream(
-                    _engine.DangerousGetHandle(),
+                ExportArrowArrayStream(stream, streamPtr);
+                return await ExecuteNativeSourceStreamJsonOperationAsync(
+                    nameof(MergeDataAsync),
+                    "merge_stream",
                     commandJson,
-                    streamPtr);
-
-                if (resultPtr == IntPtr.Zero)
-                {
-                    throw CreateNativeOperationFailedException(nameof(MergeDataAsync));
-                }
-
-                try
-                {
-                    string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
-                        ?? throw new InvalidOperationException("Native merge_stream returned null JSON.");
-                    return Task.FromResult(ParseExecuteResult(resultJson));
-                }
-                finally
-                {
-                    NativeMethods.FreeString(resultPtr);
-                }
+                    streamPtr,
+                    NativeMethods.MergeStreamAsyncWithCallback,
+                    ParseExecuteResult,
+                    cancellationToken).ConfigureAwait(false);
             }
             finally
             {
                 stream.Dispose();
-                CArrowArrayStream.Free(streamPtr);
+                FreeNativeArrowArrayStream(streamPtr);
             }
         }
 
@@ -920,22 +1016,13 @@ namespace DeltaLakeSharp.Client.Internal
             AddStorageConfig(command, storageConfig, null);
             string commandJson = JsonSerializer.Serialize(command);
 
-            IntPtr resultPtr = NativeMethods.ExecuteDml(_engine.DangerousGetHandle(), commandJson);
-            if (resultPtr == IntPtr.Zero)
-            {
-                throw CreateNativeOperationFailedException(nameof(DeleteAsync));
-            }
-
-            try
-            {
-                string resultJson = NativeMethods.PtrToStringUtf8(resultPtr)
-                    ?? throw new InvalidOperationException("Native execute_dml returned null JSON.");
-                return Task.FromResult(ParseExecuteResult(resultJson));
-            }
-            finally
-            {
-                NativeMethods.FreeString(resultPtr);
-            }
+            return ExecuteNativeJsonOperationAsync(
+                nameof(ExecuteDmlAsync),
+                "execute_dml",
+                commandJson,
+                NativeMethods.ExecuteDmlAsyncWithCallback,
+                ParseExecuteResult,
+                cancellationToken);
         }
 
         private static List<Dictionary<string, object>> BuildSchemaPayload(TableSchema schema)
@@ -1091,8 +1178,12 @@ namespace DeltaLakeSharp.Client.Internal
             AddReadPrefetch(command, _enableReadPrefetch);
 
             string commandJson = JsonSerializer.Serialize(command);
-            IArrowArrayStream stream = OpenChangeDataStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return ExecuteNativeStreamOperationAsync(
+                nameof(OpenChangeDataCoreStreamAsync),
+                "read_change_data",
+                commandJson,
+                NativeMethods.ReadChangeDataAsyncWithCallback,
+                cancellationToken);
         }
 
         private static string BuildExecuteQueryCommandJson(
@@ -1172,6 +1263,156 @@ namespace DeltaLakeSharp.Client.Internal
                 }
 
                 command["storage_options"] = storageOptions;
+            }
+        }
+
+        private interface INativeAsyncOperationContext
+        {
+            void Complete(IntPtr operation);
+        }
+
+        private sealed class NativeAsyncOperationCallbackState
+        {
+            public NativeAsyncOperationCallbackState(INativeAsyncOperationContext context, IntPtr operation)
+            {
+                Context = context;
+                Operation = operation;
+            }
+
+            public INativeAsyncOperationContext Context { get; }
+
+            public IntPtr Operation { get; }
+        }
+
+        private sealed class NativeAsyncOperationContext<T> : INativeAsyncOperationContext, IDisposable
+        {
+            private readonly string _operationName;
+            private readonly string _nativeOperationName;
+            private readonly CancellationToken _cancellationToken;
+            private readonly TaskCompletionSource<T> _completion;
+            private readonly GCHandle _selfHandle;
+            private readonly Func<IntPtr, T> _takeResult;
+            private NativeAsyncOperationHandle? _operation;
+            private CancellationTokenRegistration _cancellationRegistration;
+            private int _completed;
+            private int _disposed;
+
+            public NativeAsyncOperationContext(
+                string operationName,
+                string nativeOperationName,
+                CancellationToken cancellationToken,
+                Func<IntPtr, T> takeResult)
+            {
+                _operationName = operationName;
+                _nativeOperationName = nativeOperationName;
+                _cancellationToken = cancellationToken;
+                _completion = new TaskCompletionSource<T>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _selfHandle = GCHandle.Alloc(this);
+                _takeResult = takeResult;
+            }
+
+            public Task<T> Task => _completion.Task;
+
+            public IntPtr UserData => GCHandle.ToIntPtr(_selfHandle);
+
+            public void SetOperation(IntPtr operation)
+            {
+                _operation = NativeAsyncOperationHandle.FromIntPtr(operation);
+            }
+
+            public void RegisterCancellation()
+            {
+                if (_cancellationToken.CanBeCanceled)
+                {
+                    _cancellationRegistration = _cancellationToken.Register(
+                        static state => ((NativeAsyncOperationContext<T>)state!).Cancel(),
+                        this);
+                }
+            }
+
+            public void Complete(IntPtr operation)
+            {
+                if (Interlocked.Exchange(ref _completed, 1) != 0)
+                {
+                    return;
+                }
+
+                try
+                {
+                    int status = NativeMethods.AsyncOperationStatus(operation);
+                    switch (status)
+                    {
+                        case NativeAsyncOperationSucceeded:
+                            _completion.TrySetResult(_takeResult(operation));
+                            break;
+
+                        case NativeAsyncOperationFailed:
+                            if (_cancellationToken.IsCancellationRequested && IsNativeCancellationFailure(operation))
+                            {
+                                _completion.TrySetCanceled(_cancellationToken);
+                                break;
+                            }
+
+                            _completion.TrySetException(CreateNativeAsyncOperationFailedException(
+                                operation,
+                                _operationName));
+                            break;
+
+                        case NativeAsyncOperationCancelled:
+                            if (_cancellationToken.CanBeCanceled)
+                            {
+                                _completion.TrySetCanceled(_cancellationToken);
+                            }
+                            else
+                            {
+                                _completion.TrySetCanceled();
+                            }
+                            break;
+
+                        case NativeAsyncOperationPending:
+                            _completion.TrySetException(new InvalidOperationException(
+                                $"Native async {_nativeOperationName} completion was signaled before terminal state was available."));
+                            break;
+
+                        default:
+                            _completion.TrySetException(new InvalidOperationException(
+                                $"Native async {_nativeOperationName} returned unknown status {status}."));
+                            break;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _completion.TrySetException(ex);
+                }
+            }
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
+
+                _cancellationRegistration.Dispose();
+                _operation?.Dispose();
+                _selfHandle.Free();
+            }
+
+            private void Cancel()
+            {
+                NativeAsyncOperationHandle? operation = _operation;
+                if (operation != null && !operation.IsInvalid)
+                {
+                    NativeMethods.AsyncOperationCancel(operation.DangerousGetHandle());
+                }
+            }
+
+            private static bool IsNativeCancellationFailure(IntPtr operation)
+            {
+                string? error = NativeMethods.PtrToStringUtf8(NativeMethods.AsyncOperationGetError(operation));
+                return error != null
+                    && error.IndexOf("cancel", StringComparison.OrdinalIgnoreCase) >= 0;
             }
         }
 

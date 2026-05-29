@@ -7,17 +7,22 @@
 //! Arrow C Data / C Stream entrypoints will be layered on top of this engine in
 //! subsequent changes.
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::future::Future;
 use std::ptr;
-use std::sync::Once;
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::Once;
 use std::sync::OnceLock;
 
+use arrow::datatypes::Schema as ArrowSchema;
+use arrow::error::ArrowError;
 use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use tracing_subscriber::EnvFilter;
 
+use crate::error::ServiceError;
 use crate::service::DeltaService;
 
 static INIT_TRACING: Once = Once::new();
@@ -40,14 +45,144 @@ pub struct DeltaServiceEngine {
     runtime_handle: tokio::runtime::Handle,
 }
 
+const ASYNC_OPERATION_PENDING: i32 = 0;
+const ASYNC_OPERATION_SUCCEEDED: i32 = 1;
+const ASYNC_OPERATION_FAILED: i32 = 2;
+const ASYNC_OPERATION_CANCELLED: i32 = 3;
+
+pub struct DeltaAsyncOperation {
+    shared: Arc<AsyncOperationShared>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+struct AsyncOperationShared {
+    state: Mutex<AsyncOperationState>,
+    completion: AsyncOperationCompletion,
+    operation_ptr: Mutex<usize>,
+    runtime_handle: tokio::runtime::Handle,
+}
+
+type AsyncOperationCompletedCallback = unsafe extern "C" fn(*mut DeltaAsyncOperation, *mut c_void);
+
+#[derive(Clone, Copy)]
+struct AsyncOperationCompletion {
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+}
+
+unsafe impl Send for AsyncOperationCompletion {}
+unsafe impl Sync for AsyncOperationCompletion {}
+
+impl AsyncOperationCompletion {
+    fn none() -> Self {
+        Self {
+            callback: None,
+            user_data: ptr::null_mut(),
+        }
+    }
+
+    fn notify(self, operation: *mut DeltaAsyncOperation) {
+        if let Some(callback) = self.callback {
+            unsafe {
+                callback(operation, self.user_data);
+            }
+        }
+    }
+}
+
+enum AsyncOperationState {
+    Pending,
+    Succeeded(Option<CString>),
+    SucceededSchema(Option<ArrowSchema>),
+    SucceededStream(
+        Option<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>>,
+    ),
+    Failed(CString),
+    Cancelled(CString),
+}
+
+impl DeltaAsyncOperation {
+    fn new(completion: AsyncOperationCompletion, runtime_handle: tokio::runtime::Handle) -> Self {
+        Self {
+            shared: Arc::new(AsyncOperationShared {
+                state: Mutex::new(AsyncOperationState::Pending),
+                completion,
+                operation_ptr: Mutex::new(0),
+                runtime_handle,
+            }),
+            task: Mutex::new(None),
+        }
+    }
+
+    fn set_operation_ptr(&self, operation: *mut DeltaAsyncOperation) {
+        if let Ok(mut slot) = self.shared.operation_ptr.lock() {
+            *slot = operation as usize;
+        }
+    }
+
+    fn set_task(&self, task: tokio::task::JoinHandle<()>) {
+        if let Ok(mut slot) = self.task.lock() {
+            *slot = Some(task);
+        }
+    }
+}
+
+fn set_async_operation_terminal_state(
+    state: &Mutex<AsyncOperationState>,
+    next_state: AsyncOperationState,
+) -> bool {
+    if let Ok(mut slot) = state.lock() {
+        if matches!(*slot, AsyncOperationState::Pending) {
+            *slot = next_state;
+            return true;
+        }
+    }
+
+    false
+}
+
+fn notify_async_operation_completion(shared: &AsyncOperationShared) {
+    if let Ok(slot) = shared.operation_ptr.lock() {
+        let operation = *slot as *mut DeltaAsyncOperation;
+        if !operation.is_null() {
+            shared.completion.notify(operation);
+        }
+    }
+}
+
+fn async_operation_failed(error: impl ToString) -> AsyncOperationState {
+    AsyncOperationState::Failed(
+        CString::new(error.to_string())
+            .unwrap_or_else(|_| CString::new("native async operation failed").unwrap()),
+    )
+}
+
+fn async_operation_succeeded(result: serde_json::Value) -> AsyncOperationState {
+    match CString::new(result.to_string()) {
+        Ok(result) => AsyncOperationState::Succeeded(Some(result)),
+        Err(error) => async_operation_failed(error),
+    }
+}
+
+fn async_operation_succeeded_schema(schema: ArrowSchema) -> AsyncOperationState {
+    AsyncOperationState::SucceededSchema(Some(schema))
+}
+
+fn async_operation_succeeded_stream(
+    reader: Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+) -> AsyncOperationState {
+    AsyncOperationState::SucceededStream(Some(reader))
+}
+
 impl DeltaServiceEngine {
     fn new() -> Self {
         INIT_TRACING.call_once(|| {
             let _ = tracing_subscriber::fmt()
-                .with_env_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("info,object_store=debug,deltalake=debug,delta_table_service_v3=debug")),
-                )
+                .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                    EnvFilter::new(
+                        "info,object_store=debug,deltalake=debug,delta_table_service_v3=debug",
+                    )
+                }))
                 .try_init();
         });
 
@@ -90,7 +225,8 @@ impl DeltaServiceEngine {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.runtime_handle.block_on(self.runtime_handle.spawn(future))
+        self.runtime_handle
+            .block_on(self.runtime_handle.spawn(future))
     }
 
     fn runtime_handle(&self) -> tokio::runtime::Handle {
@@ -224,6 +360,26 @@ pub extern "C" fn dts_get_schema(
     .unwrap_or(0)
 }
 
+/// Starts schema resolution on the shared native runtime and invokes `callback`
+/// after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_get_schema_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_schema_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.get_schema(command.as_slice()).await },
+    )
+}
+
 /// Resolves a read/query command and exports the resulting batch stream via the
 /// Arrow C Stream interface.
 #[unsafe(no_mangle)]
@@ -269,6 +425,29 @@ pub extern "C" fn dts_read_table(
     .unwrap_or(0)
 }
 
+/// Starts table read stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_table_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_stream_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, runtime_handle| async move {
+            service
+                .read_batches(command.as_slice(), runtime_handle)
+                .await
+        },
+    )
+}
+
 /// Plans opaque read partitions for a pinned Delta snapshot and returns the JSON
 /// result payload as an owned UTF-8 string.
 #[unsafe(no_mangle)]
@@ -304,6 +483,469 @@ pub extern "C" fn dts_plan_read_partitions(
     .unwrap_or(ptr::null_mut())
 }
 
+/// Starts partition planning on the shared native runtime and returns an opaque
+/// operation handle that can be polled from managed code.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_plan_read_partitions_async(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+) -> *mut DeltaAsyncOperation {
+    start_plan_read_partitions_async(engine, command_json, AsyncOperationCompletion::none())
+}
+
+/// Starts partition planning and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_plan_read_partitions_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_plan_read_partitions_async(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+    )
+}
+
+fn start_plan_read_partitions_async(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    completion: AsyncOperationCompletion,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        completion,
+        |service, command| async move { service.plan_read_partitions(command.as_slice()).await },
+    )
+}
+
+/// Starts table creation and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_create_table_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.create_table(command.as_slice()).await },
+    )
+}
+
+/// Starts protocol upgrade and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_upgrade_protocol_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.upgrade_protocol(command.as_slice()).await },
+    )
+}
+
+/// Starts SQL DML execution and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_execute_dml_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.execute_dml(command.as_slice()).await },
+    )
+}
+
+fn start_json_async_operation<F, Fut>(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    completion: AsyncOperationCompletion,
+    action: F,
+) -> *mut DeltaAsyncOperation
+where
+    F: FnOnce(DeltaService, Vec<u8>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<serde_json::Value, ServiceError>> + Send + 'static,
+{
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let service = engine_ref.service.clone();
+        let operation = Box::new(DeltaAsyncOperation::new(
+            completion,
+            engine_ref.runtime_handle(),
+        ));
+        let task_shared = Arc::clone(&operation.shared);
+        let operation_ptr = Box::into_raw(operation);
+        unsafe {
+            (*operation_ptr).set_operation_ptr(operation_ptr);
+        }
+        let task = engine_ref.runtime_handle.spawn(async move {
+            let next_state = match action(service, command).await {
+                Ok(result) => async_operation_succeeded(result),
+                Err(error) => async_operation_failed(error),
+            };
+
+            if set_async_operation_terminal_state(&task_shared.state, next_state) {
+                notify_async_operation_completion(&task_shared);
+            }
+        });
+
+        unsafe {
+            (*operation_ptr).set_task(task);
+        }
+
+        operation_ptr
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+fn start_schema_async_operation<F, Fut>(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    completion: AsyncOperationCompletion,
+    action: F,
+) -> *mut DeltaAsyncOperation
+where
+    F: FnOnce(DeltaService, Vec<u8>) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<ArrowSchema, ServiceError>> + Send + 'static,
+{
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let service = engine_ref.service.clone();
+        let operation = Box::new(DeltaAsyncOperation::new(
+            completion,
+            engine_ref.runtime_handle(),
+        ));
+        let task_shared = Arc::clone(&operation.shared);
+        let operation_ptr = Box::into_raw(operation);
+        unsafe {
+            (*operation_ptr).set_operation_ptr(operation_ptr);
+        }
+        let task = engine_ref.runtime_handle.spawn(async move {
+            let next_state = match action(service, command).await {
+                Ok(schema) => async_operation_succeeded_schema(schema),
+                Err(error) => async_operation_failed(error),
+            };
+
+            if set_async_operation_terminal_state(&task_shared.state, next_state) {
+                notify_async_operation_completion(&task_shared);
+            }
+        });
+
+        unsafe {
+            (*operation_ptr).set_task(task);
+        }
+
+        operation_ptr
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+fn start_stream_async_operation<F, Fut>(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    completion: AsyncOperationCompletion,
+    action: F,
+) -> *mut DeltaAsyncOperation
+where
+    F: FnOnce(DeltaService, Vec<u8>, tokio::runtime::Handle) -> Fut + Send + 'static,
+    Fut: Future<
+            Output = Result<
+                Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+                ServiceError,
+            >,
+        > + Send
+        + 'static,
+{
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let service = engine_ref.service.clone();
+        let runtime_handle = engine_ref.runtime_handle();
+        let operation = Box::new(DeltaAsyncOperation::new(
+            completion,
+            engine_ref.runtime_handle(),
+        ));
+        let task_shared = Arc::clone(&operation.shared);
+        let operation_ptr = Box::into_raw(operation);
+        unsafe {
+            (*operation_ptr).set_operation_ptr(operation_ptr);
+        }
+        let task = engine_ref.runtime_handle.spawn(async move {
+            let next_state = match action(service, command, runtime_handle).await {
+                Ok(reader) => async_operation_succeeded_stream(reader),
+                Err(error) => async_operation_failed(error),
+            };
+
+            if set_async_operation_terminal_state(&task_shared.state, next_state) {
+                notify_async_operation_completion(&task_shared);
+            }
+        });
+
+        unsafe {
+            (*operation_ptr).set_task(task);
+        }
+
+        operation_ptr
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
+/// Returns the current status for an async operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_status(operation: *mut DeltaAsyncOperation) -> i32 {
+    if operation.is_null() {
+        return ASYNC_OPERATION_FAILED;
+    }
+
+    let operation_ref = unsafe { &*operation };
+    let finished_without_result = operation_ref
+        .task
+        .lock()
+        .ok()
+        .and_then(|task| task.as_ref().map(tokio::task::JoinHandle::is_finished))
+        .unwrap_or(false);
+
+    operation_ref
+        .shared
+        .state
+        .lock()
+        .map(|mut state| match &*state {
+            AsyncOperationState::Pending if finished_without_result => {
+                *state = AsyncOperationState::Failed(
+                    CString::new("Native async operation finished without a result.").unwrap(),
+                );
+                ASYNC_OPERATION_FAILED
+            }
+            AsyncOperationState::Pending => ASYNC_OPERATION_PENDING,
+            AsyncOperationState::Succeeded(_)
+            | AsyncOperationState::SucceededSchema(_)
+            | AsyncOperationState::SucceededStream(_) => ASYNC_OPERATION_SUCCEEDED,
+            AsyncOperationState::Failed(_) => ASYNC_OPERATION_FAILED,
+            AsyncOperationState::Cancelled(_) => ASYNC_OPERATION_CANCELLED,
+        })
+        .unwrap_or(ASYNC_OPERATION_FAILED)
+}
+
+/// Takes the successful result payload from an async operation as an owned UTF-8 string.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_take_result(
+    operation: *mut DeltaAsyncOperation,
+) -> *mut c_char {
+    if operation.is_null() {
+        return ptr::null_mut();
+    }
+
+    let operation_ref = unsafe { &*operation };
+    operation_ref
+        .shared
+        .state
+        .lock()
+        .ok()
+        .and_then(|mut state| match &mut *state {
+            AsyncOperationState::Succeeded(result) => result.take().map(CString::into_raw),
+            _ => None,
+        })
+        .unwrap_or(ptr::null_mut())
+}
+
+/// Takes the successful schema result from an async operation into an Arrow C Data schema.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_take_schema(
+    operation: *mut DeltaAsyncOperation,
+    out_schema: *mut FFI_ArrowSchema,
+) -> i32 {
+    if operation.is_null() || out_schema.is_null() {
+        return 0;
+    }
+
+    let operation_ref = unsafe { &*operation };
+    let schema = operation_ref
+        .shared
+        .state
+        .lock()
+        .ok()
+        .and_then(|mut state| match &mut *state {
+            AsyncOperationState::SucceededSchema(schema) => schema.take(),
+            _ => None,
+        });
+
+    match schema {
+        Some(schema) => match FFI_ArrowSchema::try_from(&schema) {
+            Ok(ffi_schema) => {
+                unsafe {
+                    ptr::write(out_schema, ffi_schema);
+                }
+                1
+            }
+            Err(_) => 0,
+        },
+        None => 0,
+    }
+}
+
+/// Takes the successful stream result from an async operation into an Arrow C Stream.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_take_stream(
+    operation: *mut DeltaAsyncOperation,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> i32 {
+    if operation.is_null() || out_stream.is_null() {
+        return 0;
+    }
+
+    let operation_ref = unsafe { &*operation };
+    let reader = operation_ref
+        .shared
+        .state
+        .lock()
+        .ok()
+        .and_then(|mut state| match &mut *state {
+            AsyncOperationState::SucceededStream(reader) => reader.take(),
+            _ => None,
+        });
+
+    match reader {
+        Some(reader) => {
+            let ffi_stream = FFI_ArrowArrayStream::new(reader);
+            unsafe {
+                ptr::write(out_stream, ffi_stream);
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Returns a borrowed UTF-8 error string for failed or cancelled operations.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_get_error(
+    operation: *mut DeltaAsyncOperation,
+) -> *const c_char {
+    if operation.is_null() {
+        return ptr::null();
+    }
+
+    let operation_ref = unsafe { &*operation };
+    operation_ref
+        .shared
+        .state
+        .lock()
+        .ok()
+        .and_then(|state| match &*state {
+            AsyncOperationState::Failed(error) | AsyncOperationState::Cancelled(error) => {
+                Some(error.as_ptr())
+            }
+            _ => None,
+        })
+        .unwrap_or(ptr::null())
+}
+
+/// Requests cancellation of an async operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_cancel(operation: *mut DeltaAsyncOperation) {
+    if operation.is_null() {
+        return;
+    }
+
+    let operation_ref = unsafe { &*operation };
+    let task = operation_ref
+        .task
+        .lock()
+        .ok()
+        .and_then(|mut task| task.take());
+
+    match task {
+        Some(handle) => {
+            handle.abort();
+            let shared = Arc::clone(&operation_ref.shared);
+            operation_ref.shared.runtime_handle.spawn(async move {
+                let _ = handle.await;
+                if set_async_operation_terminal_state(
+                    &shared.state,
+                    AsyncOperationState::Cancelled(
+                        CString::new("Native async operation was cancelled.").unwrap(),
+                    ),
+                ) {
+                    notify_async_operation_completion(&shared);
+                }
+            });
+        }
+        None => {
+            if set_async_operation_terminal_state(
+                &operation_ref.shared.state,
+                AsyncOperationState::Cancelled(
+                    CString::new("Native async operation was cancelled.").unwrap(),
+                ),
+            ) {
+                notify_async_operation_completion(&operation_ref.shared);
+            }
+        }
+    }
+}
+
+/// Destroys a native async operation handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_destroy(operation: *mut DeltaAsyncOperation) {
+    if operation.is_null() {
+        return;
+    }
+
+    let operation = unsafe { Box::from_raw(operation) };
+    if let Ok(mut slot) = operation.shared.operation_ptr.lock() {
+        *slot = 0;
+    }
+    if let Ok(mut task) = operation.task.lock() {
+        if let Some(handle) = task.take() {
+            handle.abort();
+        }
+    }
+}
+
 /// Resolves a partition-scoped read command and exports the resulting batch
 /// stream via the Arrow C Stream interface.
 #[unsafe(no_mangle)]
@@ -313,6 +955,17 @@ pub extern "C" fn dts_read_table_partition(
     out_stream: *mut FFI_ArrowArrayStream,
 ) -> i32 {
     dts_read_table(engine, command_json, out_stream)
+}
+
+/// Starts partition-scoped read stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_table_partition_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    dts_read_table_async_with_callback(engine, command_json, callback, user_data)
 }
 
 /// Resolves a SQL/read command and exports the resulting batch stream via the
@@ -360,6 +1013,29 @@ pub extern "C" fn dts_execute_query(
     .unwrap_or(0)
 }
 
+/// Starts SQL/read stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_execute_query_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_stream_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, runtime_handle| async move {
+            service
+                .execute_query_reader(command.as_slice(), runtime_handle)
+                .await
+        },
+    )
+}
+
 /// Resolves a change-data-feed command and exports the resulting batch stream
 /// via the Arrow C Stream interface.
 #[unsafe(no_mangle)]
@@ -405,6 +1081,29 @@ pub extern "C" fn dts_read_change_data(
     .unwrap_or(0)
 }
 
+/// Starts change-data-feed stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_read_change_data_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_stream_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, runtime_handle| async move {
+            service
+                .read_change_data_batches(command.as_slice(), runtime_handle)
+                .await
+        },
+    )
+}
+
 /// Imports a source Arrow C Stream from the caller and writes it into a Delta
 /// table using the existing V3 insert semantics.
 #[unsafe(no_mangle)]
@@ -446,6 +1145,93 @@ pub extern "C" fn dts_insert(
     .unwrap_or(0)
 }
 
+/// Starts native insert from an imported Arrow C Stream and invokes `callback`
+/// after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_insert_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    source_stream: *mut FFI_ArrowArrayStream,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_source_stream_json_async_operation(
+        engine,
+        command_json,
+        source_stream,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, reader| async move {
+            service.insert_reader(command.as_slice(), reader).await
+        },
+    )
+}
+
+fn start_source_stream_json_async_operation<F, Fut>(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    source_stream: *mut FFI_ArrowArrayStream,
+    completion: AsyncOperationCompletion,
+    action: F,
+) -> *mut DeltaAsyncOperation
+where
+    F: FnOnce(DeltaService, Vec<u8>, ArrowArrayStreamReader) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<serde_json::Value, ServiceError>> + Send + 'static,
+{
+    with_engine(engine, |engine_ref| {
+        engine_ref.clear_last_error();
+
+        if command_json.is_null() {
+            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        if source_stream.is_null() {
+            engine_ref.set_last_error_message("source_stream must not be null.".to_string());
+            return ptr::null_mut();
+        }
+
+        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
+            Ok(reader) => reader,
+            Err(error) => {
+                engine_ref.set_last_error_message(error.to_string());
+                return ptr::null_mut();
+            }
+        };
+
+        let service = engine_ref.service.clone();
+        let operation = Box::new(DeltaAsyncOperation::new(
+            completion,
+            engine_ref.runtime_handle(),
+        ));
+        let task_shared = Arc::clone(&operation.shared);
+        let operation_ptr = Box::into_raw(operation);
+        unsafe {
+            (*operation_ptr).set_operation_ptr(operation_ptr);
+        }
+        let task = engine_ref.runtime_handle.spawn(async move {
+            let next_state = match action(service, command, reader).await {
+                Ok(result) => async_operation_succeeded(result),
+                Err(error) => async_operation_failed(error),
+            };
+
+            if set_async_operation_terminal_state(&task_shared.state, next_state) {
+                notify_async_operation_completion(&task_shared);
+            }
+        });
+
+        unsafe {
+            (*operation_ptr).set_task(task);
+        }
+
+        operation_ptr
+    })
+    .unwrap_or(ptr::null_mut())
+}
+
 /// Imports a source Arrow C Stream and performs a streaming merge against the
 /// target Delta table using the existing V3 merge semantics.
 #[unsafe(no_mangle)]
@@ -477,9 +1263,9 @@ pub extern "C" fn dts_merge_stream(
         };
 
         let service = engine_ref.service.clone();
-        let result = match engine_ref.block_on_spawn(async move {
-            service.merge_reader(&command, reader).await
-        }) {
+        let result = match engine_ref
+            .block_on_spawn(async move { service.merge_reader(&command, reader).await })
+        {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
                 engine_ref.set_last_error_message(error.to_string());
@@ -500,6 +1286,28 @@ pub extern "C" fn dts_merge_stream(
         }
     })
     .unwrap_or(ptr::null_mut())
+}
+
+/// Starts native merge from an imported Arrow C Stream and invokes `callback`
+/// after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_merge_stream_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    source_stream: *mut FFI_ArrowArrayStream,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_source_stream_json_async_operation(
+        engine,
+        command_json,
+        source_stream,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, reader| async move { service.merge_reader(command.as_slice(), reader).await },
+    )
 }
 
 /// Executes a create-table command using the transport-neutral V3 core and
@@ -624,6 +1432,7 @@ mod tests {
     use super::*;
 
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use arrow::array::{Int32Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -722,6 +1531,541 @@ mod tests {
         dts_destroy_engine(engine);
     }
 
+    fn wait_for_async_operation(operation: *mut DeltaAsyncOperation) -> i32 {
+        for _ in 0..200 {
+            let status = dts_async_operation_status(operation);
+            if status != ASYNC_OPERATION_PENDING {
+                return status;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        dts_async_operation_status(operation)
+    }
+
+    #[test]
+    fn async_plan_read_partitions_rejects_null_command() {
+        let engine = dts_create_engine();
+        let operation = dts_plan_read_partitions_async(engine, ptr::null());
+        assert!(operation.is_null());
+        assert!(!dts_get_last_error(engine).is_null());
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_plan_read_partitions_returns_result_json() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation = dts_plan_read_partitions_async(engine, command.as_ptr());
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+        let result_ptr = dts_async_operation_take_result(operation);
+        assert!(!result_ptr.is_null(), "async result should be available");
+        assert!(
+            dts_async_operation_take_result(operation).is_null(),
+            "result is single-use"
+        );
+
+        let result = unsafe { CStr::from_ptr(result_ptr) }
+            .to_str()
+            .expect("utf8 json")
+            .to_string();
+        dts_free_string(result_ptr);
+
+        let json: serde_json::Value = serde_json::from_str(&result).expect("parse json");
+        assert_eq!(json["success"], true);
+        assert_eq!(1, json["result"].as_array().expect("result array").len());
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_read_table_take_stream_is_single_use() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation =
+            dts_read_table_async_with_callback(engine, command.as_ptr(), None, ptr::null_mut());
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+        assert_eq!(
+            0,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async batches");
+        let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+        assert_eq!(3, total_rows);
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_read_table_partition_take_stream_returns_rows() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let plan_command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("plan json");
+
+        let engine = dts_create_engine();
+        let plan_operation = dts_plan_read_partitions_async(engine, plan_command.as_ptr());
+        assert!(
+            !plan_operation.is_null(),
+            "async operation should be created"
+        );
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(plan_operation)
+        );
+        let result_ptr = dts_async_operation_take_result(plan_operation);
+        assert!(
+            !result_ptr.is_null(),
+            "async plan result should be available"
+        );
+        let result = unsafe { CStr::from_ptr(result_ptr) }
+            .to_str()
+            .expect("utf8 json")
+            .to_string();
+        dts_free_string(result_ptr);
+        dts_async_operation_destroy(plan_operation);
+
+        let json: serde_json::Value = serde_json::from_str(&result).expect("parse json");
+        let token = json["result"][0]["token"]
+            .as_str()
+            .expect("partition token");
+        let partition_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "partition_token": token,
+            })
+            .to_string(),
+        )
+        .expect("partition json");
+
+        let operation = dts_read_table_partition_async_with_callback(
+            engine,
+            partition_command.as_ptr(),
+            None,
+            ptr::null_mut(),
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async partition stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async partition batches");
+        let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+        assert_eq!(3, total_rows);
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_execute_query_take_stream_returns_projected_rows() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "sql": "SELECT name FROM tbl WHERE id >= 2 ORDER BY name",
+                "table_path": path,
+                "table_name": "tbl"
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation =
+            dts_execute_query_async_with_callback(engine, command.as_ptr(), None, ptr::null_mut());
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async query stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async query batches");
+        assert_eq!(1, batches.len());
+        assert_eq!(2, batches[0].num_rows());
+        assert_eq!(1, batches[0].num_columns());
+
+        let names = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|arr| vec![arr.value(0), arr.value(1)])
+            .unwrap_or_else(|| {
+                let arr = batches[0]
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringViewArray>()
+                    .expect("string view names");
+                vec![arr.value(0), arr.value(1)]
+            });
+        assert_eq!(vec!["Bob", "Charlie"], names);
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_read_change_data_take_stream_returns_cdf_rows() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let table_path = tmp.path().join("native_async_cdf_table");
+        std::fs::create_dir(&table_path).expect("create table dir");
+        let path = table_path.to_string_lossy().to_string();
+
+        let engine = dts_create_engine();
+        let create_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "schema": [
+                    {"name": "id", "type": "int32"},
+                    {"name": "name", "type": "string"}
+                ],
+                "configuration": {
+                    "delta.enableChangeDataFeed": "true"
+                }
+            })
+            .to_string(),
+        )
+        .expect("create table json");
+        let create_result = dts_create_table(engine, create_command.as_ptr());
+        assert!(
+            !create_result.is_null(),
+            "native create_table should succeed"
+        );
+        dts_free_string(create_result);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["Alice", "Bob"])),
+            ],
+        )
+        .expect("record batch");
+        let reader =
+            arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+        let mut insert_stream = FFI_ArrowArrayStream::new(Box::new(reader));
+        let insert_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "mode": "append"
+            })
+            .to_string(),
+        )
+        .expect("insert json");
+        assert_eq!(
+            1,
+            dts_insert(engine, insert_command.as_ptr(), &mut insert_stream)
+        );
+
+        let cdf_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "starting_version": 1
+            })
+            .to_string(),
+        )
+        .expect("cdf json");
+        let operation = dts_read_change_data_async_with_callback(
+            engine,
+            cdf_command.as_ptr(),
+            None,
+            ptr::null_mut(),
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async CDF stream");
+        let schema = reader.schema();
+        assert!(
+            schema
+                .fields()
+                .iter()
+                .any(|field| field.name() == "_change_type"),
+            "expected CDF metadata column"
+        );
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async CDF batches");
+        let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+        assert!(total_rows > 0, "expected CDF stream to contain rows");
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_plan_read_partitions_failure_exposes_operation_error() {
+        let command = CString::new(
+            serde_json::json!({
+                "path": "/definitely/missing/native/async/table",
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation = dts_plan_read_partitions_async(engine, command.as_ptr());
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(ASYNC_OPERATION_FAILED, wait_for_async_operation(operation));
+        assert!(!dts_async_operation_get_error(operation).is_null());
+        assert!(dts_async_operation_take_result(operation).is_null());
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    unsafe extern "C" fn mark_async_operation_completed(
+        operation: *mut DeltaAsyncOperation,
+        user_data: *mut c_void,
+    ) {
+        assert!(!operation.is_null());
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            dts_async_operation_status(operation)
+        );
+        let notified = unsafe { &*(user_data as *const AtomicBool) };
+        notified.store(true, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn mark_async_operation_notified(
+        _operation: *mut DeltaAsyncOperation,
+        user_data: *mut c_void,
+    ) {
+        let notified = unsafe { &*(user_data as *const AtomicBool) };
+        notified.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn async_plan_read_partitions_callback_notifies_after_success() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+        let notified = AtomicBool::new(false);
+
+        let command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation = dts_plan_read_partitions_async_with_callback(
+            engine,
+            command.as_ptr(),
+            Some(mark_async_operation_completed),
+            &notified as *const AtomicBool as *mut c_void,
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+        for _ in 0..200 {
+            if notified.load(Ordering::SeqCst) {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(notified.load(Ordering::SeqCst));
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_operation_cancel_marks_pending_operation_cancelled() {
+        let task = shared_runtime().handle().spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
+            AsyncOperationCompletion::none(),
+            shared_runtime().handle().clone(),
+        )));
+        unsafe {
+            (*operation).set_operation_ptr(operation);
+            (*operation).set_task(task);
+        }
+
+        dts_async_operation_cancel(operation);
+
+        assert_eq!(
+            ASYNC_OPERATION_CANCELLED,
+            wait_for_async_operation(operation)
+        );
+        assert!(!dts_async_operation_get_error(operation).is_null());
+        dts_async_operation_destroy(operation);
+    }
+
+    #[test]
+    fn async_operation_cancel_notifies_real_pending_json_operation() {
+        let notified = AtomicBool::new(false);
+        let command = CString::new("{}").expect("command json");
+        let engine = dts_create_engine();
+        let operation = start_json_async_operation(
+            engine,
+            command.as_ptr(),
+            AsyncOperationCompletion {
+                callback: Some(mark_async_operation_notified),
+                user_data: &notified as *const AtomicBool as *mut c_void,
+            },
+            |_service, _command| async move {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok(serde_json::json!({ "success": true }))
+            },
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        dts_async_operation_cancel(operation);
+
+        assert_eq!(
+            ASYNC_OPERATION_CANCELLED,
+            wait_for_async_operation(operation)
+        );
+        assert!(!dts_async_operation_get_error(operation).is_null());
+        assert!(dts_async_operation_take_result(operation).is_null());
+        assert!(notified.load(Ordering::SeqCst));
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_operation_destroy_aborts_pending_operation() {
+        let task = shared_runtime().handle().spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        });
+        let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
+            AsyncOperationCompletion::none(),
+            shared_runtime().handle().clone(),
+        )));
+        unsafe {
+            (*operation).set_operation_ptr(operation);
+            (*operation).set_task(task);
+        }
+
+        dts_async_operation_destroy(operation);
+    }
+
+    #[test]
+    fn async_operation_destroy_suppresses_late_completion_callback() {
+        let notified = AtomicBool::new(false);
+        let command = CString::new("{}").expect("command json");
+        let engine = dts_create_engine();
+        let operation = start_json_async_operation(
+            engine,
+            command.as_ptr(),
+            AsyncOperationCompletion {
+                callback: Some(mark_async_operation_notified),
+                user_data: &notified as *const AtomicBool as *mut c_void,
+            },
+            |_service, _command| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok(serde_json::json!({ "success": true }))
+            },
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        dts_async_operation_destroy(operation);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        assert!(!notified.load(Ordering::SeqCst));
+        dts_destroy_engine(engine);
+    }
+
     #[test]
     fn insert_rejects_null_arguments() {
         let engine = dts_create_engine();
@@ -731,9 +2075,39 @@ mod tests {
     }
 
     #[test]
+    fn async_insert_rejects_null_arguments() {
+        let engine = dts_create_engine();
+        let operation = dts_insert_async_with_callback(
+            engine,
+            ptr::null(),
+            ptr::null_mut(),
+            None,
+            ptr::null_mut(),
+        );
+        assert!(operation.is_null());
+        assert!(!dts_get_last_error(engine).is_null());
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
     fn merge_stream_rejects_null_arguments() {
         let engine = dts_create_engine();
         assert!(dts_merge_stream(engine, ptr::null(), ptr::null_mut()).is_null());
+        assert!(!dts_get_last_error(engine).is_null());
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_merge_stream_rejects_null_arguments() {
+        let engine = dts_create_engine();
+        let operation = dts_merge_stream_async_with_callback(
+            engine,
+            ptr::null(),
+            ptr::null_mut(),
+            None,
+            ptr::null_mut(),
+        );
+        assert!(operation.is_null());
         assert!(!dts_get_last_error(engine).is_null());
         dts_destroy_engine(engine);
     }
@@ -793,6 +2167,50 @@ mod tests {
     }
 
     #[test]
+    fn async_get_schema_take_schema_is_single_use() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "batch_size": 1,
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation =
+            dts_get_schema_async_with_callback(engine, command.as_ptr(), None, ptr::null_mut());
+        assert!(!operation.is_null(), "async operation should be created");
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_schema = FFI_ArrowSchema::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_schema(operation, &mut ffi_schema)
+        );
+        assert_eq!(
+            0,
+            dts_async_operation_take_schema(operation, &mut ffi_schema)
+        );
+
+        let schema = Schema::try_from(&ffi_schema).expect("import async schema");
+        assert_eq!(2, schema.fields().len());
+        assert_eq!("id", schema.field(0).name());
+        assert_eq!(&DataType::Int32, schema.field(0).data_type());
+        assert_eq!("name", schema.field(1).name());
+        assert_eq!(&DataType::Utf8, schema.field(1).data_type());
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
     fn read_table_exports_arrow_array_stream() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         let (path, _guard) = runtime.block_on(create_native_test_table());
@@ -811,8 +2229,8 @@ mod tests {
         let status = dts_execute_query(engine, command.as_ptr(), &mut ffi_stream);
         assert_eq!(1, status, "native execute_query should succeed");
 
-        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
-            .expect("import stream");
+        let reader =
+            unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }.expect("import stream");
         let batches = reader
             .collect::<Result<Vec<_>, _>>()
             .expect("collect batches");
@@ -855,8 +2273,8 @@ mod tests {
         let status = dts_execute_query(engine, command.as_ptr(), &mut ffi_stream);
         assert_eq!(1, status, "native execute_query should succeed");
 
-        let mut reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
-            .expect("import stream");
+        let mut reader =
+            unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }.expect("import stream");
         let first_batch = reader
             .next()
             .expect("stream should produce first batch")
@@ -866,7 +2284,6 @@ mod tests {
 
         dts_destroy_engine(engine);
     }
-
 
     #[test]
     fn execute_query_exports_arrow_array_stream() {
@@ -889,8 +2306,8 @@ mod tests {
         let status = dts_execute_query(engine, command.as_ptr(), &mut ffi_stream);
         assert_eq!(1, status, "native execute_query should succeed");
 
-        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
-            .expect("import stream");
+        let reader =
+            unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }.expect("import stream");
         let batches = reader
             .collect::<Result<Vec<_>, _>>()
             .expect("collect batches");
@@ -935,11 +2352,8 @@ mod tests {
         let create_body_bytes = serde_json::to_vec(&create_body).unwrap();
 
         let engine = dts_create_engine();
-        let create_status = runtime.block_on(unsafe {
-            (*engine)
-                .service
-                .create_table(create_body_bytes.as_slice())
-        });
+        let create_status = runtime
+            .block_on(unsafe { (*engine).service.create_table(create_body_bytes.as_slice()) });
         assert!(create_status.is_ok(), "create table should succeed");
 
         let schema = Arc::new(Schema::new(vec![
@@ -955,10 +2369,8 @@ mod tests {
         )
         .expect("record batch");
 
-        let reader = arrow::record_batch::RecordBatchIterator::new(
-            vec![Ok(batch)].into_iter(),
-            schema,
-        );
+        let reader =
+            arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
         let mut ffi_stream = FFI_ArrowArrayStream::new(Box::new(reader));
 
         let insert_command = CString::new(
@@ -981,10 +2393,103 @@ mod tests {
         )
         .expect("read json");
         let mut read_stream = FFI_ArrowArrayStream::empty();
-        assert_eq!(1, dts_read_table(engine, read_command.as_ptr(), &mut read_stream));
+        assert_eq!(
+            1,
+            dts_read_table(engine, read_command.as_ptr(), &mut read_stream)
+        );
         let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut read_stream) }
             .expect("import read stream");
-        let batches = reader.collect::<Result<Vec<_>, _>>().expect("collect read batches");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect read batches");
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(2, total_rows);
+
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_insert_imports_arrow_array_stream() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let table_path = tmp.path().join("native_async_insert_table");
+        std::fs::create_dir(&table_path).expect("create table dir");
+
+        let path = table_path.to_string_lossy().to_string();
+        let create_body = serde_json::json!({
+            "path": path,
+            "schema": [
+                {"name": "id", "type": "int32"},
+                {"name": "name", "type": "string"}
+            ]
+        });
+        let create_body_bytes = serde_json::to_vec(&create_body).unwrap();
+
+        let engine = dts_create_engine();
+        let create_status = runtime
+            .block_on(unsafe { (*engine).service.create_table(create_body_bytes.as_slice()) });
+        assert!(create_status.is_ok(), "create table should succeed");
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 20])),
+                Arc::new(StringArray::from(vec!["ten", "twenty"])),
+            ],
+        )
+        .expect("record batch");
+
+        let reader =
+            arrow::record_batch::RecordBatchIterator::new(vec![Ok(batch)].into_iter(), schema);
+        let mut ffi_stream = FFI_ArrowArrayStream::new(Box::new(reader));
+
+        let insert_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "mode": "append"
+            })
+            .to_string(),
+        )
+        .expect("insert json");
+
+        let operation = dts_insert_async_with_callback(
+            engine,
+            insert_command.as_ptr(),
+            &mut ffi_stream,
+            None,
+            ptr::null_mut(),
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+        let result_ptr = dts_async_operation_take_result(operation);
+        assert!(!result_ptr.is_null());
+        dts_free_string(result_ptr);
+        dts_async_operation_destroy(operation);
+
+        let read_command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("read json");
+        let mut read_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_read_table(engine, read_command.as_ptr(), &mut read_stream)
+        );
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut read_stream) }
+            .expect("import read stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect read batches");
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(2, total_rows);
 
@@ -1009,11 +2514,8 @@ mod tests {
         let create_body_bytes = serde_json::to_vec(&create_body).unwrap();
 
         let engine = dts_create_engine();
-        let create_status = runtime.block_on(unsafe {
-            (*engine)
-                .service
-                .create_table(create_body_bytes.as_slice())
-        });
+        let create_status = runtime
+            .block_on(unsafe { (*engine).service.create_table(create_body_bytes.as_slice()) });
         assert!(create_status.is_ok(), "create table should succeed");
 
         let target_schema = Arc::new(Schema::new(vec![
@@ -1042,7 +2544,10 @@ mod tests {
             .to_string(),
         )
         .expect("insert json");
-        assert_eq!(1, dts_insert(engine, insert_command.as_ptr(), &mut target_stream));
+        assert_eq!(
+            1,
+            dts_insert(engine, insert_command.as_ptr(), &mut target_stream)
+        );
 
         let merge_source_batch = RecordBatch::try_new(
             target_schema,
@@ -1087,10 +2592,145 @@ mod tests {
         )
         .expect("read json");
         let mut read_stream = FFI_ArrowArrayStream::empty();
-        assert_eq!(1, dts_read_table(engine, read_command.as_ptr(), &mut read_stream));
+        assert_eq!(
+            1,
+            dts_read_table(engine, read_command.as_ptr(), &mut read_stream)
+        );
         let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut read_stream) }
             .expect("import read stream");
-        let batches = reader.collect::<Result<Vec<_>, _>>().expect("collect read batches");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect read batches");
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(4, total_rows);
+
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_merge_stream_imports_arrow_array_stream() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let table_path = tmp.path().join("native_async_merge_table");
+        std::fs::create_dir(&table_path).expect("create table dir");
+
+        let path = table_path.to_string_lossy().to_string();
+        let create_body = serde_json::json!({
+            "path": path,
+            "schema": [
+                {"name": "id", "type": "int32"},
+                {"name": "name", "type": "string"}
+            ]
+        });
+        let create_body_bytes = serde_json::to_vec(&create_body).unwrap();
+
+        let engine = dts_create_engine();
+        let create_status = runtime
+            .block_on(unsafe { (*engine).service.create_table(create_body_bytes.as_slice()) });
+        assert!(create_status.is_ok(), "create table should succeed");
+
+        let target_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]));
+        let target_batch = RecordBatch::try_new(
+            Arc::clone(&target_schema),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .expect("target batch");
+        let target_reader = arrow::record_batch::RecordBatchIterator::new(
+            vec![Ok(target_batch)].into_iter(),
+            Arc::clone(&target_schema),
+        );
+        let mut target_stream = FFI_ArrowArrayStream::new(Box::new(target_reader));
+
+        let insert_command = CString::new(
+            serde_json::json!({
+                "path": path,
+                "mode": "append"
+            })
+            .to_string(),
+        )
+        .expect("insert json");
+        assert_eq!(
+            1,
+            dts_insert(engine, insert_command.as_ptr(), &mut target_stream)
+        );
+
+        let merge_source_batch = RecordBatch::try_new(
+            target_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![2, 4])),
+                Arc::new(StringArray::from(vec!["updated_b", "d"])),
+            ],
+        )
+        .expect("merge source batch");
+        let merge_source_reader = arrow::record_batch::RecordBatchIterator::new(
+            vec![Ok(merge_source_batch)].into_iter(),
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("name", DataType::Utf8, true),
+            ])),
+        );
+        let mut merge_stream = FFI_ArrowArrayStream::new(Box::new(merge_source_reader));
+
+        let merge_command = CString::new(
+            serde_json::json!({
+                "operation": "merge",
+                "path": path,
+                "predicate": "target.id = source.id",
+                "source_alias": "source",
+                "target_alias": "target",
+                "when_matched_update_all": true,
+                "when_not_matched_insert_all": true
+            })
+            .to_string(),
+        )
+        .expect("merge json");
+
+        let operation = dts_merge_stream_async_with_callback(
+            engine,
+            merge_command.as_ptr(),
+            &mut merge_stream,
+            None,
+            ptr::null_mut(),
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+        let result_ptr = dts_async_operation_take_result(operation);
+        assert!(!result_ptr.is_null());
+        let result = unsafe { CStr::from_ptr(result_ptr) }
+            .to_str()
+            .expect("utf8 json")
+            .to_string();
+        dts_free_string(result_ptr);
+        dts_async_operation_destroy(operation);
+        let json: serde_json::Value = serde_json::from_str(&result).expect("parse json");
+        assert_eq!(json["success"], true);
+
+        let read_command = CString::new(
+            serde_json::json!({
+                "path": path,
+            })
+            .to_string(),
+        )
+        .expect("read json");
+        let mut read_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_read_table(engine, read_command.as_ptr(), &mut read_stream)
+        );
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut read_stream) }
+            .expect("import read stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect read batches");
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(4, total_rows);
 
@@ -1151,7 +2791,10 @@ mod tests {
 
         let engine = dts_create_engine();
         let create_result_ptr = dts_create_table(engine, create_command.as_ptr());
-        assert!(!create_result_ptr.is_null(), "native create_table should succeed");
+        assert!(
+            !create_result_ptr.is_null(),
+            "native create_table should succeed"
+        );
         dts_free_string(create_result_ptr);
 
         let upgrade_command = CString::new(
@@ -1166,7 +2809,10 @@ mod tests {
         .expect("upgrade json");
 
         let result_ptr = dts_upgrade_protocol(engine, upgrade_command.as_ptr());
-        assert!(!result_ptr.is_null(), "native upgrade_protocol should succeed");
+        assert!(
+            !result_ptr.is_null(),
+            "native upgrade_protocol should succeed"
+        );
 
         let result = unsafe { CStr::from_ptr(result_ptr) }
             .to_str()
@@ -1218,10 +2864,15 @@ mod tests {
         )
         .expect("read json");
         let mut read_stream = FFI_ArrowArrayStream::empty();
-        assert_eq!(1, dts_read_table(engine, read_command.as_ptr(), &mut read_stream));
+        assert_eq!(
+            1,
+            dts_read_table(engine, read_command.as_ptr(), &mut read_stream)
+        );
         let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut read_stream) }
             .expect("import read stream");
-        let batches = reader.collect::<Result<Vec<_>, _>>().expect("collect read batches");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect read batches");
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(2, total_rows);
 
