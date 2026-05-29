@@ -865,6 +865,29 @@ pub extern "C" fn dts_execute_query(
     .unwrap_or(0)
 }
 
+/// Starts SQL/read stream setup and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_execute_query_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_stream_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, runtime_handle| async move {
+            service
+                .execute_query_reader(command.as_slice(), runtime_handle)
+                .await
+        },
+    )
+}
+
 /// Resolves a change-data-feed command and exports the resulting batch stream
 /// via the Arrow C Stream interface.
 #[unsafe(no_mangle)]
@@ -1332,6 +1355,65 @@ mod tests {
             .expect("collect async batches");
         let total_rows: usize = batches.iter().map(|batch| batch.num_rows()).sum();
         assert_eq!(3, total_rows);
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_execute_query_take_stream_returns_projected_rows() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (path, _guard) = runtime.block_on(create_native_test_table());
+
+        let command = CString::new(
+            serde_json::json!({
+                "sql": "SELECT name FROM tbl WHERE id >= 2 ORDER BY name",
+                "table_path": path,
+                "table_name": "tbl"
+            })
+            .to_string(),
+        )
+        .expect("command json");
+
+        let engine = dts_create_engine();
+        let operation =
+            dts_execute_query_async_with_callback(engine, command.as_ptr(), None, ptr::null_mut());
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(
+            ASYNC_OPERATION_SUCCEEDED,
+            wait_for_async_operation(operation)
+        );
+
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+        assert_eq!(
+            1,
+            dts_async_operation_take_stream(operation, &mut ffi_stream)
+        );
+
+        let reader = unsafe { ArrowArrayStreamReader::from_raw(&mut ffi_stream) }
+            .expect("import async query stream");
+        let batches = reader
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect async query batches");
+        assert_eq!(1, batches.len());
+        assert_eq!(2, batches[0].num_rows());
+        assert_eq!(1, batches[0].num_columns());
+
+        let names = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .map(|arr| vec![arr.value(0), arr.value(1)])
+            .unwrap_or_else(|| {
+                let arr = batches[0]
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringViewArray>()
+                    .expect("string view names");
+                vec![arr.value(0), arr.value(1)]
+            });
+        assert_eq!(vec!["Bob", "Charlie"], names);
 
         dts_async_operation_destroy(operation);
         dts_destroy_engine(engine);

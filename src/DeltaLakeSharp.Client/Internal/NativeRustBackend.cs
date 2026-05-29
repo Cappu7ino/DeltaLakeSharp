@@ -439,7 +439,7 @@ namespace DeltaLakeSharp.Client.Internal
             }
         }
 
-        public Task<ArrowStreamResult> OpenExecuteQueryStreamAsync(
+        public async Task<ArrowStreamResult> OpenExecuteQueryStreamAsync(
             string sql,
             string? tablePath = null,
             string? tableName = null,
@@ -451,8 +451,12 @@ namespace DeltaLakeSharp.Client.Internal
         {
             cancellationToken.ThrowIfCancellationRequested();
             string commandJson = BuildExecuteQueryCommandJson(sql, tablePath, tableName, storageConfig, genericStorageOptions, batchSize, version, _enableReadPrefetch);
-            IArrowArrayStream stream = OpenExecuteQueryStream(commandJson);
-            return Task.FromResult(new ArrowStreamResult(stream.Schema, stream));
+            return await ExecuteNativeStreamOperationAsync(
+                nameof(OpenExecuteQueryStreamAsync),
+                "execute_query",
+                commandJson,
+                NativeMethods.ExecuteQueryAsyncWithCallback,
+                cancellationToken).ConfigureAwait(false);
         }
 
         public async Task<ExecuteResult> CreateEmptyTableAsync(

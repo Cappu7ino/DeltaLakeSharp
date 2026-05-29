@@ -465,6 +465,63 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_OpenExecuteQueryStreamAsync_PreCanceledTokenThrows()
+        {
+            using var backend = new NativeRustBackend();
+            using var cancellationTokenSource = new CancellationTokenSource();
+            cancellationTokenSource.Cancel();
+
+            await Assert.ThrowsExceptionAsync<OperationCanceledException>(() =>
+                backend.OpenExecuteQueryStreamAsync("SELECT 1", cancellationToken: cancellationTokenSource.Token));
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_OpenExecuteQueryStreamAsync_ReturnsArrowStream()
+        {
+            string tablePath = CreateTempTablePath("native_v3_open_query_stream_async");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "Alice" },
+                        new object[] { 2, "Bob" },
+                    },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                using ArrowStreamResult streamResult = await backend.OpenExecuteQueryStreamAsync(
+                    "SELECT name FROM tbl WHERE id = 2",
+                    tablePath,
+                    "tbl");
+                Assert.AreEqual(1, streamResult.Schema.FieldsList.Count);
+                Assert.AreEqual("name", streamResult.Schema.GetFieldByIndex(0).Name);
+
+                RecordBatch? readBatch = await streamResult.Stream.ReadNextRecordBatchAsync();
+                Assert.IsNotNull(readBatch, "Expected at least one batch from async-opened query stream.");
+                Assert.AreEqual(1, readBatch!.Length);
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_AsyncJsonOperations_PreCanceledTokenThrows()
         {
             using var backend = new NativeRustBackend();
