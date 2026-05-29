@@ -39,7 +39,7 @@ This file is intentionally direct. Use it to prevent incorrect SDK integrations 
 
 - The public APIs are asynchronous, but backend execution does not imply unlimited parallelism.
 - Flight clients own a gRPC channel per `DeltaTableServiceClient` instance.
-- V3 native calls cross a synchronous FFI boundary and use a native engine handle.
+- V3 native uses a native engine handle; main operations use callback-notified async operation handles, while batch pulls and imported write sources still follow Arrow C Stream ownership rules.
 - Avoid issuing multiple concurrent native operations through the same client unless the caller has validated backend behavior for that scenario.
 - Partitioned reads are the preferred pattern for independent parallel reads on V3.
 

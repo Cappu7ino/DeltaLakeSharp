@@ -71,11 +71,13 @@ Common failure modes:
 
 ## Concurrency Expectations
 
-The public API is asynchronous, but most V3 native calls still cross a synchronous FFI boundary. Do not assume unlimited parallelism through a single client instance. For parallel reads, prefer V3 partition planning and independent partition consumption.
+The public API is asynchronous, and the main V3 native operations use callback-notified native operation handles. Do not assume unlimited parallelism through a single client instance. For parallel reads, prefer V3 partition planning and independent partition consumption.
 
 Schema reads, partition planning, table creation, protocol upgrade, SQL DML operations, table/query/CDF/partition stream setup, and insert/merge setup use native async operation handles with completion notification. Managed code starts the relevant `*_async_with_callback` export, awaits a `TaskCompletionSource`, takes the result string with `dts_async_operation_take_result`, the schema with `dts_async_operation_take_schema`, or the stream with `dts_async_operation_take_stream` after the native callback fires, and releases the handle through `dts_async_operation_destroy`. Cancellation requests call `dts_async_operation_cancel` before managed code surfaces `OperationCanceledException`. This keeps the public API shapes unchanged while moving those one-shot operations onto the shared Tokio runtime instead of blocking the managed caller thread for the whole native operation.
 
 For async insert and merge, Rust imports the caller-provided Arrow C Stream before spawning the write task. Managed code keeps both the exported `IArrowArrayStream` adapter and the `CArrowArrayStream` storage alive until native completion is signaled, then disposes and frees them. Cancellation waits for the aborted native task to drop the imported reader before notifying managed code, which prevents the native writer from reading through released managed stream state while still avoiding a blocking write FFI call.
+
+Synchronous Rust C ABI exports are retained for native ABI compatibility, direct Rust unit coverage, and diagnostics. Managed SDK production paths should prefer the callback exports for operations with meaningful native work.
 
 By default, V3 read streams pull each batch through the Arrow C Stream callback and synchronously bridge to the async DataFusion stream. `DeltaTableServiceClientOptions.EnableNativeReadPrefetch` enables an experimental prefetch mode that places a small Rust-owned bounded queue behind the exported Arrow C Stream. In that mode, a Tokio producer task advances the DataFusion stream and sends ready batch results into the queue, while the Arrow C Stream pull side drains queued batches. The queue is bounded per stream, and native read production is guarded by a process-wide active-production limit so full per-stream queues do not monopolize global read capacity.
 

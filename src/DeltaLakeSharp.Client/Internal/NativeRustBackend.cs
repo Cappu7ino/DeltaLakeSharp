@@ -842,67 +842,6 @@ namespace DeltaLakeSharp.Client.Internal
         }
 
         /// <summary>
-        /// Performs the unsafe Arrow C Stream import and returns a managed Arrow
-        /// stream object that owns the native release callback lifecycle.
-        /// </summary>
-        private unsafe IArrowArrayStream OpenReadTableStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ReadTable(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ReadTableAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Imports the result stream for a SQL/read query from the native backend.
-        /// The logic mirrors <see cref="OpenReadTableStream"/> so both table reads
-        /// and query execution share the same Arrow C Stream transport pattern.
-        /// </summary>
-        private unsafe IArrowArrayStream OpenExecuteQueryStream(string commandJson)
-        {
-            CArrowArrayStream* streamPtr = CArrowArrayStream.Create();
-            try
-            {
-                int result = NativeMethods.ExecuteQuery(
-                    _engine.DangerousGetHandle(),
-                    commandJson,
-                    streamPtr);
-
-                if (result != 1)
-                {
-                    throw CreateNativeOperationFailedException(nameof(ExecuteQueryAsync));
-                }
-
-                IArrowArrayStream stream = CArrowArrayStreamImporter.ImportArrayStream(streamPtr);
-                CArrowArrayStream.Free(streamPtr);
-                return stream;
-            }
-            catch
-            {
-                CArrowArrayStream.Free(streamPtr);
-                throw;
-            }
-        }
-
-        /// <summary>
         /// Exports a managed Arrow stream to the native Rust backend using the
         /// Arrow C Stream interface.
         /// </summary>

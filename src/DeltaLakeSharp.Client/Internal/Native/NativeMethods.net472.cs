@@ -35,9 +35,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
-        [DllImport(LibraryName, EntryPoint = "dts_read_table", CallingConvention = CallingConvention.Cdecl)]
-        private static extern unsafe int ReadTableNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
-
         [DllImport(LibraryName, EntryPoint = "dts_read_table_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr ReadTableAsyncWithCallbackNative(
             IntPtr engine,
@@ -65,9 +62,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr commandJson,
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
-
-        [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr PlanReadPartitionsNative(IntPtr engine, IntPtr commandJson);
 
         [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr PlanReadPartitionsAsyncWithCallbackNative(
@@ -134,28 +128,8 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [DllImport(LibraryName, EntryPoint = "dts_async_operation_destroy", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void AsyncOperationDestroy(IntPtr operation);
 
-        [DllImport(LibraryName, EntryPoint = "dts_read_change_data", CallingConvention = CallingConvention.Cdecl)]
-        private static extern unsafe int ReadChangeDataNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
-
-        [DllImport(LibraryName, EntryPoint = "dts_execute_query", CallingConvention = CallingConvention.Cdecl)]
-        private static extern unsafe int ExecuteQueryNative(IntPtr engine, IntPtr commandJson, CArrowArrayStream* stream);
-
-        [DllImport(LibraryName, EntryPoint = "dts_create_table", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr CreateTableNative(IntPtr engine, IntPtr commandJson);
-
-        [DllImport(LibraryName, EntryPoint = "dts_upgrade_protocol", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr UpgradeProtocolNative(IntPtr engine, IntPtr commandJson);
-
-        [DllImport(LibraryName, EntryPoint = "dts_execute_dml", CallingConvention = CallingConvention.Cdecl)]
-        private static extern IntPtr ExecuteDmlNative(IntPtr engine, IntPtr commandJson);
-
         [DllImport(LibraryName, EntryPoint = "dts_free_string", CallingConvention = CallingConvention.Cdecl)]
         internal static extern void FreeString(IntPtr value);
-
-        internal static unsafe int ReadTable(IntPtr engine, string commandJson, CArrowArrayStream* stream)
-        {
-            return WithUtf8String(commandJson, ptr => ReadTableNative(engine, ptr, stream));
-        }
 
         internal static IntPtr ReadTableAsyncWithCallback(
             IntPtr engine,
@@ -173,11 +147,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return WithUtf8String(commandJson, ptr => ExecuteQueryAsyncWithCallbackNative(engine, ptr, callback, userData));
-        }
-
-        internal static IntPtr PlanReadPartitions(IntPtr engine, string commandJson)
-        {
-            return WithUtf8String(commandJson, ptr => PlanReadPartitionsNative(engine, ptr));
         }
 
         internal static IntPtr PlanReadPartitionsAsyncWithCallback(
@@ -261,31 +230,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return WithUtf8String(commandJson, ptr => MergeStreamAsyncWithCallbackNative(engine, ptr, sourceStream, callback, userData));
-        }
-
-        internal static unsafe int ReadChangeData(IntPtr engine, string commandJson, CArrowArrayStream* stream)
-        {
-            return WithUtf8String(commandJson, ptr => ReadChangeDataNative(engine, ptr, stream));
-        }
-
-        internal static unsafe int ExecuteQuery(IntPtr engine, string commandJson, CArrowArrayStream* stream)
-        {
-            return WithUtf8String(commandJson, ptr => ExecuteQueryNative(engine, ptr, stream));
-        }
-
-        internal static IntPtr CreateTable(IntPtr engine, string commandJson)
-        {
-            return WithUtf8String(commandJson, ptr => CreateTableNative(engine, ptr));
-        }
-
-        internal static IntPtr UpgradeProtocol(IntPtr engine, string commandJson)
-        {
-            return WithUtf8String(commandJson, ptr => UpgradeProtocolNative(engine, ptr));
-        }
-
-        internal static IntPtr ExecuteDml(IntPtr engine, string commandJson)
-        {
-            return WithUtf8String(commandJson, ptr => ExecuteDmlNative(engine, ptr));
         }
 
         internal static string? PtrToStringUtf8(IntPtr ptr)

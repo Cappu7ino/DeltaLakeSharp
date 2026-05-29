@@ -39,10 +39,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
-        [LibraryImport(LibraryName, EntryPoint = "dts_read_table", StringMarshalling = StringMarshalling.Utf8)]
-        [return: MarshalAs(UnmanagedType.I4)]
-        internal static unsafe partial int ReadTable(IntPtr engine, string commandJson, CArrowArrayStream* stream);
-
         [DllImport(LibraryName, EntryPoint = "dts_read_table_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr ReadTableAsyncWithCallbackNative(
             IntPtr engine,
@@ -70,9 +66,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
             [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_plan_read_partitions", StringMarshalling = StringMarshalling.Utf8)]
-        internal static partial IntPtr PlanReadPartitions(IntPtr engine, string commandJson);
 
         [DllImport(LibraryName, EntryPoint = "dts_plan_read_partitions_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr PlanReadPartitionsAsyncWithCallbackNative(
@@ -242,23 +235,6 @@ namespace DeltaLakeSharp.Client.Internal.Native
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_destroy")]
         internal static partial void AsyncOperationDestroy(IntPtr operation);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_read_change_data", StringMarshalling = StringMarshalling.Utf8)]
-        [return: MarshalAs(UnmanagedType.I4)]
-        internal static unsafe partial int ReadChangeData(IntPtr engine, string commandJson, CArrowArrayStream* stream);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_execute_query", StringMarshalling = StringMarshalling.Utf8)]
-        [return: MarshalAs(UnmanagedType.I4)]
-        internal static unsafe partial int ExecuteQuery(IntPtr engine, string commandJson, CArrowArrayStream* stream);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_create_table", StringMarshalling = StringMarshalling.Utf8)]
-        internal static partial IntPtr CreateTable(IntPtr engine, string commandJson);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_upgrade_protocol", StringMarshalling = StringMarshalling.Utf8)]
-        internal static partial IntPtr UpgradeProtocol(IntPtr engine, string commandJson);
-
-        [LibraryImport(LibraryName, EntryPoint = "dts_execute_dml", StringMarshalling = StringMarshalling.Utf8)]
-        internal static partial IntPtr ExecuteDml(IntPtr engine, string commandJson);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_free_string")]
         internal static partial void FreeString(IntPtr value);
