@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! Minimal native ABI scaffold for the in-process V3 architecture.
 //!
 //! This file intentionally starts small: lifecycle, health, and error plumbing.

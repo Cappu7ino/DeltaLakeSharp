@@ -12,8 +12,6 @@
     <AssemblyOriginatorKeyFile>DeltaLakeSharp.Client.snk</AssemblyOriginatorKeyFile>
     <PackageId>DeltaLakeSharp.Client</PackageId>
     <Version>0.1.3-preview.1</Version>
-    <Authors>Microsoft; DeltaLakeSharp contributors</Authors>
-    <Company>Microsoft</Company>
     <Description>Experimental Delta Lake client library for .NET with Arrow streaming, SQL operations, merge support, and native Rust-backed execution.</Description>
     <PackageTags>delta lake;delta;delta-rs;arrow;datafusion;dotnet;rust</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

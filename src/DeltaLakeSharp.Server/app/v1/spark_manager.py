@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """SparkSession lifecycle management with Delta Lake and SAS token support."""
 
 import logging

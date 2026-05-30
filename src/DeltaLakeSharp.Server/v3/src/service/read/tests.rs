@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 use super::partitioning::{
     decode_partition_token, encode_partition_token, resolve_partition_files,
 };

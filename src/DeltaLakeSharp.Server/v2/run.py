@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """Entrypoint for the DeltaLakeSharp V2 Arrow Flight server (DataFusion)."""
 
 import argparse

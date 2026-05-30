@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! Fixture-generation utility for Delta Table Service V3 tests.
 //!
 //! The V3 runtime is now in-process via the native ABI, but integration tests

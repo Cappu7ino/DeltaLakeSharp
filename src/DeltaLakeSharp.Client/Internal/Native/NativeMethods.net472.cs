@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 #if NET472 || NETSTANDARD2_0
 using System;
 using System.IO;
