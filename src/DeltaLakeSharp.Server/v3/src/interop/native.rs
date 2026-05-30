@@ -9,6 +9,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::future::Future;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -20,6 +21,7 @@ use arrow::error::ArrowError;
 use arrow::ffi::FFI_ArrowSchema;
 use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use arrow::record_batch::{RecordBatch, RecordBatchReader};
+use futures::FutureExt;
 use tracing_subscriber::EnvFilter;
 
 use crate::error::{ServiceError, ServiceErrorCode};
@@ -147,6 +149,35 @@ impl DeltaAsyncOperation {
     }
 }
 
+fn spawn_async_operation<Fut>(
+    completion: AsyncOperationCompletion,
+    runtime_handle: tokio::runtime::Handle,
+    task_future: Fut,
+) -> *mut DeltaAsyncOperation
+where
+    Fut: Future<Output = AsyncOperationState> + Send + 'static,
+{
+    let mut operation = Box::new(DeltaAsyncOperation::new(completion, runtime_handle.clone()));
+    let task_shared = Arc::clone(&operation.shared);
+    let operation_ptr: *mut DeltaAsyncOperation = &mut *operation;
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel::<()>();
+    let task = runtime_handle.spawn(async move {
+        if start_rx.await.is_err() {
+            return;
+        }
+
+        let next_state = task_future.await;
+        complete_async_operation(&task_shared, next_state);
+    });
+
+    operation.set_operation_ptr(operation_ptr);
+    operation.set_task(task);
+    let operation_ptr = Box::into_raw(operation);
+    let _ = start_tx.send(());
+
+    operation_ptr
+}
+
 fn set_async_operation_terminal_state(
     state: &Mutex<AsyncOperationState>,
     next_state: AsyncOperationState,
@@ -162,12 +193,26 @@ fn set_async_operation_terminal_state(
 }
 
 fn notify_async_operation_completion(shared: &AsyncOperationShared) {
-    if let Ok(slot) = shared.operation_ptr.lock() {
-        let operation = *slot as *mut DeltaAsyncOperation;
-        if !operation.is_null() {
-            shared.completion.notify(operation);
-        }
+    let operation = match shared.operation_ptr.lock() {
+        Ok(slot) => *slot as *mut DeltaAsyncOperation,
+        Err(_) => ptr::null_mut(),
+    };
+
+    if !operation.is_null() {
+        shared.completion.notify(operation);
     }
+}
+
+fn complete_async_operation(
+    shared: &AsyncOperationShared,
+    next_state: AsyncOperationState,
+) -> bool {
+    if set_async_operation_terminal_state(&shared.state, next_state) {
+        notify_async_operation_completion(shared);
+        return true;
+    }
+
+    false
 }
 
 fn async_operation_failed(error: ServiceError) -> AsyncOperationState {
@@ -196,6 +241,45 @@ fn async_operation_succeeded(result: serde_json::Value) -> AsyncOperationState {
     match CString::new(result.to_string()) {
         Ok(result) => AsyncOperationState::Succeeded(Some(result)),
         Err(error) => async_operation_failed_internal(error),
+    }
+}
+
+async fn async_operation_state_from_action<T, Fut>(
+    action: impl FnOnce() -> Fut,
+) -> AsyncOperationState
+where
+    Fut: Future<Output = Result<T, ServiceError>>,
+    AsyncOperationState: From<T>,
+{
+    match catch_unwind(AssertUnwindSafe(action)) {
+        Ok(future) => match AssertUnwindSafe(future).catch_unwind().await {
+            Ok(Ok(result)) => AsyncOperationState::from(result),
+            Ok(Err(error)) => async_operation_failed(error),
+            Err(_) => async_operation_failed_internal("Native async operation panicked."),
+        },
+        Err(_) => async_operation_failed_internal("Native async operation panicked."),
+    }
+}
+
+impl From<serde_json::Value> for AsyncOperationState {
+    fn from(result: serde_json::Value) -> Self {
+        async_operation_succeeded(result)
+    }
+}
+
+impl From<ArrowSchema> for AsyncOperationState {
+    fn from(schema: ArrowSchema) -> Self {
+        async_operation_succeeded_schema(schema)
+    }
+}
+
+impl From<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>>
+    for AsyncOperationState
+{
+    fn from(
+        reader: Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+    ) -> Self {
+        async_operation_succeeded_stream(reader)
     }
 }
 
@@ -678,31 +762,9 @@ where
 
         let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
         let service = engine_ref.service.clone();
-        let operation = Box::new(DeltaAsyncOperation::new(
-            completion,
-            engine_ref.runtime_handle(),
-        ));
-        let task_shared = Arc::clone(&operation.shared);
-        let operation_ptr = Box::into_raw(operation);
-        unsafe {
-            (*operation_ptr).set_operation_ptr(operation_ptr);
-        }
-        let task = engine_ref.runtime_handle.spawn(async move {
-            let next_state = match action(service, command).await {
-                Ok(result) => async_operation_succeeded(result),
-                Err(error) => async_operation_failed(error),
-            };
-
-            if set_async_operation_terminal_state(&task_shared.state, next_state) {
-                notify_async_operation_completion(&task_shared);
-            }
-        });
-
-        unsafe {
-            (*operation_ptr).set_task(task);
-        }
-
-        operation_ptr
+        spawn_async_operation(completion, engine_ref.runtime_handle(), async move {
+            async_operation_state_from_action(|| action(service, command)).await
+        })
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -730,31 +792,9 @@ where
 
         let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
         let service = engine_ref.service.clone();
-        let operation = Box::new(DeltaAsyncOperation::new(
-            completion,
-            engine_ref.runtime_handle(),
-        ));
-        let task_shared = Arc::clone(&operation.shared);
-        let operation_ptr = Box::into_raw(operation);
-        unsafe {
-            (*operation_ptr).set_operation_ptr(operation_ptr);
-        }
-        let task = engine_ref.runtime_handle.spawn(async move {
-            let next_state = match action(service, command).await {
-                Ok(schema) => async_operation_succeeded_schema(schema),
-                Err(error) => async_operation_failed(error),
-            };
-
-            if set_async_operation_terminal_state(&task_shared.state, next_state) {
-                notify_async_operation_completion(&task_shared);
-            }
-        });
-
-        unsafe {
-            (*operation_ptr).set_task(task);
-        }
-
-        operation_ptr
+        spawn_async_operation(completion, engine_ref.runtime_handle(), async move {
+            async_operation_state_from_action(|| action(service, command)).await
+        })
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -789,31 +829,9 @@ where
         let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
         let service = engine_ref.service.clone();
         let runtime_handle = engine_ref.runtime_handle();
-        let operation = Box::new(DeltaAsyncOperation::new(
-            completion,
-            engine_ref.runtime_handle(),
-        ));
-        let task_shared = Arc::clone(&operation.shared);
-        let operation_ptr = Box::into_raw(operation);
-        unsafe {
-            (*operation_ptr).set_operation_ptr(operation_ptr);
-        }
-        let task = engine_ref.runtime_handle.spawn(async move {
-            let next_state = match action(service, command, runtime_handle).await {
-                Ok(reader) => async_operation_succeeded_stream(reader),
-                Err(error) => async_operation_failed(error),
-            };
-
-            if set_async_operation_terminal_state(&task_shared.state, next_state) {
-                notify_async_operation_completion(&task_shared);
-            }
-        });
-
-        unsafe {
-            (*operation_ptr).set_task(task);
-        }
-
-        operation_ptr
+        spawn_async_operation(completion, engine_ref.runtime_handle(), async move {
+            async_operation_state_from_action(|| action(service, command, runtime_handle)).await
+        })
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -1007,27 +1025,23 @@ pub extern "C" fn dts_async_operation_cancel(operation: *mut DeltaAsyncOperation
             let shared = Arc::clone(&operation_ref.shared);
             operation_ref.shared.runtime_handle.spawn(async move {
                 let _ = handle.await;
-                if set_async_operation_terminal_state(
-                    &shared.state,
+                complete_async_operation(
+                    &shared,
                     AsyncOperationState::Cancelled(native_last_error(
                         ServiceErrorCode::Cancelled,
                         "Native async operation was cancelled.".to_string(),
                     )),
-                ) {
-                    notify_async_operation_completion(&shared);
-                }
+                );
             });
         }
         None => {
-            if set_async_operation_terminal_state(
-                &operation_ref.shared.state,
+            complete_async_operation(
+                &operation_ref.shared,
                 AsyncOperationState::Cancelled(native_last_error(
                     ServiceErrorCode::Cancelled,
                     "Native async operation was cancelled.".to_string(),
                 )),
-            ) {
-                notify_async_operation_completion(&operation_ref.shared);
-            }
+            );
         }
     }
 }
@@ -1331,31 +1345,9 @@ where
         };
 
         let service = engine_ref.service.clone();
-        let operation = Box::new(DeltaAsyncOperation::new(
-            completion,
-            engine_ref.runtime_handle(),
-        ));
-        let task_shared = Arc::clone(&operation.shared);
-        let operation_ptr = Box::into_raw(operation);
-        unsafe {
-            (*operation_ptr).set_operation_ptr(operation_ptr);
-        }
-        let task = engine_ref.runtime_handle.spawn(async move {
-            let next_state = match action(service, command, reader).await {
-                Ok(result) => async_operation_succeeded(result),
-                Err(error) => async_operation_failed(error),
-            };
-
-            if set_async_operation_terminal_state(&task_shared.state, next_state) {
-                notify_async_operation_completion(&task_shared);
-            }
-        });
-
-        unsafe {
-            (*operation_ptr).set_task(task);
-        }
-
-        operation_ptr
+        spawn_async_operation(completion, engine_ref.runtime_handle(), async move {
+            async_operation_state_from_action(|| action(service, command, reader)).await
+        })
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -1682,10 +1674,7 @@ mod tests {
 
     #[test]
     fn native_last_error_message_strips_interior_nul_bytes() {
-        let error = native_last_error(
-            ServiceErrorCode::Internal,
-            "before\0after\0".to_string(),
-        );
+        let error = native_last_error(ServiceErrorCode::Internal, "before\0after\0".to_string());
 
         assert_eq!(ServiceErrorCode::Internal, error.code);
         assert_eq!("beforeafter", error.message.to_str().expect("utf8 message"));
@@ -1727,6 +1716,42 @@ mod tests {
         assert!(operation.is_null());
         assert!(!dts_get_last_error(engine).is_null());
         dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_operation_null_handle_returns_stable_failure_status() {
+        assert_eq!(
+            ASYNC_OPERATION_FAILED,
+            dts_async_operation_status(ptr::null_mut())
+        );
+        assert_eq!(ptr::null(), dts_async_operation_get_error(ptr::null_mut()));
+        assert_eq!(
+            ServiceErrorCode::Internal as i32,
+            dts_async_operation_get_error_code(ptr::null_mut())
+        );
+        assert!(dts_async_operation_take_result(ptr::null_mut()).is_null());
+    }
+
+    #[test]
+    fn async_operation_finished_without_terminal_state_becomes_failed() {
+        let task = shared_runtime().handle().spawn(async {});
+        let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
+            AsyncOperationCompletion::none(),
+            shared_runtime().handle().clone(),
+        )));
+        unsafe {
+            (*operation).set_operation_ptr(operation);
+            (*operation).set_task(task);
+        }
+
+        assert_eq!(ASYNC_OPERATION_FAILED, wait_for_async_operation(operation));
+        assert!(!dts_async_operation_get_error(operation).is_null());
+        assert_eq!(
+            ServiceErrorCode::Internal as i32,
+            dts_async_operation_get_error_code(operation)
+        );
+
+        dts_async_operation_destroy(operation);
     }
 
     #[test]
@@ -2111,6 +2136,110 @@ mod tests {
         notified.store(true, Ordering::SeqCst);
     }
 
+    unsafe extern "C" fn destroy_async_operation_and_mark_notified(
+        operation: *mut DeltaAsyncOperation,
+        user_data: *mut c_void,
+    ) {
+        assert!(!operation.is_null());
+        dts_async_operation_destroy(operation);
+        let notified = unsafe { &*(user_data as *const AtomicBool) };
+        notified.store(true, Ordering::SeqCst);
+    }
+
+    fn wait_for_notification(notified: &AtomicBool) -> bool {
+        for _ in 0..200 {
+            if notified.load(Ordering::SeqCst) {
+                return true;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        notified.load(Ordering::SeqCst)
+    }
+
+    #[test]
+    fn async_operation_panic_marks_failed_and_notifies_callback() {
+        let notified = AtomicBool::new(false);
+        let command = CString::new("{}").expect("command json");
+        let engine = dts_create_engine();
+        let operation = start_json_async_operation(
+            engine,
+            command.as_ptr(),
+            AsyncOperationCompletion {
+                callback: Some(mark_async_operation_notified),
+                user_data: &notified as *const AtomicBool as *mut c_void,
+            },
+            |_service, _command| async move {
+                panic!("simulated native async panic");
+                #[allow(unreachable_code)]
+                Ok(serde_json::json!({ "success": true }))
+            },
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(ASYNC_OPERATION_FAILED, wait_for_async_operation(operation));
+        assert!(!dts_async_operation_get_error(operation).is_null());
+        assert_eq!(
+            ServiceErrorCode::Internal as i32,
+            dts_async_operation_get_error_code(operation)
+        );
+        assert!(notified.load(Ordering::SeqCst));
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_operation_action_construction_panic_marks_failed_and_notifies_callback() {
+        let notified = AtomicBool::new(false);
+        let command = CString::new("{}").expect("command json");
+        let engine = dts_create_engine();
+        let operation = start_json_async_operation(
+            engine,
+            command.as_ptr(),
+            AsyncOperationCompletion {
+                callback: Some(mark_async_operation_notified),
+                user_data: &notified as *const AtomicBool as *mut c_void,
+            },
+            |_service, _command| -> std::future::Ready<Result<serde_json::Value, ServiceError>> {
+                panic!("simulated native async action construction panic");
+            },
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert_eq!(ASYNC_OPERATION_FAILED, wait_for_async_operation(operation));
+        assert!(!dts_async_operation_get_error(operation).is_null());
+        assert_eq!(
+            ServiceErrorCode::Internal as i32,
+            dts_async_operation_get_error_code(operation)
+        );
+        assert!(notified.load(Ordering::SeqCst));
+
+        dts_async_operation_destroy(operation);
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn async_operation_callback_can_destroy_operation_immediately() {
+        let notified = AtomicBool::new(false);
+        let command = CString::new("{}").expect("command json");
+        let engine = dts_create_engine();
+        let operation = start_json_async_operation(
+            engine,
+            command.as_ptr(),
+            AsyncOperationCompletion {
+                callback: Some(destroy_async_operation_and_mark_notified),
+                user_data: &notified as *const AtomicBool as *mut c_void,
+            },
+            |_service, _command| async move { Ok(serde_json::json!({ "success": true })) },
+        );
+        assert!(!operation.is_null(), "async operation should be created");
+
+        assert!(wait_for_notification(&notified));
+        dts_destroy_engine(engine);
+    }
+
     #[test]
     fn async_plan_read_partitions_callback_notifies_after_success() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -2138,14 +2267,7 @@ mod tests {
             ASYNC_OPERATION_SUCCEEDED,
             wait_for_async_operation(operation)
         );
-        for _ in 0..200 {
-            if notified.load(Ordering::SeqCst) {
-                break;
-            }
-
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert!(notified.load(Ordering::SeqCst));
+        assert!(wait_for_notification(&notified));
 
         dts_async_operation_destroy(operation);
         dts_destroy_engine(engine);
@@ -2172,6 +2294,16 @@ mod tests {
             wait_for_async_operation(operation)
         );
         assert!(!dts_async_operation_get_error(operation).is_null());
+        assert_eq!(
+            ServiceErrorCode::Cancelled as i32,
+            dts_async_operation_get_error_code(operation)
+        );
+
+        dts_async_operation_cancel(operation);
+        assert_eq!(
+            ASYNC_OPERATION_CANCELLED,
+            dts_async_operation_status(operation)
+        );
         assert_eq!(
             ServiceErrorCode::Cancelled as i32,
             dts_async_operation_get_error_code(operation)

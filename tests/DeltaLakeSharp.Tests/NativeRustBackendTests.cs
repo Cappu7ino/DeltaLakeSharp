@@ -30,9 +30,6 @@ namespace DeltaLakeSharp.Tests
     [TestClass]
     public class NativeRustBackendTests
     {
-        private const int NativeAsyncOperationPending = 0;
-        private const int NativeAsyncOperationFailed = 2;
-
         private static readonly NativeMethods.NativeAsyncOperationCompletedCallback NoOpNativeAsyncOperationCompleted =
             static (_, _) => { };
 
@@ -61,7 +58,7 @@ namespace DeltaLakeSharp.Tests
             for (int i = 0; i < 200; i++)
             {
                 int status = NativeMethods.AsyncOperationStatus(operation);
-                if (status != NativeAsyncOperationPending)
+                if (status != (int)NativeAsyncOperationStatus.Pending)
                 {
                     return status;
                 }
@@ -84,6 +81,27 @@ namespace DeltaLakeSharp.Tests
             Assert.AreEqual(6, (int)NativeServiceErrorCode.Json);
             Assert.AreEqual(7, (int)NativeServiceErrorCode.Internal);
             Assert.AreEqual(8, (int)NativeServiceErrorCode.Cancelled);
+        }
+
+        [TestMethod]
+        public void NativeAsyncOperationStatus_NumericValuesMatchNativeAbi()
+        {
+            Assert.AreEqual(0, (int)NativeAsyncOperationStatus.Pending);
+            Assert.AreEqual(1, (int)NativeAsyncOperationStatus.Succeeded);
+            Assert.AreEqual(2, (int)NativeAsyncOperationStatus.Failed);
+            Assert.AreEqual(3, (int)NativeAsyncOperationStatus.Cancelled);
+        }
+
+        [TestMethod]
+        public void NativeAsyncOperation_NullHandleReturnsStableFailureStatus()
+        {
+            Assert.AreEqual(
+                (int)NativeAsyncOperationStatus.Failed,
+                NativeMethods.AsyncOperationStatus(IntPtr.Zero));
+            Assert.AreEqual(
+                (int)NativeServiceErrorCode.Internal,
+                NativeMethods.AsyncOperationGetErrorCode(IntPtr.Zero));
+            Assert.AreEqual(IntPtr.Zero, NativeMethods.AsyncOperationGetError(IntPtr.Zero));
         }
 
         [TestMethod]
@@ -130,7 +148,7 @@ namespace DeltaLakeSharp.Tests
                     IntPtr.Zero);
                 Assert.AreNotEqual(IntPtr.Zero, operation);
 
-                Assert.AreEqual(NativeAsyncOperationFailed, WaitForNativeAsyncOperation(operation));
+                Assert.AreEqual((int)NativeAsyncOperationStatus.Failed, WaitForNativeAsyncOperation(operation));
                 Assert.AreEqual(
                     (int)NativeServiceErrorCode.Json,
                     NativeMethods.AsyncOperationGetErrorCode(operation));

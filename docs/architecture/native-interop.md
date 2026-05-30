@@ -75,6 +75,22 @@ The public API is asynchronous, and the main V3 native operations use callback-n
 
 Schema reads, partition planning, table creation, protocol upgrade, SQL DML operations, table/query/CDF/partition stream setup, and insert/merge setup use native async operation handles with completion notification. Managed code starts the relevant `*_async_with_callback` export, awaits a `TaskCompletionSource`, takes the result string with `dts_async_operation_take_result`, the schema with `dts_async_operation_take_schema`, or the stream with `dts_async_operation_take_stream` after the native callback fires, and releases the handle through `dts_async_operation_destroy`. Cancellation requests call `dts_async_operation_cancel` before managed code surfaces `OperationCanceledException`. This keeps the public API shapes unchanged while moving those one-shot operations onto the shared Tokio runtime instead of blocking the managed caller thread for the whole native operation.
 
+Native async operations have a small state machine exposed through stable integer status values. Managed code mirrors those values with an internal enum and treats unknown values as native failures.
+
+| Native state | Status | Result ownership |
+| --- | --- | --- |
+| `Pending` | `0` | Tokio task may still complete. No result, schema, stream, or error may be taken. |
+| `Succeeded` | `1` | JSON result is owned by Rust until `dts_async_operation_take_result` transfers it exactly once to managed code, which frees it with `dts_free_string`. |
+| `SucceededSchema` | `1` | Arrow schema is owned by Rust until `dts_async_operation_take_schema` writes it exactly once into caller-provided `FFI_ArrowSchema` storage. |
+| `SucceededStream` | `1` | Arrow stream reader is owned by Rust until `dts_async_operation_take_stream` writes it exactly once into caller-provided `FFI_ArrowArrayStream` storage. |
+| `Failed` | `2` | Error message pointer and error code are borrowed from the operation state and remain valid until the operation is destroyed or mutated. |
+| `Cancelled` | `3` | Error message pointer and `Cancelled` code are borrowed from the operation state. Managed cancellation detection prefers this typed code. |
+| destroyed | n/a | `dts_async_operation_destroy` clears the callback operation pointer and aborts any pending task. Late native completion must not invoke the managed callback. |
+
+The native callback only signals that a terminal state is available; managed code must still query status and take the appropriate result. Result, schema, and stream take operations are single-use. Destroying an operation before completion suppresses late callbacks by clearing the stored operation pointer before aborting the task.
+
+Native async task bodies catch panics and convert them to `Failed` with an internal error code before notifying the callback. This keeps managed callers from waiting forever if a native async task exits abnormally before producing a normal result.
+
 For async insert and merge, Rust imports the caller-provided Arrow C Stream before spawning the write task. Managed code keeps both the exported `IArrowArrayStream` adapter and the `CArrowArrayStream` storage alive until native completion is signaled, then disposes and frees them. Cancellation waits for the aborted native task to drop the imported reader before notifying managed code, which prevents the native writer from reading through released managed stream state while still avoiding a blocking write FFI call.
 
 Synchronous Rust C ABI exports are retained for native ABI compatibility, direct Rust unit coverage, and diagnostics. Managed SDK production paths should prefer the callback exports for operations with meaningful native work.
