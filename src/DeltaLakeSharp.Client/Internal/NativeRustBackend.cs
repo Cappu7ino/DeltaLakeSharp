@@ -26,11 +26,6 @@ namespace DeltaLakeSharp.Client.Internal
     /// </summary>
     internal sealed class NativeRustBackend : IDeltaLakeBackend
     {
-        private const int NativeAsyncOperationPending = 0;
-        private const int NativeAsyncOperationSucceeded = 1;
-        private const int NativeAsyncOperationFailed = 2;
-        private const int NativeAsyncOperationCancelled = 3;
-
         private static readonly NativeMethods.NativeAsyncOperationCompletedCallback NativeAsyncOperationCompleted = OnNativeAsyncOperationCompleted;
 
         private delegate IntPtr StartNativeAsyncOperationWithCallback(
@@ -1365,14 +1360,15 @@ namespace DeltaLakeSharp.Client.Internal
 
                 try
                 {
-                    int status = NativeMethods.AsyncOperationStatus(operation);
+                    int rawStatus = NativeMethods.AsyncOperationStatus(operation);
+                    var status = (NativeAsyncOperationStatus)rawStatus;
                     switch (status)
                     {
-                        case NativeAsyncOperationSucceeded:
+                        case NativeAsyncOperationStatus.Succeeded:
                             _completion.TrySetResult(_takeResult(operation));
                             break;
 
-                        case NativeAsyncOperationFailed:
+                        case NativeAsyncOperationStatus.Failed:
                             if (_cancellationToken.IsCancellationRequested && IsNativeCancellationFailure(operation))
                             {
                                 _completion.TrySetCanceled(_cancellationToken);
@@ -1384,7 +1380,7 @@ namespace DeltaLakeSharp.Client.Internal
                                 _operationName));
                             break;
 
-                        case NativeAsyncOperationCancelled:
+                        case NativeAsyncOperationStatus.Cancelled:
                             if (_cancellationToken.CanBeCanceled)
                             {
                                 _completion.TrySetCanceled(_cancellationToken);
@@ -1395,14 +1391,14 @@ namespace DeltaLakeSharp.Client.Internal
                             }
                             break;
 
-                        case NativeAsyncOperationPending:
+                        case NativeAsyncOperationStatus.Pending:
                             _completion.TrySetException(new InvalidOperationException(
                                 $"Native async {_nativeOperationName} completion was signaled before terminal state was available."));
                             break;
 
                         default:
                             _completion.TrySetException(new InvalidOperationException(
-                                $"Native async {_nativeOperationName} returned unknown status {status}."));
+                                $"Native async {_nativeOperationName} returned unknown status {rawStatus}."));
                             break;
                     }
                 }

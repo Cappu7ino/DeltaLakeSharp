@@ -144,8 +144,10 @@ mod tests {
         );
         assert_eq!(
             ServiceErrorCode::Delta,
-            ServiceError::Delta(deltalake::DeltaTableError::Generic("delta failure".to_string()))
-                .code()
+            ServiceError::Delta(deltalake::DeltaTableError::Generic(
+                "delta failure".to_string()
+            ))
+            .code()
         );
         assert_eq!(
             ServiceErrorCode::DataFusion,
