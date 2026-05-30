@@ -107,6 +107,33 @@ impl DeltaService {
         self::distributed_write::begin_distributed_write(body).await
     }
 
+    /// Consumes an imported Arrow C Stream reader and stages it for a distributed write run.
+    pub async fn stage_distributed_write_reader(
+        &self,
+        body: &[u8],
+        reader: ArrowArrayStreamReader,
+    ) -> Result<serde_json::Value, ServiceError> {
+        let cmd = serde_json::from_slice::<self::request::StageDistributedWriteCommand>(body)
+            .map_err(ServiceError::Json)?;
+        self::distributed_write::stage_distributed_write(cmd, reader).await
+    }
+
+    /// Commits staged distributed write artifacts for an existing-table append.
+    pub async fn commit_distributed_write(
+        &self,
+        body: &[u8],
+    ) -> Result<serde_json::Value, ServiceError> {
+        self::distributed_write::commit_distributed_write(body).await
+    }
+
+    /// Deletes staged distributed write artifacts without committing table changes.
+    pub async fn abort_distributed_write(
+        &self,
+        body: &[u8],
+    ) -> Result<serde_json::Value, ServiceError> {
+        self::distributed_write::abort_distributed_write(body).await
+    }
+
     /// Consumes an imported Arrow C Stream reader and writes it to the target
     /// Delta table using the V3 write semantics.
     pub async fn insert_reader(

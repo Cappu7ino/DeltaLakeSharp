@@ -137,7 +137,9 @@ namespace DeltaLakeSharp.Tests
                 DistributedWriteTableDisposition.ExistingTable,
                 DistributedOverwriteScope.FullTable,
                 "_staging",
-                new[] { "region" });
+                new[] { "region" },
+                maxBufferedBytes: 4096,
+                maxBufferedRecordBatches: 3);
 
             Assert.AreEqual(Guid.Parse("123e4567-e89b-12d3-a456-426614174000"), session.RunId);
             Assert.AreEqual("/tmp/table", session.TablePath);
@@ -147,6 +149,8 @@ namespace DeltaLakeSharp.Tests
             Assert.AreEqual(DistributedOverwriteScope.FullTable, session.OverwriteScope);
             Assert.AreEqual("_staging", session.StagingPrefix);
             Assert.AreEqual("region", session.PartitionBy[0]);
+            Assert.AreEqual(4096, session.MaxBufferedBytes);
+            Assert.AreEqual(3, session.MaxBufferedRecordBatches);
         }
 
         [TestMethod]

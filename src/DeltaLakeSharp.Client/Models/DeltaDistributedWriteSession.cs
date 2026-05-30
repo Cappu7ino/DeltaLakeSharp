@@ -25,6 +25,8 @@ namespace DeltaLakeSharp.Client.Models
         /// <param name="overwriteScope">Overwrite remove-action scope.</param>
         /// <param name="stagingPrefix">Table-relative staging prefix.</param>
         /// <param name="partitionBy">Optional target Delta partition columns.</param>
+        /// <param name="maxBufferedBytes">Optional worker buffer byte threshold before flushing staged Add artifacts.</param>
+        /// <param name="maxBufferedRecordBatches">Optional worker record-batch threshold before flushing staged Add artifacts.</param>
         public DeltaDistributedWriteSession(
             Guid runId,
             string tablePath,
@@ -33,7 +35,9 @@ namespace DeltaLakeSharp.Client.Models
             DistributedWriteTableDisposition tableDisposition,
             DistributedOverwriteScope overwriteScope,
             string stagingPrefix,
-            IReadOnlyList<string>? partitionBy = null)
+            IReadOnlyList<string>? partitionBy = null,
+            long? maxBufferedBytes = null,
+            int? maxBufferedRecordBatches = null)
         {
             if (runId == Guid.Empty)
             {
@@ -58,6 +62,8 @@ namespace DeltaLakeSharp.Client.Models
             OverwriteScope = overwriteScope;
             StagingPrefix = stagingPrefix;
             PartitionBy = partitionBy ?? Array.Empty<string>();
+            MaxBufferedBytes = maxBufferedBytes;
+            MaxBufferedRecordBatches = maxBufferedRecordBatches;
         }
 
         /// <summary>
@@ -99,5 +105,15 @@ namespace DeltaLakeSharp.Client.Models
         /// Gets the target Delta partition columns for this run.
         /// </summary>
         public IReadOnlyList<string> PartitionBy { get; }
+
+        /// <summary>
+        /// Gets the optional worker buffer byte threshold before flushing staged Add artifacts.
+        /// </summary>
+        public long? MaxBufferedBytes { get; }
+
+        /// <summary>
+        /// Gets the optional worker record-batch threshold before flushing staged Add artifacts.
+        /// </summary>
+        public int? MaxBufferedRecordBatches { get; }
     }
 }

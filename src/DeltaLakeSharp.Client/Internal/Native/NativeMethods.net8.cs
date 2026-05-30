@@ -89,6 +89,28 @@ namespace DeltaLakeSharp.Client.Internal.Native
             NativeAsyncOperationCompletedCallback callback,
             IntPtr userData);
 
+        [DllImport(LibraryName, EntryPoint = "dts_stage_distributed_write_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr StageDistributedWriteAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            IntPtr sourceStream,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        [DllImport(LibraryName, EntryPoint = "dts_commit_distributed_write_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr CommitDistributedWriteAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
+        [DllImport(LibraryName, EntryPoint = "dts_abort_distributed_write_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr AbortDistributedWriteAsyncWithCallbackNative(
+            IntPtr engine,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData);
+
         [DllImport(LibraryName, EntryPoint = "dts_upgrade_protocol_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr UpgradeProtocolAsyncWithCallbackNative(
             IntPtr engine,
@@ -153,6 +175,34 @@ namespace DeltaLakeSharp.Client.Internal.Native
             IntPtr userData)
         {
             return BeginDistributedWriteAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        internal static IntPtr StageDistributedWriteAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            IntPtr sourceStream,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return StageDistributedWriteAsyncWithCallbackNative(engine, commandJson, sourceStream, callback, userData);
+        }
+
+        internal static IntPtr CommitDistributedWriteAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return CommitDistributedWriteAsyncWithCallbackNative(engine, commandJson, callback, userData);
+        }
+
+        internal static IntPtr AbortDistributedWriteAsyncWithCallback(
+            IntPtr engine,
+            string commandJson,
+            NativeAsyncOperationCompletedCallback callback,
+            IntPtr userData)
+        {
+            return AbortDistributedWriteAsyncWithCallbackNative(engine, commandJson, callback, userData);
         }
 
         internal static IntPtr UpgradeProtocolAsyncWithCallback(

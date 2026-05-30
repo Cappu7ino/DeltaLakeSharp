@@ -965,9 +965,9 @@ namespace DeltaLakeSharp.Client
         /// Stages one worker's Arrow batches as uncommitted Parquet files and Add-action artifacts for a distributed write run.
         /// </summary>
         /// <remarks>
-        /// This scaffolded API is reserved for the V3 distributed write worker path.
-        /// The current implementation shape is public for API review; full staging
-        /// behavior is implemented in a follow-up slice.
+        /// The current V3 implementation supports staging data for existing-table
+        /// append runs. New-table creation, overwrite, and schema evolution are
+        /// planned follow-up scopes.
         /// </remarks>
         /// <param name="session">Distributed write session returned by <see cref="BeginDistributedWriteAsync"/>.</param>
         /// <param name="schema">Arrow schema for the batches staged by this worker.</param>
@@ -1005,8 +1005,8 @@ namespace DeltaLakeSharp.Client
         /// </summary>
         /// <remarks>
         /// This coordinator API is V3-only. The coordinator reads staged artifacts
-        /// for <paramref name="session"/> and commits one atomic Delta transaction
-        /// once the implementation slice is complete.
+        /// for <paramref name="session"/> and commits one atomic Delta append
+        /// transaction for existing-table append runs.
         /// </remarks>
         /// <param name="session">Distributed write session shared by all workers in the run.</param>
         /// <param name="options">Optional coordinator commit behavior.</param>

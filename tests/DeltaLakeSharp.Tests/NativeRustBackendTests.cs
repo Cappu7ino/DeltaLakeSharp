@@ -94,6 +94,8 @@ namespace DeltaLakeSharp.Tests
                     Mode = SaveMode.Append,
                     TableDisposition = DistributedWriteTableDisposition.ExistingTable,
                     PartitionBy = new[] { "region" },
+                    MaxBufferedBytes = 4096,
+                    MaxBufferedRecordBatches = 3,
                 });
 
             Assert.AreEqual(runId, session.RunId);
@@ -102,6 +104,8 @@ namespace DeltaLakeSharp.Tests
             Assert.AreEqual(DistributedWriteTableDisposition.ExistingTable, session.TableDisposition);
             Assert.AreEqual("_staging", session.StagingPrefix);
             Assert.AreEqual("region", session.PartitionBy[0]);
+            Assert.AreEqual(4096, session.MaxBufferedBytes);
+            Assert.AreEqual(3, session.MaxBufferedRecordBatches);
         }
 
         [TestMethod]
@@ -138,6 +142,151 @@ namespace DeltaLakeSharp.Tests
 
             await Assert.ThrowsExceptionAsync<ArgumentException>(() =>
                 client.BeginDistributedWriteAsync("/tmp/table", new DeltaDistributedWriteOptions()));
+        }
+
+        [TestMethod]
+        public async Task Client_DistributedWriteAppend_StagesAndCommitsRows()
+        {
+            string tablePath = CreateTempTablePath("native_v3_distributed_append");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+                ExecuteResult createResult = await client.CreateTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                var runId = Guid.Parse("123e4567-e89b-12d3-a456-426614174001");
+                DeltaDistributedWriteSession session = await client.BeginDistributedWriteAsync(
+                    tablePath,
+                    new DeltaDistributedWriteOptions
+                    {
+                        RunId = runId,
+                        Mode = SaveMode.Append,
+                        TableDisposition = DistributedWriteTableDisposition.ExistingTable,
+                    });
+
+                RecordBatch firstBatch = ArrowConverter.FromRows(
+                    new[] { new object[] { 1, "Alice" } },
+                    tableSchema);
+                DeltaStagedWriteResult firstStage = await client.StageDistributedWriteAsync(
+                    session,
+                    firstBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(firstBatch));
+                Assert.AreEqual(runId, firstStage.RunId);
+                Assert.AreEqual(1, firstStage.AddedFileCount);
+
+                RecordBatch secondBatch = ArrowConverter.FromRows(
+                    new[] { new object[] { 2, "Bob" } },
+                    tableSchema);
+                DeltaStagedWriteResult secondStage = await client.StageDistributedWriteAsync(
+                    session,
+                    secondBatch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(secondBatch));
+                Assert.AreEqual(runId, secondStage.RunId);
+                Assert.AreEqual(1, secondStage.AddedFileCount);
+
+                ExecuteResult commitResult = await client.CommitDistributedWriteAsync(session);
+                Assert.IsTrue(commitResult.Success, $"CommitDistributedWriteAsync failed: {commitResult.Message}");
+
+                var rows = new List<(int Id, string Name)>();
+                await foreach (RecordBatch readBatch in client.ReadTableAsync(tablePath))
+                {
+                    var ids = (Int32Array)readBatch.Column(0);
+                    var names = readBatch.Column(1);
+                    for (int rowIndex = 0; rowIndex < readBatch.Length; rowIndex++)
+                    {
+                        rows.Add((ids.GetValue(rowIndex) ?? -1, V3TestHelpers.ReadStringValue(names, rowIndex)));
+                    }
+                }
+
+                rows = rows.OrderBy(row => row.Id).ToList();
+                CollectionAssert.AreEqual(
+                    new[] { (1, "Alice"), (2, "Bob") },
+                    rows,
+                    "Distributed append should commit all staged worker rows exactly once.");
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
+        public async Task Client_DistributedWriteAppend_StagesAndCommitsPartitionedRows()
+        {
+            string tablePath = CreateTempTablePath("native_v3_distributed_partitioned_append");
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("region", "string"),
+                    new ColumnDefinition("name", "string"),
+                });
+                ExecuteResult createResult = await client.CreateTableAsync(
+                    tablePath,
+                    tableSchema,
+                    partitionBy: new[] { "region" });
+                Assert.IsTrue(createResult.Success, $"CreateTableAsync failed: {createResult.Message}");
+
+                var runId = Guid.Parse("123e4567-e89b-12d3-a456-426614174002");
+                DeltaDistributedWriteSession session = await client.BeginDistributedWriteAsync(
+                    tablePath,
+                    new DeltaDistributedWriteOptions
+                    {
+                        RunId = runId,
+                        Mode = SaveMode.Append,
+                        TableDisposition = DistributedWriteTableDisposition.ExistingTable,
+                        PartitionBy = new[] { "region" },
+                    });
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "us", "Alice" },
+                        new object[] { 2, "eu", "Bob" },
+                    },
+                    tableSchema);
+                DeltaStagedWriteResult stageResult = await client.StageDistributedWriteAsync(
+                    session,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch));
+                Assert.AreEqual(runId, stageResult.RunId);
+                Assert.AreEqual(2, stageResult.AddedFileCount);
+
+                ExecuteResult commitResult = await client.CommitDistributedWriteAsync(session);
+                Assert.IsTrue(commitResult.Success, $"CommitDistributedWriteAsync failed: {commitResult.Message}");
+
+                var rows = new List<(int Id, string Region, string Name)>();
+                await foreach (RecordBatch readBatch in client.ReadTableAsync(tablePath))
+                {
+                    var ids = (Int32Array)readBatch.Column(0);
+                    var regions = readBatch.Column(1);
+                    var names = readBatch.Column(2);
+                    for (int rowIndex = 0; rowIndex < readBatch.Length; rowIndex++)
+                    {
+                        rows.Add((
+                            ids.GetValue(rowIndex) ?? -1,
+                            V3TestHelpers.ReadStringValue(regions, rowIndex),
+                            V3TestHelpers.ReadStringValue(names, rowIndex)));
+                    }
+                }
+
+                rows = rows.OrderBy(row => row.Id).ToList();
+                CollectionAssert.AreEqual(
+                    new[] { (1, "us", "Alice"), (2, "eu", "Bob") },
+                    rows,
+                    "Distributed append should preserve partitioned table rows.");
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
         }
 
         [TestMethod]

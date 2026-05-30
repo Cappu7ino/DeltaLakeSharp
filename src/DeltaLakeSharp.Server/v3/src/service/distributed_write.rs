@@ -1,11 +1,27 @@
+use arrow::ffi_stream::ArrowArrayStreamReader;
+use deltalake::kernel::transaction::CommitBuilder;
+use deltalake::kernel::{Action, Add};
+use deltalake::logstore::object_store::path::Path;
+use deltalake::logstore::object_store::{ObjectMeta, ObjectStoreExt};
+use deltalake::protocol::{DeltaOperation, SaveMode};
+use deltalake::writer::{DeltaWriter, RecordBatchWriter};
+use futures::TryStreamExt;
 use serde_json::json;
+use std::collections::HashMap;
+use tracing::{info, warn};
+use uuid::Uuid;
 
 use crate::error::ServiceError;
 
-use super::request::BeginDistributedWriteCommand;
+use super::helpers::open_delta_table;
+use super::request::{
+    AbortDistributedWriteCommand, BeginDistributedWriteCommand, CommitDistributedWriteCommand,
+    StageDistributedWriteCommand,
+};
 
 const DEFAULT_STAGING_PREFIX: &str = "_staging";
 const ADDS_DIRECTORY: &str = "adds";
+const DEFAULT_MAX_BUFFERED_RECORD_BATCHES: usize = 16;
 
 pub async fn begin_distributed_write(body: &[u8]) -> Result<serde_json::Value, ServiceError> {
     let cmd: BeginDistributedWriteCommand = serde_json::from_slice(body)?;
@@ -18,14 +34,10 @@ pub async fn begin_distributed_write(body: &[u8]) -> Result<serde_json::Value, S
         Some(value) => Some(validate_schema_mode(&value)?.to_string()),
         None => None,
     };
-    let table_disposition = validate_table_disposition(
-        cmd.table_disposition
-            .as_deref()
-            .unwrap_or("existingTable"),
-    )?;
-    let overwrite_scope = validate_overwrite_scope(
-        cmd.overwrite_scope.as_deref().unwrap_or("fullTable"),
-    )?;
+    let table_disposition =
+        validate_table_disposition(cmd.table_disposition.as_deref().unwrap_or("existingTable"))?;
+    let overwrite_scope =
+        validate_overwrite_scope(cmd.overwrite_scope.as_deref().unwrap_or("fullTable"))?;
     let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &run_id)?;
     let staging_prefix = cmd
         .staging_prefix
@@ -43,7 +55,237 @@ pub async fn begin_distributed_write(body: &[u8]) -> Result<serde_json::Value, S
             "overwriteScope": overwrite_scope,
             "stagingPrefix": staging_prefix,
             "addsPrefix": adds_prefix,
-            "partitionBy": cmd.partition_by.unwrap_or_default()
+            "partitionBy": cmd.partition_by.unwrap_or_default(),
+            "maxBufferedBytes": cmd.max_buffered_bytes,
+            "maxBufferedRecordBatches": cmd.max_buffered_record_batches
+        }]
+    }))
+}
+
+pub async fn stage_distributed_write(
+    cmd: StageDistributedWriteCommand,
+    mut reader: ArrowArrayStreamReader,
+) -> Result<serde_json::Value, ServiceError> {
+    validate_uuid(&cmd.run_id, "run_id")?;
+    validate_append_existing_table(&cmd.mode, cmd.table_disposition.as_deref())?;
+    validate_optional_schema_mode(cmd.schema_mode.as_deref())?;
+    validate_overwrite_scope(cmd.overwrite_scope.as_deref().unwrap_or("fullTable"))?;
+
+    let table = open_delta_table(
+        &cmd.path,
+        cmd.storage_account.as_deref(),
+        cmd.sas_token.as_deref(),
+        cmd.storage_options.as_ref(),
+        None,
+    )
+    .await?;
+    let partition_columns = table
+        .snapshot()
+        .map_err(ServiceError::Delta)?
+        .metadata()
+        .partition_columns()
+        .to_vec();
+    validate_requested_partition_columns(cmd.partition_by.as_ref(), &partition_columns)?;
+
+    let object_store = table.object_store();
+    let mut writer = RecordBatchWriter::for_table(&table).map_err(ServiceError::Delta)?;
+    let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &cmd.run_id)?;
+    let max_buffered_record_batches = cmd
+        .max_buffered_record_batches
+        .unwrap_or(DEFAULT_MAX_BUFFERED_RECORD_BATCHES)
+        .max(1);
+    let max_buffered_bytes = cmd.max_buffered_bytes.unwrap_or(u64::MAX) as usize;
+
+    let mut artifact_count = 0_usize;
+    let mut added_file_count = 0_i64;
+    let mut total_data_file_bytes = 0_i64;
+
+    for batch_result in reader.by_ref() {
+        let batch = batch_result.map_err(ServiceError::Arrow)?;
+        writer.write(batch).await.map_err(ServiceError::Delta)?;
+
+        if writer.buffer_len() >= max_buffered_bytes
+            || writer.buffered_record_batch_count() >= max_buffered_record_batches
+        {
+            let adds = writer.flush().await.map_err(ServiceError::Delta)?;
+            let stats = write_add_artifact(&object_store, &adds_prefix, adds).await?;
+            artifact_count += stats.artifact_count;
+            added_file_count += stats.added_file_count;
+            total_data_file_bytes += stats.total_data_file_bytes;
+        }
+    }
+
+    let adds = writer.flush().await.map_err(ServiceError::Delta)?;
+    let stats = write_add_artifact(&object_store, &adds_prefix, adds).await?;
+    artifact_count += stats.artifact_count;
+    added_file_count += stats.added_file_count;
+    total_data_file_bytes += stats.total_data_file_bytes;
+
+    info!(
+        run_id = %cmd.run_id,
+        artifact_count,
+        added_file_count,
+        total_data_file_bytes,
+        "staged distributed write artifacts"
+    );
+
+    Ok(json!({
+        "success": true,
+        "message": "Distributed write data staged.",
+        "result": [{
+            "runId": cmd.run_id,
+            "stagingPrefix": cmd.staging_prefix.unwrap_or_else(|| DEFAULT_STAGING_PREFIX.to_string()),
+            "artifactCount": artifact_count,
+            "addedFileCount": added_file_count,
+            "totalDataFileBytes": total_data_file_bytes
+        }]
+    }))
+}
+
+pub async fn commit_distributed_write(body: &[u8]) -> Result<serde_json::Value, ServiceError> {
+    let cmd: CommitDistributedWriteCommand = serde_json::from_slice(body)?;
+    validate_uuid(&cmd.run_id, "run_id")?;
+    validate_append_existing_table(&cmd.mode, cmd.table_disposition.as_deref())?;
+    validate_optional_schema_mode(cmd.schema_mode.as_deref())?;
+    validate_overwrite_scope(cmd.overwrite_scope.as_deref().unwrap_or("fullTable"))?;
+
+    let mut table = open_delta_table(
+        &cmd.path,
+        cmd.storage_account.as_deref(),
+        cmd.sas_token.as_deref(),
+        cmd.storage_options.as_ref(),
+        None,
+    )
+    .await?;
+
+    if let Some(expected_version) = cmd.expected_version {
+        let actual_version = table
+            .version()
+            .and_then(|version| i64::try_from(version).ok());
+        if actual_version != Some(expected_version) {
+            return Err(ServiceError::InvalidRequest(format!(
+                "table version {:?} does not match expected version {}",
+                actual_version, expected_version
+            )));
+        }
+    }
+
+    let snapshot = table.snapshot().map_err(ServiceError::Delta)?.clone();
+    let partition_columns = snapshot.metadata().partition_columns().to_vec();
+    validate_requested_partition_columns(cmd.partition_by.as_ref(), &partition_columns)?;
+
+    let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &cmd.run_id)?;
+    let object_store = table.object_store();
+    let artifacts = list_add_artifacts(&object_store, &adds_prefix).await?;
+    if artifacts.is_empty() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "no distributed write artifacts found for run_id {}",
+            cmd.run_id
+        )));
+    }
+
+    let mut actions = Vec::new();
+    let mut added_file_count = 0_i64;
+    let mut total_data_file_bytes = 0_i64;
+    for artifact in &artifacts {
+        let adds = read_add_artifact(&object_store, &artifact.location).await?;
+        for add in adds {
+            validate_staged_add(&add, &partition_columns)?;
+            validate_staged_data_file(&object_store, &add).await?;
+            total_data_file_bytes += add.size;
+            added_file_count += 1;
+            actions.push(Action::Add(add));
+        }
+    }
+
+    if actions.is_empty() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "distributed write run {} has no staged Add actions",
+            cmd.run_id
+        )));
+    }
+
+    let operation = DeltaOperation::Write {
+        mode: SaveMode::Append,
+        partition_by: if partition_columns.is_empty() {
+            None
+        } else {
+            Some(partition_columns)
+        },
+        predicate: None,
+    };
+    let app_metadata = HashMap::from([
+        ("distributedWrite".to_string(), json!(true)),
+        ("runId".to_string(), json!(cmd.run_id)),
+        ("artifactCount".to_string(), json!(artifacts.len())),
+        ("addedFileCount".to_string(), json!(added_file_count)),
+    ]);
+    let finalized = CommitBuilder::default()
+        .with_app_metadata(app_metadata)
+        .with_actions(actions)
+        .build(Some(&snapshot), table.log_store(), operation)
+        .await
+        .map_err(ServiceError::Delta)?;
+    let version = finalized.version();
+    table.update_state().await.map_err(ServiceError::Delta)?;
+
+    let mut staging_cleanup_failed = false;
+    if cmd.cleanup_staging_artifacts.unwrap_or(true) {
+        let artifact_paths = artifacts
+            .iter()
+            .map(|artifact| artifact.location.clone())
+            .collect::<Vec<_>>();
+        if let Err(error) = delete_artifacts(&object_store, artifact_paths).await {
+            staging_cleanup_failed = true;
+            warn!(
+                run_id = %cmd.run_id,
+                error = %error,
+                "distributed write commit succeeded but staging artifact cleanup failed"
+            );
+        }
+    }
+
+    Ok(json!({
+        "success": true,
+        "message": "Distributed write committed.",
+        "result": [{
+            "runId": cmd.run_id,
+            "version": version,
+            "artifactCount": artifacts.len(),
+            "addedFileCount": added_file_count,
+            "totalDataFileBytes": total_data_file_bytes,
+            "stagingCleanupFailed": staging_cleanup_failed
+        }]
+    }))
+}
+
+pub async fn abort_distributed_write(body: &[u8]) -> Result<serde_json::Value, ServiceError> {
+    let cmd: AbortDistributedWriteCommand = serde_json::from_slice(body)?;
+    validate_uuid(&cmd.run_id, "run_id")?;
+    let table = open_delta_table(
+        &cmd.path,
+        cmd.storage_account.as_deref(),
+        cmd.sas_token.as_deref(),
+        cmd.storage_options.as_ref(),
+        None,
+    )
+    .await?;
+    let object_store = table.object_store();
+    let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &cmd.run_id)?;
+    let artifacts = list_add_artifacts(&object_store, &adds_prefix).await?;
+    let deleted_count = artifacts.len();
+    let artifact_paths = artifacts
+        .into_iter()
+        .map(|artifact| artifact.location)
+        .collect::<Vec<_>>();
+    delete_artifacts(&object_store, artifact_paths).await?;
+
+    Ok(json!({
+        "success": true,
+        "message": "Distributed write staging artifacts deleted.",
+        "result": [{
+            "runId": cmd.run_id,
+            "deletedArtifactCount": deleted_count
         }]
     }))
 }
@@ -146,9 +388,227 @@ fn validate_overwrite_scope(value: &str) -> Result<&str, ServiceError> {
     }
 }
 
+fn validate_append_existing_table(
+    mode: &str,
+    table_disposition: Option<&str>,
+) -> Result<(), ServiceError> {
+    if validate_mode(mode)? != "append" {
+        return Err(ServiceError::InvalidRequest(
+            "distributed write scaffold currently supports append only".to_string(),
+        ));
+    }
+
+    if validate_table_disposition(table_disposition.unwrap_or("existingTable"))? != "existingTable"
+    {
+        return Err(ServiceError::InvalidRequest(
+            "distributed write scaffold currently supports existing tables only".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_requested_partition_columns(
+    requested_partition_by: Option<&Vec<String>>,
+    partition_columns: &[String],
+) -> Result<(), ServiceError> {
+    if let Some(requested_partition_by) = requested_partition_by {
+        if requested_partition_by != partition_columns {
+            return Err(ServiceError::InvalidRequest(format!(
+                "distributed append partition columns {:?} do not match table partition columns {:?}",
+                requested_partition_by, partition_columns
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_optional_schema_mode(schema_mode: Option<&str>) -> Result<(), ServiceError> {
+    if let Some(schema_mode) = schema_mode {
+        validate_schema_mode(schema_mode)?;
+        return Err(ServiceError::InvalidRequest(
+            "distributed write scaffold does not support schema evolution yet".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[derive(Default)]
+struct ArtifactStats {
+    artifact_count: usize,
+    added_file_count: i64,
+    total_data_file_bytes: i64,
+}
+
+async fn write_add_artifact(
+    object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
+    adds_prefix: &str,
+    adds: Vec<Add>,
+) -> Result<ArtifactStats, ServiceError> {
+    if adds.is_empty() {
+        return Ok(ArtifactStats::default());
+    }
+
+    let mut payload = String::new();
+    let stats = ArtifactStats {
+        artifact_count: 1,
+        added_file_count: adds.len() as i64,
+        total_data_file_bytes: adds.iter().map(|add| add.size).sum(),
+    };
+
+    for add in adds {
+        payload.push_str(&serde_json::to_string(&add).map_err(ServiceError::Json)?);
+        payload.push('\n');
+    }
+
+    let artifact_path = Path::from(format!("{adds_prefix}/{}.jsonl", Uuid::new_v4()));
+    object_store
+        .put(&artifact_path, payload.into())
+        .await
+        .map_err(|error| {
+            ServiceError::Internal(format!("failed to write staging artifact: {error}"))
+        })?;
+
+    Ok(stats)
+}
+
+async fn list_add_artifacts(
+    object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
+    adds_prefix: &str,
+) -> Result<Vec<ObjectMeta>, ServiceError> {
+    let prefix = Path::from(adds_prefix.to_string());
+    let mut artifacts = object_store
+        .list(Some(&prefix))
+        .try_collect::<Vec<_>>()
+        .await
+        .map_err(|error| {
+            ServiceError::Internal(format!("failed to list staging artifacts: {error}"))
+        })?;
+    artifacts.retain(|artifact| artifact.location.as_ref().ends_with(".jsonl"));
+    artifacts.sort_by(|left, right| left.location.cmp(&right.location));
+    Ok(artifacts)
+}
+
+async fn read_add_artifact(
+    object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
+    path: &Path,
+) -> Result<Vec<Add>, ServiceError> {
+    let bytes = object_store
+        .get(path)
+        .await
+        .map_err(|error| {
+            ServiceError::Internal(format!("failed to read staging artifact: {error}"))
+        })?
+        .bytes()
+        .await
+        .map_err(|error| {
+            ServiceError::Internal(format!("failed to read staging artifact bytes: {error}"))
+        })?;
+    let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
+        ServiceError::InvalidRequest(format!("staging artifact is not valid UTF-8: {error}"))
+    })?;
+    let mut adds = Vec::new();
+    for (line_number, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let add = serde_json::from_str::<Add>(line).map_err(|error| {
+            ServiceError::InvalidRequest(format!(
+                "invalid Add action in staging artifact at line {}: {error}",
+                line_number + 1
+            ))
+        })?;
+        adds.push(add);
+    }
+
+    Ok(adds)
+}
+
+fn validate_staged_add(add: &Add, partition_columns: &[String]) -> Result<(), ServiceError> {
+    if !is_safe_table_relative_data_path(&add.path) {
+        return Err(ServiceError::InvalidRequest(format!(
+            "staged Add path '{}' is not a safe table-relative data path",
+            add.path
+        )));
+    }
+
+    for column in partition_columns {
+        if !add.partition_values.contains_key(column) {
+            return Err(ServiceError::InvalidRequest(format!(
+                "staged Add path '{}' is missing partition value for '{}'",
+                add.path, column
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+async fn validate_staged_data_file(
+    object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
+    add: &Add,
+) -> Result<(), ServiceError> {
+    let data_path = Path::from(add.path.clone());
+    let metadata = object_store.head(&data_path).await.map_err(|error| {
+        ServiceError::InvalidRequest(format!(
+            "staged Add path '{}' does not reference an accessible data file: {error}",
+            add.path
+        ))
+    })?;
+    let object_size = i64::try_from(metadata.size).map_err(|_| {
+        ServiceError::InvalidRequest(format!(
+            "staged Add path '{}' has object size that exceeds supported range",
+            add.path
+        ))
+    })?;
+    if object_size != add.size {
+        return Err(ServiceError::InvalidRequest(format!(
+            "staged Add path '{}' size {} does not match object size {}",
+            add.path, add.size, object_size
+        )));
+    }
+
+    Ok(())
+}
+
+fn is_safe_table_relative_data_path(path: &str) -> bool {
+    if path.is_empty() || path.starts_with('/') || path.contains("://") {
+        return false;
+    }
+
+    let mut segments = path.split('/');
+    let Some(first_segment) = segments.next() else {
+        return false;
+    };
+    if first_segment.is_empty() || matches!(first_segment, "." | ".." | "_delta_log" | "_staging") {
+        return false;
+    }
+
+    segments.all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+async fn delete_artifacts(
+    object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
+    paths: Vec<Path>,
+) -> Result<(), ServiceError> {
+    for path in paths {
+        object_store.delete(&path).await.map_err(|error| {
+            ServiceError::Internal(format!("failed to delete staging artifact: {error}"))
+        })?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deltalake::logstore::object_store::memory::InMemory;
+    use deltalake::logstore::object_store::ObjectStore;
+    use deltalake::logstore::object_store::PutPayload;
 
     #[test]
     fn staging_adds_prefix_uses_run_id_only() {
@@ -161,7 +621,10 @@ mod tests {
     fn staging_adds_prefix_allows_custom_safe_prefix() {
         let run_id = "123e4567-e89b-12d3-a456-426614174000";
         let prefix = staging_adds_prefix(Some("staging.tmp"), run_id).expect("safe prefix");
-        assert_eq!("staging.tmp/123e4567-e89b-12d3-a456-426614174000/adds", prefix);
+        assert_eq!(
+            "staging.tmp/123e4567-e89b-12d3-a456-426614174000/adds",
+            prefix
+        );
     }
 
     #[test]
@@ -222,5 +685,65 @@ mod tests {
             .expect_err("unknown mode should fail");
 
         assert!(matches!(error, ServiceError::InvalidRequest(_)));
+    }
+
+    #[test]
+    fn staged_add_path_validation_rejects_unsafe_segments() {
+        assert!(is_safe_table_relative_data_path("part-000.parquet"));
+        assert!(is_safe_table_relative_data_path("region=us/part-000.parquet"));
+        assert!(!is_safe_table_relative_data_path(""));
+        assert!(!is_safe_table_relative_data_path("/part-000.parquet"));
+        assert!(!is_safe_table_relative_data_path("../part-000.parquet"));
+        assert!(!is_safe_table_relative_data_path("region=us/../part-000.parquet"));
+        assert!(!is_safe_table_relative_data_path("region=us/.."));
+        assert!(!is_safe_table_relative_data_path("_delta_log/000.json"));
+        assert!(!is_safe_table_relative_data_path("_staging/run/adds/a.jsonl"));
+    }
+
+    #[tokio::test]
+    async fn validate_staged_data_file_checks_existence_and_size() {
+        let store: std::sync::Arc<dyn ObjectStore> = std::sync::Arc::new(InMemory::new());
+        let path = Path::from("part-000.parquet");
+        store
+            .put(&path, PutPayload::from(vec![1_u8, 2, 3]))
+            .await
+            .expect("put test object");
+
+        let matching = Add {
+            path: "part-000.parquet".to_string(),
+            size: 3,
+            data_change: true,
+            ..Default::default()
+        };
+        validate_staged_data_file(&store, &matching)
+            .await
+            .expect("matching file should validate");
+
+        let wrong_size = Add {
+            size: 4,
+            ..matching.clone()
+        };
+        assert!(validate_staged_data_file(&store, &wrong_size).await.is_err());
+
+        let missing = Add {
+            path: "missing.parquet".to_string(),
+            size: 3,
+            data_change: true,
+            ..Default::default()
+        };
+        assert!(validate_staged_data_file(&store, &missing).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn read_add_artifact_ignores_empty_lines() {
+        let store: std::sync::Arc<dyn ObjectStore> = std::sync::Arc::new(InMemory::new());
+        let path = Path::from("_staging/123e4567-e89b-12d3-a456-426614174000/adds/empty.jsonl");
+        store
+            .put(&path, PutPayload::from("\n  \n".to_string()))
+            .await
+            .expect("put empty artifact");
+
+        let adds = read_add_artifact(&store, &path).await.expect("read artifact");
+        assert!(adds.is_empty());
     }
 }

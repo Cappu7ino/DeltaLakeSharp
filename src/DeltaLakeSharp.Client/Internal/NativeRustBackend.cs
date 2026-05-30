@@ -531,7 +531,8 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            throw new NotImplementedException("Distributed write staging is not implemented yet.");
+            string commandJson = BuildDistributedWriteSessionCommandJson(session, storageConfig);
+            return StageDistributedWriteCoreAsync(schema, batches, commandJson, cancellationToken);
         }
 
         public Task<ExecuteResult> CommitDistributedWriteAsync(
@@ -541,7 +542,14 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            throw new NotImplementedException("Distributed write commit is not implemented yet.");
+            string commandJson = BuildCommitDistributedWriteCommandJson(session, options, storageConfig);
+            return ExecuteNativeJsonOperationAsync(
+                nameof(CommitDistributedWriteAsync),
+                "commit_distributed_write",
+                commandJson,
+                NativeMethods.CommitDistributedWriteAsyncWithCallback,
+                ParseExecuteResult,
+                cancellationToken);
         }
 
         public Task<ExecuteResult> AbortDistributedWriteAsync(
@@ -550,7 +558,14 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            throw new NotImplementedException("Distributed write abort is not implemented yet.");
+            string commandJson = BuildDistributedWriteSessionCommandJson(session, storageConfig);
+            return ExecuteNativeJsonOperationAsync(
+                nameof(AbortDistributedWriteAsync),
+                "abort_distributed_write",
+                commandJson,
+                NativeMethods.AbortDistributedWriteAsyncWithCallback,
+                ParseExecuteResult,
+                cancellationToken);
         }
 
         public Task<ExecuteResult> DeleteAsync(
@@ -983,6 +998,33 @@ namespace DeltaLakeSharp.Client.Internal
             }
         }
 
+        private async Task<DeltaStagedWriteResult> StageDistributedWriteCoreAsync(
+            Schema schema,
+            IAsyncEnumerable<RecordBatch> batches,
+            string commandJson,
+            CancellationToken cancellationToken)
+        {
+            IArrowArrayStream stream = new AsyncEnumerableArrowArrayStream(schema, batches, cancellationToken);
+            IntPtr streamPtr = CreateNativeArrowArrayStream();
+            try
+            {
+                ExportArrowArrayStream(stream, streamPtr);
+                return await ExecuteNativeSourceStreamJsonOperationAsync(
+                    nameof(StageDistributedWriteAsync),
+                    "stage_distributed_write",
+                    commandJson,
+                    streamPtr,
+                    NativeMethods.StageDistributedWriteAsyncWithCallback,
+                    ParseStagedWriteResult,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                stream.Dispose();
+                FreeNativeArrowArrayStream(streamPtr);
+            }
+        }
+
         /// <summary>
         /// Parses the common V3 action result envelope into the public client model.
         /// Keeping the envelope identical to Flight simplifies migration and lets
@@ -1190,6 +1232,77 @@ namespace DeltaLakeSharp.Client.Internal
             return JsonSerializer.Serialize(command);
         }
 
+        private static string BuildDistributedWriteSessionCommandJson(
+            DeltaDistributedWriteSession session,
+            StorageConfig? storageConfig)
+        {
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = session.TablePath,
+                ["run_id"] = session.RunId.ToString("D"),
+                ["mode"] = session.Mode == SaveMode.Append ? "append" : "overwrite",
+                ["table_disposition"] = ToDistributedWriteTableDispositionValue(session.TableDisposition),
+                ["overwrite_scope"] = ToDistributedOverwriteScopeValue(session.OverwriteScope),
+                ["staging_prefix"] = session.StagingPrefix,
+            };
+
+            if (session.SchemaMode.HasValue)
+            {
+                command["schema_mode"] = session.SchemaMode.Value.ToString().ToLowerInvariant();
+            }
+            if (session.PartitionBy.Count > 0)
+            {
+                command["partition_by"] = session.PartitionBy;
+            }
+            if (session.MaxBufferedBytes.HasValue)
+            {
+                command["max_buffered_bytes"] = session.MaxBufferedBytes.Value;
+            }
+            if (session.MaxBufferedRecordBatches.HasValue)
+            {
+                command["max_buffered_record_batches"] = session.MaxBufferedRecordBatches.Value;
+            }
+
+            AddStorageConfig(command, storageConfig, null);
+            return JsonSerializer.Serialize(command);
+        }
+
+        private static string BuildCommitDistributedWriteCommandJson(
+            DeltaDistributedWriteSession session,
+            DeltaDistributedCommitOptions? options,
+            StorageConfig? storageConfig)
+        {
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = session.TablePath,
+                ["run_id"] = session.RunId.ToString("D"),
+                ["mode"] = session.Mode == SaveMode.Append ? "append" : "overwrite",
+                ["table_disposition"] = ToDistributedWriteTableDispositionValue(session.TableDisposition),
+                ["overwrite_scope"] = ToDistributedOverwriteScopeValue(session.OverwriteScope),
+                ["staging_prefix"] = session.StagingPrefix,
+            };
+
+            if (session.SchemaMode.HasValue)
+            {
+                command["schema_mode"] = session.SchemaMode.Value.ToString().ToLowerInvariant();
+            }
+            if (session.PartitionBy.Count > 0)
+            {
+                command["partition_by"] = session.PartitionBy;
+            }
+            if (options?.ExpectedVersion != null)
+            {
+                command["expected_version"] = options.ExpectedVersion.Value;
+            }
+            if (options != null)
+            {
+                command["cleanup_staging_artifacts"] = options.CleanupStagingArtifacts;
+            }
+
+            AddStorageConfig(command, storageConfig, null);
+            return JsonSerializer.Serialize(command);
+        }
+
         private static string ToDistributedWriteTableDispositionValue(DistributedWriteTableDisposition disposition)
         {
             return disposition switch
@@ -1314,6 +1427,8 @@ namespace DeltaLakeSharp.Client.Internal
             string tableDisposition = obj["tableDisposition"]?.GetValue<string>() ?? "existingTable";
             string overwriteScope = obj["overwriteScope"]?.GetValue<string>() ?? "fullTable";
             string stagingPrefix = obj["stagingPrefix"]?.GetValue<string>() ?? "_staging";
+            long? maxBufferedBytes = obj["maxBufferedBytes"]?.GetValue<long>();
+            int? maxBufferedRecordBatches = obj["maxBufferedRecordBatches"]?.GetValue<int>();
             var partitionBy = new List<string>();
             if (obj["partitionBy"] is JsonArray partitionArray)
             {
@@ -1334,7 +1449,45 @@ namespace DeltaLakeSharp.Client.Internal
                 ParseDistributedWriteTableDisposition(tableDisposition),
                 ParseDistributedOverwriteScope(overwriteScope),
                 stagingPrefix,
-                partitionBy);
+                partitionBy,
+                maxBufferedBytes,
+                maxBufferedRecordBatches);
+        }
+
+        private static DeltaStagedWriteResult ParseStagedWriteResult(string json)
+        {
+            JsonNode root = JsonNode.Parse(json)
+                ?? throw new InvalidOperationException("Native backend returned invalid JSON for distributed write staging.");
+
+            if (!(root["success"]?.GetValue<bool>() ?? false))
+            {
+                string message = root["message"]?.GetValue<string>() ?? "Distributed write staging failed.";
+                throw new InvalidOperationException(message);
+            }
+
+            if (root["result"] is not JsonArray resultArray || resultArray.Count == 0 || resultArray[0] is not JsonObject obj)
+            {
+                throw new InvalidOperationException("Distributed write staging result is missing summary data.");
+            }
+
+            string runId = obj["runId"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("Distributed write staging result is missing runId.");
+            if (!Guid.TryParseExact(runId, "D", out Guid parsedRunId))
+            {
+                throw new InvalidOperationException("Distributed write staging result returned an invalid runId.");
+            }
+
+            string stagingPrefix = obj["stagingPrefix"]?.GetValue<string>() ?? "_staging";
+            int artifactCount = obj["artifactCount"]?.GetValue<int>() ?? 0;
+            long addedFileCount = obj["addedFileCount"]?.GetValue<long>() ?? 0;
+            long totalDataFileBytes = obj["totalDataFileBytes"]?.GetValue<long>() ?? 0;
+
+            return new DeltaStagedWriteResult(
+                parsedRunId,
+                stagingPrefix,
+                artifactCount,
+                addedFileCount,
+                totalDataFileBytes);
         }
 
         private static SaveMode ParseSaveMode(string value)

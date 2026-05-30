@@ -784,6 +784,70 @@ pub extern "C" fn dts_begin_distributed_write_async_with_callback(
     )
 }
 
+/// Starts distributed write staging from an imported Arrow C Stream and invokes `callback`
+/// after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_stage_distributed_write_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    source_stream: *mut FFI_ArrowArrayStream,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_source_stream_json_async_operation(
+        engine,
+        command_json,
+        source_stream,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command, reader| async move {
+            service
+                .stage_distributed_write_reader(command.as_slice(), reader)
+                .await
+        },
+    )
+}
+
+/// Starts distributed write coordinator commit and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_commit_distributed_write_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.commit_distributed_write(command.as_slice()).await },
+    )
+}
+
+/// Starts distributed write abort and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_abort_distributed_write_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.abort_distributed_write(command.as_slice()).await },
+    )
+}
+
 /// Starts protocol upgrade and invokes `callback` after terminal state is stored.
 #[unsafe(no_mangle)]
 pub extern "C" fn dts_upgrade_protocol_async_with_callback(

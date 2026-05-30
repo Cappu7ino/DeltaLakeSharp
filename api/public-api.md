@@ -205,7 +205,7 @@ Intended usage:
 - Use `SaveMode` for append/overwrite.
 - Use `WriteSchemaMode` only where backend supports schema evolution modes.
 - Use `MergeDataAsync` for streaming source data.
-- Use distributed write APIs only with V3 native Rust; the current scaffold exposes the public shape while stage/commit/abort implementation lands in follow-up slices.
+- Use distributed write APIs only with V3 native Rust; the current implementation supports existing-table append and keeps new-table creation, overwrite, and schema evolution for follow-up slices.
 
 Common pitfalls:
 
@@ -238,7 +238,8 @@ Lifecycle:
 
 - Callers create a globally unique `Guid` run ID and pass it in `DeltaDistributedWriteOptions.RunId`.
 - `BeginDistributedWriteAsync` returns a `DeltaDistributedWriteSession` that is shared by all workers and the coordinator.
-- `StageDistributedWriteAsync`, `CommitDistributedWriteAsync`, and `AbortDistributedWriteAsync` are scaffolded public API shapes in this slice and are V3-only.
+- `StageDistributedWriteAsync`, `CommitDistributedWriteAsync`, and `AbortDistributedWriteAsync` currently support existing-table append only.
+- New table creation, overwrite, touched-partition overwrite, and schema evolution are planned follow-up scopes.
 
 Common pitfalls:
 
