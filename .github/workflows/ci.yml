@@ -81,3 +81,20 @@ jobs:
 
       - name: Run compatibility tests
         run: dotnet test tests/DeltaLakeSharp.Client.Compatibility.Tests/DeltaLakeSharp.Client.Compatibility.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+
+    steps:
+      - name: Check matrix result
+        shell: bash
+        run: |
+          if [[ "${{ needs.build.result }}" != "success" ]]; then
+            echo "Build matrix result: ${{ needs.build.result }}"
+            exit 1
+          fi
+
+          echo "Build matrix result: ${{ needs.build.result }}"
