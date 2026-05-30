@@ -1702,6 +1702,56 @@ mod tests {
     }
 
     #[test]
+    fn async_operation_take_schema_rejects_null_arguments() {
+        let mut ffi_schema = FFI_ArrowSchema::empty();
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_schema(ptr::null_mut(), &mut ffi_schema)
+        );
+
+        let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
+            AsyncOperationCompletion::none(),
+            shared_runtime().handle().clone(),
+        )));
+        unsafe {
+            (*operation).set_operation_ptr(operation);
+        }
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_schema(operation, ptr::null_mut())
+        );
+
+        dts_async_operation_destroy(operation);
+    }
+
+    #[test]
+    fn async_operation_take_stream_rejects_null_arguments() {
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_stream(ptr::null_mut(), &mut ffi_stream)
+        );
+
+        let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
+            AsyncOperationCompletion::none(),
+            shared_runtime().handle().clone(),
+        )));
+        unsafe {
+            (*operation).set_operation_ptr(operation);
+        }
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_stream(operation, ptr::null_mut())
+        );
+
+        dts_async_operation_destroy(operation);
+    }
+
+    #[test]
     fn async_operation_finished_without_terminal_state_becomes_failed() {
         let task = shared_runtime().handle().spawn(async {});
         let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
