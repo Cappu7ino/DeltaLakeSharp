@@ -30,8 +30,6 @@ namespace DeltaLakeSharp.Client.Internal
         private const int NativeAsyncOperationSucceeded = 1;
         private const int NativeAsyncOperationFailed = 2;
         private const int NativeAsyncOperationCancelled = 3;
-        private const int NativeServiceErrorOk = 0;
-        private const int NativeServiceErrorCancelled = 8;
 
         private static readonly NativeMethods.NativeAsyncOperationCompletedCallback NativeAsyncOperationCompleted = OnNativeAsyncOperationCompleted;
 
@@ -612,18 +610,17 @@ namespace DeltaLakeSharp.Client.Internal
 
         private InvalidOperationException CreateNativeOperationFailedException(string operation)
         {
-            int lastErrorCode = NativeMethods.GetLastErrorCode(_engine.DangerousGetHandle());
-            string? lastError = GetLastErrorMessage();
+            NativeErrorInfo error = GetLastError();
             string message = $"Native V3 backend operation '{operation}' failed.";
 
-            if (lastErrorCode != NativeServiceErrorOk)
+            if (error.RawCode != (int)NativeServiceErrorCode.Ok)
             {
-                message += $" Native error code: {lastErrorCode}.";
+                message += $" Native error code: {FormatNativeErrorCode(error)}.";
             }
 
-            if (!string.IsNullOrWhiteSpace(lastError))
+            if (!string.IsNullOrWhiteSpace(error.Message))
             {
-                message += $" Native error: {lastError}";
+                message += $" Native error: {error.Message}";
             }
 
             return new InvalidOperationException(message);
@@ -633,22 +630,42 @@ namespace DeltaLakeSharp.Client.Internal
             IntPtr operation,
             string operationName)
         {
-            int errorCode = NativeMethods.AsyncOperationGetErrorCode(operation);
-            IntPtr errorPtr = NativeMethods.AsyncOperationGetError(operation);
-            string? error = NativeMethods.PtrToStringUtf8(errorPtr);
+            NativeErrorInfo error = GetAsyncOperationError(operation);
             string message = $"Native V3 backend operation '{operationName}' failed.";
 
-            if (errorCode != NativeServiceErrorOk)
+            if (error.RawCode != (int)NativeServiceErrorCode.Ok)
             {
-                message += $" Native error code: {errorCode}.";
+                message += $" Native error code: {FormatNativeErrorCode(error)}.";
             }
 
-            if (!string.IsNullOrWhiteSpace(error))
+            if (!string.IsNullOrWhiteSpace(error.Message))
             {
-                message += $" Native error: {error}";
+                message += $" Native error: {error.Message}";
             }
 
             return new InvalidOperationException(message);
+        }
+
+        private NativeErrorInfo GetLastError()
+        {
+            IntPtr engine = _engine.DangerousGetHandle();
+            return new NativeErrorInfo(
+                NativeMethods.GetLastErrorCode(engine),
+                NativeMethods.PtrToStringUtf8(NativeMethods.GetLastError(engine)));
+        }
+
+        private static NativeErrorInfo GetAsyncOperationError(IntPtr operation)
+        {
+            return new NativeErrorInfo(
+                NativeMethods.AsyncOperationGetErrorCode(operation),
+                NativeMethods.PtrToStringUtf8(NativeMethods.AsyncOperationGetError(operation)));
+        }
+
+        private static string FormatNativeErrorCode(NativeErrorInfo error)
+        {
+            return error.HasKnownCode
+                ? $"{error.RawCode} ({error.Code})"
+                : $"{error.RawCode} (Unknown)";
         }
 
         private static void OnNativeAsyncOperationCompleted(IntPtr operation, IntPtr userData)
@@ -847,12 +864,6 @@ namespace DeltaLakeSharp.Client.Internal
             {
                 CArrowSchema.Free(schemaPtr);
             }
-        }
-
-        private string? GetLastErrorMessage()
-        {
-            return NativeMethods.PtrToStringUtf8(
-                NativeMethods.GetLastError(_engine.DangerousGetHandle()));
         }
 
         /// <summary>
@@ -1424,15 +1435,14 @@ namespace DeltaLakeSharp.Client.Internal
 
             private static bool IsNativeCancellationFailure(IntPtr operation)
             {
-                int errorCode = NativeMethods.AsyncOperationGetErrorCode(operation);
-                if (errorCode == NativeServiceErrorCancelled)
+                NativeErrorInfo errorInfo = GetAsyncOperationError(operation);
+                if (errorInfo.Code == NativeServiceErrorCode.Cancelled)
                 {
                     return true;
                 }
 
-                string? error = NativeMethods.PtrToStringUtf8(NativeMethods.AsyncOperationGetError(operation));
-                return error != null
-                    && error.IndexOf("cancel", StringComparison.OrdinalIgnoreCase) >= 0;
+                return errorInfo.Message != null
+                    && errorInfo.Message.IndexOf("cancel", StringComparison.OrdinalIgnoreCase) >= 0;
             }
         }
 

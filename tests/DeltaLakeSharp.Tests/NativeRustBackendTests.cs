@@ -14,6 +14,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using DeltaLakeSharp.Client;
 using DeltaLakeSharp.Client.Internal;
+using DeltaLakeSharp.Client.Internal.Native;
 using DeltaLakeSharp.Client.Models;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -29,6 +30,12 @@ namespace DeltaLakeSharp.Tests
     [TestClass]
     public class NativeRustBackendTests
     {
+        private const int NativeAsyncOperationPending = 0;
+        private const int NativeAsyncOperationFailed = 2;
+
+        private static readonly NativeMethods.NativeAsyncOperationCompletedCallback NoOpNativeAsyncOperationCompleted =
+            static (_, _) => { };
+
         /// <summary>
         /// Creates a unique local directory for a native Delta table test.
         /// Each test gets its own isolated folder so cleanup can safely remove
@@ -46,6 +53,99 @@ namespace DeltaLakeSharp.Tests
             if (Directory.Exists(tablePath))
             {
                 Directory.Delete(tablePath, recursive: true);
+            }
+        }
+
+        private static int WaitForNativeAsyncOperation(IntPtr operation)
+        {
+            for (int i = 0; i < 200; i++)
+            {
+                int status = NativeMethods.AsyncOperationStatus(operation);
+                if (status != NativeAsyncOperationPending)
+                {
+                    return status;
+                }
+
+                Thread.Sleep(TimeSpan.FromMilliseconds(10));
+            }
+
+            return NativeMethods.AsyncOperationStatus(operation);
+        }
+
+        [TestMethod]
+        public void NativeServiceErrorCode_NumericValuesMatchNativeAbi()
+        {
+            Assert.AreEqual(0, (int)NativeServiceErrorCode.Ok);
+            Assert.AreEqual(1, (int)NativeServiceErrorCode.InvalidRequest);
+            Assert.AreEqual(2, (int)NativeServiceErrorCode.TableNotFound);
+            Assert.AreEqual(3, (int)NativeServiceErrorCode.Delta);
+            Assert.AreEqual(4, (int)NativeServiceErrorCode.DataFusion);
+            Assert.AreEqual(5, (int)NativeServiceErrorCode.Arrow);
+            Assert.AreEqual(6, (int)NativeServiceErrorCode.Json);
+            Assert.AreEqual(7, (int)NativeServiceErrorCode.Internal);
+            Assert.AreEqual(8, (int)NativeServiceErrorCode.Cancelled);
+        }
+
+        [TestMethod]
+        public void NativeErrorInfo_KnownCodesPreserveTypedClassification()
+        {
+            foreach (NativeServiceErrorCode code in Enum.GetValues(typeof(NativeServiceErrorCode)))
+            {
+                var error = new NativeErrorInfo(
+                    (int)code,
+                    code == NativeServiceErrorCode.Ok ? null : code.ToString());
+
+                Assert.AreEqual(code, error.Code);
+                Assert.AreEqual((int)code, error.RawCode);
+                Assert.IsTrue(error.HasKnownCode);
+                Assert.AreEqual(code != NativeServiceErrorCode.Ok, error.HasError);
+            }
+        }
+
+        [TestMethod]
+        public void NativeErrorInfo_UnknownCodePreservesRawValueAndMapsToInternal()
+        {
+            var error = new NativeErrorInfo(999, "future native code");
+
+            Assert.AreEqual(999, error.RawCode);
+            Assert.AreEqual(NativeServiceErrorCode.Internal, error.Code);
+            Assert.IsFalse(error.HasKnownCode);
+            Assert.IsTrue(error.HasError);
+        }
+
+        [TestMethod]
+        public void NativeAsyncOperation_MalformedCommandReturnsJsonErrorCode()
+        {
+            NativeMethods.EnsureLoaded();
+            IntPtr engine = NativeMethods.CreateEngine();
+            Assert.AreNotEqual(IntPtr.Zero, engine);
+
+            IntPtr operation = IntPtr.Zero;
+            try
+            {
+                operation = NativeMethods.GetSchemaAsyncWithCallback(
+                    engine,
+                    "{",
+                    NoOpNativeAsyncOperationCompleted,
+                    IntPtr.Zero);
+                Assert.AreNotEqual(IntPtr.Zero, operation);
+
+                Assert.AreEqual(NativeAsyncOperationFailed, WaitForNativeAsyncOperation(operation));
+                Assert.AreEqual(
+                    (int)NativeServiceErrorCode.Json,
+                    NativeMethods.AsyncOperationGetErrorCode(operation));
+
+                string? error = NativeMethods.PtrToStringUtf8(NativeMethods.AsyncOperationGetError(operation));
+                StringAssert.Contains(error ?? string.Empty, "json");
+            }
+            finally
+            {
+                if (operation != IntPtr.Zero)
+                {
+                    NativeMethods.AsyncOperationDestroy(operation);
+                }
+
+                NativeMethods.DestroyEngine(engine);
             }
         }
 
@@ -460,6 +560,10 @@ namespace DeltaLakeSharp.Tests
 
             StringAssert.Contains(ex.Message, "GetArrowSchemaAsync");
             StringAssert.Contains(ex.Message, "Native error code:");
+            Assert.IsTrue(
+                ex.Message.Contains("(Delta)", StringComparison.Ordinal)
+                    || ex.Message.Contains("(InvalidRequest)", StringComparison.Ordinal),
+                ex.Message);
             StringAssert.Contains(ex.Message, "Native error");
         }
 
