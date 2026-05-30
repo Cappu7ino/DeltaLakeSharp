@@ -118,6 +118,9 @@ namespace DeltaLakeSharp.Benchmark
         private string _tablePath = null!;
         private IReadOnlyList<DeltaReadPartition> _partitions = System.Array.Empty<DeltaReadPartition>();
 
+        [ParamsSource(nameof(DatasetProfiles))]
+        public string DatasetProfile { get; set; } = V3BenchmarkDatasetManager.Partitioned;
+
         [ParamsSource(nameof(PrefetchValues))]
         public bool PrefetchEnabled { get; set; }
 
@@ -126,6 +129,10 @@ namespace DeltaLakeSharp.Benchmark
 
         [Params(0, 1024, 8192)]
         public int BatchSize { get; set; }
+
+        public IEnumerable<string> DatasetProfiles => V3BenchmarkDatasetManager
+            .ResolveProfiles(Environment.GetEnvironmentVariable("DTS_BENCHMARK_V3_DATASET_FILTER"))
+            .Where(profile => string.Equals(profile, V3BenchmarkDatasetManager.Partitioned, StringComparison.OrdinalIgnoreCase));
 
         public IEnumerable<bool> PrefetchValues => V3BenchmarkParameterParser.ResolveBooleanValues(
             Environment.GetEnvironmentVariable("DTS_BENCHMARK_V3_PREFETCH"));
@@ -137,7 +144,7 @@ namespace DeltaLakeSharp.Benchmark
         [GlobalSetup]
         public async Task GlobalSetup()
         {
-            _tablePath = await V3BenchmarkDatasetManager.EnsureProfileAsync(V3BenchmarkDatasetManager.Partitioned).ConfigureAwait(false);
+            _tablePath = await V3BenchmarkDatasetManager.EnsureProfileAsync(DatasetProfile).ConfigureAwait(false);
 
             var options = new DeltaTableServiceClientOptions
             {
@@ -199,8 +206,15 @@ namespace DeltaLakeSharp.Benchmark
         private DeltaTableServiceClient _client = null!;
         private string _tablePath = null!;
 
+        [ParamsSource(nameof(DatasetProfiles))]
+        public string DatasetProfile { get; set; } = V3BenchmarkDatasetManager.CdfEnabled;
+
         [ParamsSource(nameof(PrefetchValues))]
         public bool PrefetchEnabled { get; set; }
+
+        public IEnumerable<string> DatasetProfiles => V3BenchmarkDatasetManager
+            .ResolveProfiles(Environment.GetEnvironmentVariable("DTS_BENCHMARK_V3_DATASET_FILTER"))
+            .Where(profile => string.Equals(profile, V3BenchmarkDatasetManager.CdfEnabled, StringComparison.OrdinalIgnoreCase));
 
         public IEnumerable<bool> PrefetchValues => V3BenchmarkParameterParser.ResolveBooleanValues(
             Environment.GetEnvironmentVariable("DTS_BENCHMARK_V3_PREFETCH"));
@@ -208,7 +222,7 @@ namespace DeltaLakeSharp.Benchmark
         [GlobalSetup]
         public async Task GlobalSetup()
         {
-            _tablePath = await V3BenchmarkDatasetManager.EnsureProfileAsync(V3BenchmarkDatasetManager.CdfEnabled).ConfigureAwait(false);
+            _tablePath = await V3BenchmarkDatasetManager.EnsureProfileAsync(DatasetProfile).ConfigureAwait(false);
             var options = new DeltaTableServiceClientOptions
             {
                 EnableNativeReadPrefetch = PrefetchEnabled,
