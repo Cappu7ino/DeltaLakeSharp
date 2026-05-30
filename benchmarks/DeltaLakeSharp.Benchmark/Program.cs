@@ -53,7 +53,13 @@ namespace DeltaLakeSharp.Benchmark
                 bool isTrial = false;
                 bool decimalOnly = false;
                 bool nonDecimalOnly = false;
+                bool generateV3Datasets = false;
+                bool overwriteV3Datasets = false;
                 string? explicitScenarioFilter = null;
+                string? v3DatasetFilter = null;
+                string? v3PrefetchFilter = null;
+                string? v3ConcurrencyFilter = null;
+                string? v3DatasetOutputRoot = null;
                 if (args != null && args.Length != 0)
                 {
                     isTrial = args.Contains("-trial", StringComparer.OrdinalIgnoreCase);
@@ -71,9 +77,45 @@ namespace DeltaLakeSharp.Benchmark
                             continue;
                         }
 
+                        if (string.Equals(arg, "--generate-datasets", StringComparison.OrdinalIgnoreCase))
+                        {
+                            generateV3Datasets = true;
+                            continue;
+                        }
+
+                        if (string.Equals(arg, "--overwrite-datasets", StringComparison.OrdinalIgnoreCase))
+                        {
+                            overwriteV3Datasets = true;
+                            continue;
+                        }
+
                         if (string.Equals(arg, "-scenario", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
                         {
                             explicitScenarioFilter = args[++i];
+                            continue;
+                        }
+
+                        if (string.Equals(arg, "--dataset", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                        {
+                            v3DatasetFilter = args[++i];
+                            continue;
+                        }
+
+                        if (string.Equals(arg, "--prefetch", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                        {
+                            v3PrefetchFilter = args[++i];
+                            continue;
+                        }
+
+                        if (string.Equals(arg, "--concurrency", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                        {
+                            v3ConcurrencyFilter = args[++i];
+                            continue;
+                        }
+
+                        if (string.Equals(arg, "--output", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+                        {
+                            v3DatasetOutputRoot = args[++i];
                             continue;
                         }
 
@@ -85,6 +127,20 @@ namespace DeltaLakeSharp.Benchmark
 
                 string? scenarioFilter = explicitScenarioFilter ?? (decimalOnly ? "decimal" : nonDecimalOnly ? "non-decimal" : null);
                 Environment.SetEnvironmentVariable("DTS_BENCHMARK_SCENARIO_FILTER", scenarioFilter);
+                Environment.SetEnvironmentVariable("DTS_BENCHMARK_V3_DATASET_FILTER", v3DatasetFilter);
+                Environment.SetEnvironmentVariable("DTS_BENCHMARK_V3_PREFETCH", v3PrefetchFilter);
+                Environment.SetEnvironmentVariable("DTS_BENCHMARK_V3_CONCURRENCY", v3ConcurrencyFilter);
+                if (!string.IsNullOrWhiteSpace(v3DatasetOutputRoot))
+                {
+                    Environment.SetEnvironmentVariable("DTS_BENCHMARK_V3_DATASET_ROOT", v3DatasetOutputRoot);
+                }
+
+                if (generateV3Datasets)
+                {
+                    V3BenchmarkDatasetManager.GenerateSelectedProfilesAsync(v3DatasetFilter, v3DatasetOutputRoot, overwriteV3Datasets)
+                        .GetAwaiter()
+                        .GetResult();
+                }
 
                 IConfig config =
 #if DEBUG

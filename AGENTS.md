@@ -52,6 +52,8 @@ Documentation targets:
 
 ## Validation Commands
 
+Required PR CI runs Windows and Linux jobs. Windows is the broad compatibility runner, including `net472`; Linux validates `net8.0` portability and the V3 native runtime. macOS validation is local/manual unless a future workflow adds it explicitly.
+
 ```powershell
 dotnet build DeltaLakeSharp.sln /p:SkipRustBuild=true -m:1
 ```
@@ -80,6 +82,12 @@ On macOS ARM64, prefer the explicit ARM64 `net8.0` invocation when validating V3
 
 ```powershell
 dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --framework net8.0 --arch arm64 --filter "TestCategory=V3" /p:PlatformTarget=arm64 /p:SkipRustBuild=true
+```
+
+V3 performance smoke tests are structural CI gates and should stay separate from BenchmarkDotNet trend runs:
+
+```powershell
+dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --framework net8.0 --filter "FullyQualifiedName~NativeRustPerformanceSmokeTests" /p:SkipRustBuild=true
 ```
 
 ## Files Worth Reading Before Major Changes

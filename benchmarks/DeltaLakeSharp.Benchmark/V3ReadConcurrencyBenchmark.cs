@@ -42,7 +42,7 @@ namespace DeltaLakeSharp.Benchmark
         [GlobalSetup]
         public async Task GlobalSetup()
         {
-            _tablePath = ResolveTablePath();
+            _tablePath = await ResolveTablePathAsync().ConfigureAwait(false);
             ValidateTablePath(_tablePath);
 
             var options = new DeltaTableServiceClientOptions
@@ -147,7 +147,7 @@ namespace DeltaLakeSharp.Benchmark
             }
         }
 
-        private static string ResolveTablePath()
+        private static async Task<string> ResolveTablePathAsync()
         {
             string? explicitPath = Environment.GetEnvironmentVariable("DTS_BENCHMARK_READ_PATH");
             if (!string.IsNullOrWhiteSpace(explicitPath))
@@ -155,7 +155,7 @@ namespace DeltaLakeSharp.Benchmark
                 return Path.GetFullPath(explicitPath);
             }
 
-            return Path.Combine(AppContext.BaseDirectory, "TestData", "delta-full-read", "1m");
+            return await V3BenchmarkDatasetManager.EnsureProfileAsync(V3BenchmarkDatasetManager.Partitioned).ConfigureAwait(false);
         }
 
         private static void ValidateTablePath(string tablePath)
