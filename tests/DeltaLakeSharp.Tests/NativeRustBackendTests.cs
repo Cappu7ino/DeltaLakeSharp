@@ -95,6 +95,8 @@ namespace DeltaLakeSharp.Tests
         [TestMethod]
         public void NativeAsyncOperation_NullHandleReturnsStableFailureStatus()
         {
+            NativeMethods.EnsureLoaded();
+
             Assert.AreEqual(
                 (int)NativeAsyncOperationStatus.Failed,
                 NativeMethods.AsyncOperationStatus(IntPtr.Zero));
