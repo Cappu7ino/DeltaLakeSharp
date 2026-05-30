@@ -85,4 +85,6 @@ Multiple V3 clients share the same process-wide Tokio runtime. This reduces thre
 
 ## Error Handling
 
-Native failures are surfaced as managed exceptions that include operation context and the native last-error message when available. Agents should preserve these messages in diagnostics and not replace them with generic errors.
+Native failures are surfaced as managed exceptions that include operation context, the native last-error message, and the native error code when available. Agents should preserve these messages in diagnostics and not replace them with generic errors.
+
+The native ABI exposes stable integer error codes for engine-level last errors and async operation failures. `0` means success/no error; non-zero values distinguish invalid requests, missing tables, Delta/DataFusion/Arrow/JSON failures, internal failures, and cancellation. Managed code maps these values to an internal `NativeServiceErrorCode` enum for diagnostics and control flow. Cancellation detection uses the typed async error code first and message matching only as a compatibility fallback.
