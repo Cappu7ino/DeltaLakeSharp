@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """Delta table operations: read, schema, execute SQL, create table, merge."""
 
 from __future__ import annotations

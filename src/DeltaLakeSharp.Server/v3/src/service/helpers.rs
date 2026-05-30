@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! Shared helpers for Delta table operations.
 //!
 //! These utilities are used by both the read and write handler modules.

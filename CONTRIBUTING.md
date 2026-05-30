@@ -30,6 +30,8 @@ The local native library name is platform-specific: `delta_table_service_native.
 
 ## Validation
 
+Pull request CI runs required Windows and Linux jobs in parallel. Windows is the full compatibility gate, including `net472` coverage. Linux validates `net8.0` portability, the V3 native Rust runtime, and Linux native-library loading behavior. macOS is not currently a required PR runner.
+
 Use these commands for typical changes:
 
 ```powershell
@@ -49,6 +51,22 @@ On macOS ARM64, run the `net8.0` V3 tests with an ARM64 host when the project `P
 ```powershell
 dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --framework net8.0 --arch arm64 --filter "TestCategory=V3" /p:PlatformTarget=arm64 /p:SkipRustBuild=true
 ```
+
+V3 performance smoke tests use structural assertions rather than tight timing thresholds. Run them when changing native read planning, Arrow stream setup, prefetching, or partition reads:
+
+```powershell
+dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --framework net8.0 --arch arm64 --filter "FullyQualifiedName~NativeRustPerformanceSmokeTests" /p:PlatformTarget=arm64 /p:SkipRustBuild=true
+```
+
+For local V3 benchmark trend checks, generate deterministic local datasets and run the V3 benchmark subset:
+
+```powershell
+dotnet run --project benchmarks\DeltaLakeSharp.Benchmark\DeltaLakeSharp.Benchmark.csproj -c Release -- --filter V3 --generate-datasets --dataset small,partitioned --prefetch both -trial
+```
+
+Use `--output <path>` to choose the generated dataset root and `--overwrite-datasets` to regenerate existing benchmark datasets.
+
+The manual package dry-run workflow runs on Windows and Linux. Windows packs the full current package shape. Linux packs the `net8.0` SDK/ADBC slices to catch cross-platform pack and path issues without making Linux responsible for `net472` package validation.
 
 V1/V2 compatibility tests require Docker/Testcontainers and may be run separately.
 

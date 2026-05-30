@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """Shared utility functions for Delta Table Service backends."""
 
 from __future__ import annotations

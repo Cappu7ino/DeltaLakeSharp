@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! Library-first entrypoint for Delta Table Service V3.
 //!
 //! The long-term direction for V3 is in-process native interop between C# and

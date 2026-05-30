@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! Transport-neutral read/query helpers for the Delta Table Service V3.
 
 use std::sync::{Arc, OnceLock};

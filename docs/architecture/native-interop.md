@@ -103,6 +103,14 @@ By default, V3 read streams pull each batch through the Arrow C Stream callback 
 
 Multiple V3 clients share the same process-wide Tokio runtime. This reduces thread and stack overhead compared with one runtime per engine, but it also means blocking native work can affect other V3 clients in the same process. Imported Arrow streams from managed code should avoid long blocking pulls; if a write source can block for a long time, isolate that behavior before sharing the client across high-concurrency workflows.
 
+## Performance Coverage
+
+V3 performance coverage is split between smoke tests and BenchmarkDotNet scenarios. Smoke tests live in [../../tests/DeltaLakeSharp.Tests/NativeRustPerformanceSmokeTests.cs](../../tests/DeltaLakeSharp.Tests/NativeRustPerformanceSmokeTests.cs) and intentionally avoid strict wall-clock thresholds. They assert structural behavior such as bounded partition token payloads, first-batch availability without draining a stream, prefetch first-batch behavior, many-client creation, and concurrent partition read row counts.
+
+Benchmark scenarios live under [../../benchmarks/DeltaLakeSharp.Benchmark](../../benchmarks/DeltaLakeSharp.Benchmark). The Phase 9 V3 benchmarks generate deterministic local datasets for small baseline, many-file, wide-schema, partitioned, and CDF-enabled profiles. Benchmarks measure public schema reads, partition planning token sizes, first-batch latency, full Arrow scans, concurrent partition reads, and CDF reads. These benchmarks are intended for local trend tracking and regression investigation, not for tight CI pass/fail timing gates.
+
+Dataset generation is local-only and credential-free. Generated data defaults to benchmark output paths and can be redirected with benchmark CLI options. Prefetch is measured both disabled and enabled so regressions in the experimental prefetch path can be spotted without implying that prefetch is required for normal reads.
+
 ## Error Handling
 
 Native failures are surfaced as managed exceptions that include operation context, the native last-error message, and the native error code when available. Agents should preserve these messages in diagnostics and not replace them with generic errors.

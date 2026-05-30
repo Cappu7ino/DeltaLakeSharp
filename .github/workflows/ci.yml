@@ -13,8 +13,13 @@ permissions:
 
 jobs:
   build:
-    name: Build and test
-    runs-on: windows-latest
+    name: Build and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
 
     steps:
       - name: Checkout
@@ -40,16 +45,56 @@ jobs:
         run: cargo build --release
 
       - name: Build solution
+        if: runner.os == 'Windows'
         run: dotnet build DeltaLakeSharp.sln --configuration Release --no-restore /p:SkipRustBuild=true -m:1
 
+      - name: Build Linux net8.0 projects
+        if: runner.os == 'Linux'
+        run: |
+          dotnet build src/DeltaLakeSharp.Client/DeltaLakeSharp.Client.csproj --framework net8.0 --configuration Release --no-restore /p:SkipRustBuild=true
+          dotnet build src/DeltaLakeSharp.Adbc/DeltaLakeSharp.Adbc.csproj --framework net8.0 --configuration Release --no-restore /p:SkipRustBuild=true
+          dotnet build tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --framework net8.0 --configuration Release --no-restore /p:SkipRustBuild=true
+          dotnet build tests/DeltaLakeSharp.Adbc.Tests/DeltaLakeSharp.Adbc.Tests.csproj --framework net8.0 --configuration Release --no-restore
+          dotnet build tests/DeltaLakeSharp.Client.Compatibility.Tests/DeltaLakeSharp.Client.Compatibility.Tests.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+
       - name: Build client example
-        run: dotnet build examples\DeltaLakeSharp.Client.Examples\DeltaLakeSharp.Client.Examples.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+        run: dotnet build examples/DeltaLakeSharp.Client.Examples/DeltaLakeSharp.Client.Examples.csproj --configuration Release --no-restore /p:SkipRustBuild=true
 
       - name: Run SDK non-integration tests
-        run: dotnet test tests\DeltaLakeSharp.Tests\DeltaLakeSharp.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+        if: runner.os == 'Windows'
+        run: dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration&FullyQualifiedName!~NativeRustPerformanceSmokeTests"
+
+      - name: Run SDK net8.0 non-integration tests
+        if: runner.os == 'Linux'
+        run: dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --framework net8.0 --configuration Release --no-build --filter "TestCategory!=Integration&FullyQualifiedName!~NativeRustPerformanceSmokeTests"
+
+      - name: Run V3 performance smoke tests
+        run: dotnet test tests/DeltaLakeSharp.Tests/DeltaLakeSharp.Tests.csproj --framework net8.0 --configuration Release --no-build --filter "FullyQualifiedName~NativeRustPerformanceSmokeTests"
 
       - name: Run ADBC non-integration tests
-        run: dotnet test tests\DeltaLakeSharp.Adbc.Tests\DeltaLakeSharp.Adbc.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+        if: runner.os == 'Windows'
+        run: dotnet test tests/DeltaLakeSharp.Adbc.Tests/DeltaLakeSharp.Adbc.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+
+      - name: Run ADBC net8.0 non-integration tests
+        if: runner.os == 'Linux'
+        run: dotnet test tests/DeltaLakeSharp.Adbc.Tests/DeltaLakeSharp.Adbc.Tests.csproj --framework net8.0 --configuration Release --no-build --filter "TestCategory!=Integration"
 
       - name: Run compatibility tests
-        run: dotnet test tests\DeltaLakeSharp.Client.Compatibility.Tests\DeltaLakeSharp.Client.Compatibility.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+        run: dotnet test tests/DeltaLakeSharp.Client.Compatibility.Tests/DeltaLakeSharp.Client.Compatibility.Tests.csproj --configuration Release --no-build --filter "TestCategory!=Integration"
+
+  build-and-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+
+    steps:
+      - name: Check matrix result
+        shell: bash
+        run: |
+          if [[ "${{ needs.build.result }}" != "success" ]]; then
+            echo "Build matrix result: ${{ needs.build.result }}"
+            exit 1
+          fi
+
+          echo "Build matrix result: ${{ needs.build.result }}"

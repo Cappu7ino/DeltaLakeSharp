@@ -14,6 +14,15 @@ namespace DeltaLakeSharp.Benchmark
     {
         private const string TableName = "bench_dataset";
 
+        internal static readonly string[] V3ProfileNames =
+        {
+            "small",
+            "many-files",
+            "wide",
+            "partitioned",
+            "cdf",
+        };
+
         private static readonly string[] Regions =
         {
             "US-East", "US-West", "EU-West", "APAC", "SA-East",
@@ -51,6 +60,46 @@ namespace DeltaLakeSharp.Benchmark
             new("is_active", "boolean", nullable: false),
             new("note", "string", nullable: true),
         });
+
+        private static readonly TableSchema WideDatasetSchema = new(
+            new[] { new ColumnDefinition("id", "long", nullable: false) }
+                .Concat(Enumerable.Range(1, 100).Select(i => new ColumnDefinition($"value_{i:D3}", "int32", nullable: false)))
+                .ToList());
+
+        internal static string GetDefaultV3DatasetRoot()
+        {
+            string? explicitRoot = Environment.GetEnvironmentVariable("DTS_BENCHMARK_DATASET_ROOT");
+            if (!string.IsNullOrWhiteSpace(explicitRoot))
+            {
+                return Path.GetFullPath(explicitRoot);
+            }
+
+            string? repositoryRoot = FindRepositoryRoot();
+            string basePath = repositoryRoot ?? AppContext.BaseDirectory;
+            return Path.Combine(basePath, "BenchmarkDotNet.Artifacts", "datasets", "v3");
+        }
+
+        internal static string GetV3DatasetPath(string profileName, string? outputRoot = null)
+        {
+            string normalizedProfile = NormalizeV3ProfileName(profileName);
+            string root = string.IsNullOrWhiteSpace(outputRoot)
+                ? GetDefaultV3DatasetRoot()
+                : Path.GetFullPath(outputRoot);
+            return Path.Combine(root, normalizedProfile);
+        }
+
+        internal static async Task GenerateV3ProfilesAsync(string? outputRoot, string? profileName, bool overwrite)
+        {
+            string[] profiles = string.IsNullOrWhiteSpace(profileName)
+                ? V3ProfileNames
+                : new[] { NormalizeV3ProfileName(profileName!) };
+
+            foreach (string profile in profiles)
+            {
+                DatasetGeneratorOptions options = CreateV3ProfileOptions(profile, GetV3DatasetPath(profile, outputRoot), overwrite);
+                await GenerateAsync(options).ConfigureAwait(false);
+            }
+        }
 
         internal static async Task<int> RunAsync(string[] args)
         {
@@ -93,6 +142,9 @@ namespace DeltaLakeSharp.Benchmark
                     case "--kind":
                         options.Kind = NextValue();
                         break;
+                    case "--profile":
+                        options.Profile = NextValue();
+                        break;
                     case "--output":
                         options.OutputPath = NextValue();
                         break;
@@ -129,13 +181,24 @@ namespace DeltaLakeSharp.Benchmark
 
             if (string.IsNullOrWhiteSpace(options.Kind))
             {
-                throw new ArgumentException("A dataset kind is required. Use --kind full-read|full-cdf.");
+                throw new ArgumentException("A dataset kind is required. Use --kind full-read|full-cdf|v3-profile|v3-profiles.");
             }
 
             if (!string.Equals(options.Kind, "full-read", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(options.Kind, "full-cdf", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(options.Kind, "full-cdf", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(options.Kind, "v3-profile", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(options.Kind, "v3-profiles", StringComparison.OrdinalIgnoreCase))
             {
-                throw new ArgumentException("Dataset kind must be 'full-read' or 'full-cdf'.");
+                throw new ArgumentException("Dataset kind must be 'full-read', 'full-cdf', 'v3-profile', or 'v3-profiles'.");
+            }
+
+            if (string.Equals(options.Kind, "v3-profile", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(options.Kind, "v3-profiles", StringComparison.OrdinalIgnoreCase))
+            {
+                options.OutputPath = string.IsNullOrWhiteSpace(options.OutputPath)
+                    ? GetDefaultV3DatasetRoot()
+                    : Path.GetFullPath(options.OutputPath);
+                return options;
             }
 
             if (string.IsNullOrWhiteSpace(options.OutputPath))
@@ -164,9 +227,10 @@ namespace DeltaLakeSharp.Benchmark
             }
 
             if (!string.Equals(options.SchemaVariant, "default", StringComparison.OrdinalIgnoreCase)
-                && !string.Equals(options.SchemaVariant, "decimal", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(options.SchemaVariant, "decimal", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(options.SchemaVariant, "wide", StringComparison.OrdinalIgnoreCase))
             {
-                throw new ArgumentException("Schema variant must be 'default' or 'decimal'.");
+                throw new ArgumentException("Schema variant must be 'default', 'decimal', or 'wide'.");
             }
 
             return options;
@@ -186,8 +250,11 @@ namespace DeltaLakeSharp.Benchmark
         {
             Logger.Info("Dataset generator usage:");
             Console.WriteLine("  dotnet run --project benchmarks/DeltaLakeSharp.Benchmark -- generate-dataset --kind <full-read|full-cdf> --output <path> [options]");
+            Console.WriteLine("  dotnet run --project benchmarks/DeltaLakeSharp.Benchmark -- generate-dataset --kind v3-profiles [--output <root>] [--overwrite]");
+            Console.WriteLine("  dotnet run --project benchmarks/DeltaLakeSharp.Benchmark -- generate-dataset --kind v3-profile --profile <small|many-files|wide|partitioned|cdf> [--output <root>] [--overwrite]");
             Console.WriteLine();
             Console.WriteLine("Options:");
+            Console.WriteLine("  --profile <name>         V3 dataset profile for --kind v3-profile");
             Console.WriteLine("  --rows <n>               Initial row count (default: 1000000)");
             Console.WriteLine("  --batch-size <n>         Rows per insert batch/file target (default: 100000)");
             Console.WriteLine("  --versions <n>           Additional CDF versions to generate (default: 20)");
@@ -203,8 +270,22 @@ namespace DeltaLakeSharp.Benchmark
 
         private static async Task GenerateAsync(DatasetGeneratorOptions options)
         {
+            if (string.Equals(options.Kind, "v3-profile", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(options.Kind, "v3-profiles", StringComparison.OrdinalIgnoreCase))
+            {
+                await GenerateV3ProfilesAsync(
+                    options.OutputPath,
+                    string.Equals(options.Kind, "v3-profile", StringComparison.OrdinalIgnoreCase) ? options.Profile : null,
+                    options.Overwrite).ConfigureAwait(false);
+                return;
+            }
+
             string outputPath = Path.GetFullPath(options.OutputPath);
-            PrepareOutputPath(outputPath, options.Overwrite);
+            if (!PrepareOutputPath(outputPath, options.Overwrite, options.SkipExisting))
+            {
+                Logger.Info($"Dataset already exists at '{outputPath}'. Use --overwrite to regenerate it.");
+                return;
+            }
 
             Logger.Info($"Generating {options.Kind} dataset at '{outputPath}'...");
             Logger.Info($"InitialRows={options.InitialRowCount}, BatchSize={options.BatchSize}, Versions={options.VersionCount}, RowsPerVersion={options.RowsPerVersion}, Seed={options.Seed}");
@@ -224,10 +305,27 @@ namespace DeltaLakeSharp.Benchmark
                 : new Dictionary<string, string>(StringComparer.Ordinal);
 
             TableSchema schema = ResolveSchema(options);
-            ExecuteResult createResult = await client.CreateTableAsync(outputPath, schema, configuration: configuration);
+            ExecuteResult createResult = await client.CreateTableAsync(
+                outputPath,
+                schema,
+                configuration: configuration,
+                partitionBy: options.PartitionByRegion ? new[] { "region" } : null);
             if (!createResult.Success)
             {
                 throw new InvalidOperationException($"CreateTableAsync failed: {createResult.Message}");
+            }
+
+            if (options.UpgradeForChangeDataFeed)
+            {
+                ExecuteResult upgradeResult = await client.UpgradeTableProtocolAsync(
+                    outputPath,
+                    readerVersion: 3,
+                    writerVersion: 7,
+                    writerFeatures: new[] { "changeDataFeed" }).ConfigureAwait(false);
+                if (!upgradeResult.Success)
+                {
+                    throw new InvalidOperationException($"UpgradeTableProtocolAsync failed: {upgradeResult.Message}");
+                }
             }
 
             long nextId = 1;
@@ -243,7 +341,7 @@ namespace DeltaLakeSharp.Benchmark
             Logger.Info($"Dataset generation complete. Latest visible row count: {latestRowCount:N0}");
         }
 
-        private static void PrepareOutputPath(string outputPath, bool overwrite)
+        private static bool PrepareOutputPath(string outputPath, bool overwrite, bool skipExisting)
         {
             string? parent = Path.GetDirectoryName(outputPath);
             if (!string.IsNullOrEmpty(parent))
@@ -255,11 +353,18 @@ namespace DeltaLakeSharp.Benchmark
             {
                 if (!overwrite)
                 {
+                    if (skipExisting && Directory.Exists(Path.Combine(outputPath, "_delta_log")))
+                    {
+                        return false;
+                    }
+
                     throw new IOException($"Output path '{outputPath}' already exists. Re-run with --overwrite to replace it.");
                 }
 
                 Directory.Delete(outputPath, recursive: true);
             }
+
+            return true;
         }
 
         private static async Task<long> GenerateCdfHistoryAsync(
@@ -371,6 +476,11 @@ namespace DeltaLakeSharp.Benchmark
 
         private static RecordBatch BuildBatch(TableSchema schema, long startingId, int rowCount, int seed, int versionOrdinal, int batchIndex, bool includeDecimal)
         {
+            if (schema.Columns.Count > 0 && string.Equals(schema.Columns[0].Name, "id", StringComparison.Ordinal) && schema.Columns.Count > 20)
+            {
+                return BuildWideBatch(schema, startingId, rowCount, seed, versionOrdinal, batchIndex);
+            }
+
             var random = new Random(unchecked(seed + versionOrdinal * 48611 + batchIndex * 167));
             var baseTimestamp = new DateTimeOffset(2024, 1, 1, 0, 0, 0, TimeSpan.Zero).AddDays(versionOrdinal);
             var rows = new object[rowCount][];
@@ -421,6 +531,27 @@ namespace DeltaLakeSharp.Benchmark
             return ArrowConverter.FromRows(rows, schema);
         }
 
+        private static RecordBatch BuildWideBatch(TableSchema schema, long startingId, int rowCount, int seed, int versionOrdinal, int batchIndex)
+        {
+            var rows = new object[rowCount][];
+            int offset = unchecked(seed + versionOrdinal * 48611 + batchIndex * 167);
+
+            for (int i = 0; i < rowCount; i++)
+            {
+                long id = startingId + i;
+                var row = new object[schema.Columns.Count];
+                row[0] = id;
+                for (int column = 1; column < row.Length; column++)
+                {
+                    row[column] = (int)((id * 31 + column * 17 + offset) % 10_000);
+                }
+
+                rows[i] = row;
+            }
+
+            return ArrowConverter.FromRows(rows, schema);
+        }
+
         private static async IAsyncEnumerable<RecordBatch> SingleBatchAsync(RecordBatch batch)
         {
             yield return batch;
@@ -429,6 +560,11 @@ namespace DeltaLakeSharp.Benchmark
 
         private static TableSchema ResolveSchema(DatasetGeneratorOptions options)
         {
+            if (string.Equals(options.SchemaVariant, "wide", StringComparison.OrdinalIgnoreCase))
+            {
+                return WideDatasetSchema;
+            }
+
             return IsDecimalSchema(options) ? DecimalDatasetSchema : DatasetSchema;
         }
 
@@ -437,9 +573,84 @@ namespace DeltaLakeSharp.Benchmark
             return string.Equals(options.SchemaVariant, "decimal", StringComparison.OrdinalIgnoreCase);
         }
 
+        private static DatasetGeneratorOptions CreateV3ProfileOptions(string profileName, string outputPath, bool overwrite)
+        {
+            string normalizedProfile = NormalizeV3ProfileName(profileName);
+            var options = new DatasetGeneratorOptions
+            {
+                Kind = normalizedProfile == "cdf" ? "full-cdf" : "full-read",
+                OutputPath = outputPath,
+                InitialRowCount = 128,
+                BatchSize = 64,
+                VersionCount = 0,
+                RowsPerVersion = 0,
+                Seed = 42,
+                Overwrite = overwrite,
+                SkipExisting = true,
+            };
+
+            switch (normalizedProfile)
+            {
+                case "small":
+                    return options;
+                case "many-files":
+                    options.InitialRowCount = 48;
+                    options.BatchSize = 1;
+                    return options;
+                case "wide":
+                    options.InitialRowCount = 64;
+                    options.BatchSize = 16;
+                    options.SchemaVariant = "wide";
+                    return options;
+                case "partitioned":
+                    options.InitialRowCount = 200;
+                    options.BatchSize = 20;
+                    options.PartitionByRegion = true;
+                    return options;
+                case "cdf":
+                    options.InitialRowCount = 32;
+                    options.BatchSize = 16;
+                    options.VersionCount = 2;
+                    options.RowsPerVersion = 8;
+                    options.UpgradeForChangeDataFeed = true;
+                    return options;
+                default:
+                    throw new ArgumentException($"Unknown V3 dataset profile '{profileName}'.", nameof(profileName));
+            }
+        }
+
+        private static string NormalizeV3ProfileName(string profileName)
+        {
+            string normalized = profileName.Trim().ToLowerInvariant();
+            if (V3ProfileNames.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                return normalized;
+            }
+
+            throw new ArgumentException($"Unknown V3 dataset profile '{profileName}'. Supported profiles: {string.Join(", ", V3ProfileNames)}.");
+        }
+
+        private static string? FindRepositoryRoot()
+        {
+            string? dir = AppContext.BaseDirectory;
+            while (dir != null)
+            {
+                if (File.Exists(Path.Combine(dir, "DeltaLakeSharp.sln")))
+                {
+                    return dir;
+                }
+
+                dir = Path.GetDirectoryName(dir);
+            }
+
+            return null;
+        }
+
         private sealed class DatasetGeneratorOptions
         {
             public string Kind { get; set; } = "full-read";
+
+            public string? Profile { get; set; }
 
             public string OutputPath { get; set; } = string.Empty;
 
@@ -456,6 +667,12 @@ namespace DeltaLakeSharp.Benchmark
             public string SchemaVariant { get; set; } = "default";
 
             public bool Overwrite { get; set; }
+
+            public bool SkipExisting { get; set; }
+
+            public bool PartitionByRegion { get; set; }
+
+            public bool UpgradeForChangeDataFeed { get; set; }
 
             public bool ShowHelp { get; set; }
         }

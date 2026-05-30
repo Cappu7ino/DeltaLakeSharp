@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! Unified error type for the Delta Table Service V3.
 //!
 //! All internal errors are funnelled through [`ServiceError`], which is shared

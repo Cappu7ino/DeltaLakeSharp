@@ -9,8 +9,6 @@
     <AssemblyOriginatorKeyFile>..\DeltaLakeSharp.Client\DeltaLakeSharp.Client.snk</AssemblyOriginatorKeyFile>
     <PackageId>DeltaLakeSharp.Adbc</PackageId>
     <Version>0.1.3-preview.1</Version>
-    <Authors>Microsoft; DeltaLakeSharp contributors</Authors>
-    <Company>Microsoft</Company>
     <Description>Experimental read-only ADBC driver for Delta Lake tables backed by the DeltaLakeSharp V3 native Rust runtime.</Description>
     <PackageTags>delta lake;delta;delta-rs;arrow;adbc;dotnet;rust</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

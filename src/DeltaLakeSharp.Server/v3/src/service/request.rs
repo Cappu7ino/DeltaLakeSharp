@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! JSON command structures for transport-neutral V3 request payloads.
 
 use std::collections::HashMap;

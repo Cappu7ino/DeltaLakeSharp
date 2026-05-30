@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 //! Write-path handlers for transport-neutral V3 operations.
 
 use std::collections::HashMap;

@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """Delta Table Service - Arrow Flight server backed by PySpark and Delta Lake.
 
 This package provides shared utilities and configuration for the Delta Table

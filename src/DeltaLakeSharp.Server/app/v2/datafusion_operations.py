@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """Delta table operations using DataFusion (Rust engine) and delta-rs.
 
 This module provides the same logical operations as ``delta_operations.py``

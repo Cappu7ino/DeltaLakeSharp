@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """Arrow Flight server for Delta table operations using DataFusion (V2).
 
 This server exposes the exact same Arrow Flight RPC protocol as the V1

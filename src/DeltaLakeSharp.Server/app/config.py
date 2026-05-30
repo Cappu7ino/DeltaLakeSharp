@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation. All rights reserved.
-# Licensed under the MIT License.
 """Configuration constants for DeltaLakeSharp server backends."""
 
 # Arrow Flight server settings

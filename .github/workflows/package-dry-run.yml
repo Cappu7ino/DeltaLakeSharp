@@ -8,8 +8,15 @@ permissions:
 
 jobs:
   pack:
-    name: Pack NuGet artifacts
-    runs-on: windows-latest
+    name: Pack NuGet artifacts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+          - os: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -31,11 +38,39 @@ jobs:
         run: cargo build --release
 
       - name: Pack client
-        run: dotnet pack src\DeltaLakeSharp.Client\DeltaLakeSharp.Client.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+        if: runner.os == 'Windows'
+        run: dotnet pack src/DeltaLakeSharp.Client/DeltaLakeSharp.Client.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+
+      - name: Pack client portable TFMs
+        if: runner.os == 'Linux'
+        run: dotnet pack src/DeltaLakeSharp.Client/DeltaLakeSharp.Client.csproj --configuration Release /p:SkipRustBuild=true /p:TargetFrameworks=net8.0
 
       - name: Pack ADBC
-        run: dotnet pack src\DeltaLakeSharp.Adbc\DeltaLakeSharp.Adbc.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+        if: runner.os == 'Windows'
+        run: dotnet pack src/DeltaLakeSharp.Adbc/DeltaLakeSharp.Adbc.csproj --configuration Release --no-restore /p:SkipRustBuild=true
+
+      - name: Pack ADBC net8.0
+        if: runner.os == 'Linux'
+        run: dotnet pack src/DeltaLakeSharp.Adbc/DeltaLakeSharp.Adbc.csproj --configuration Release /p:SkipRustBuild=true /p:TargetFrameworks=net8.0
 
       - name: List packages
         shell: pwsh
         run: Get-ChildItem -Recurse -Filter *.nupkg | Select-Object FullName, Length
+
+      - name: Inspect package native assets
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          Get-ChildItem -Recurse -Filter *.nupkg | ForEach-Object {
+            Write-Host "Package: $($_.FullName)"
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($_.FullName)
+            try {
+              $zip.Entries |
+                Where-Object { $_.FullName -like "runtimes/*/native/*" } |
+                Select-Object FullName, Length |
+                Format-Table -AutoSize
+            }
+            finally {
+              $zip.Dispose()
+            }
+          }

@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation. All rights reserved.
-// Licensed under the MIT License.
-
 use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine as _;
