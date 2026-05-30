@@ -711,6 +711,49 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_OpenReadTableStreamAsync_CanDisposeRepeatedPartialReads()
+        {
+            string tablePath = CreateTempTablePath("native_v3_repeated_partial_stream_release");
+            using var backend = new NativeRustBackend();
+            try
+            {
+                var tableSchema = new TableSchema(new List<ColumnDefinition>
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("name", "string"),
+                });
+
+                ExecuteResult createResult = await backend.CreateEmptyTableAsync(tablePath, tableSchema);
+                Assert.IsTrue(createResult.Success, $"CreateEmptyTableAsync failed: {createResult.Message}");
+
+                RecordBatch batch = ArrowConverter.FromRows(
+                    new[]
+                    {
+                        new object[] { 1, "Alice" },
+                        new object[] { 2, "Bob" },
+                    },
+                    tableSchema);
+                await backend.InsertAsync(
+                    tablePath,
+                    batch.Schema,
+                    ArrowConverter.ToAsyncEnumerable(batch),
+                    mode: "append");
+
+                for (int attempt = 0; attempt < 25; attempt++)
+                {
+                    using ArrowStreamResult streamResult = await backend.OpenReadTableStreamAsync(tablePath);
+                    RecordBatch? readBatch = await streamResult.Stream.ReadNextRecordBatchAsync();
+                    Assert.IsNotNull(readBatch, $"Expected at least one batch on attempt {attempt}.");
+                    Assert.AreEqual(2, readBatch!.Length);
+                }
+            }
+            finally
+            {
+                CleanupTablePath(tablePath);
+            }
+        }
+
+        [TestMethod]
         public async Task NativeBackend_OpenExecuteQueryStreamAsync_PreCanceledTokenThrows()
         {
             using var backend = new NativeRustBackend();

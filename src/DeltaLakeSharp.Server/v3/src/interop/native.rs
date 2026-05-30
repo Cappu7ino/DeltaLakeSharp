@@ -382,6 +382,120 @@ fn with_engine<T>(
     }
 }
 
+fn command_json_bytes(engine: &DeltaServiceEngine, command_json: *const c_char) -> Option<Vec<u8>> {
+    if command_json.is_null() {
+        engine.set_last_error(
+            ServiceErrorCode::InvalidRequest,
+            "command_json must not be null.".to_string(),
+        );
+        return None;
+    }
+
+    Some(unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec())
+}
+
+fn require_out_schema(engine: &DeltaServiceEngine, out_schema: *mut FFI_ArrowSchema) -> bool {
+    if out_schema.is_null() {
+        engine.set_last_error(
+            ServiceErrorCode::InvalidRequest,
+            "out_schema must not be null.".to_string(),
+        );
+        return false;
+    }
+
+    true
+}
+
+fn require_out_stream(engine: &DeltaServiceEngine, out_stream: *mut FFI_ArrowArrayStream) -> bool {
+    if out_stream.is_null() {
+        engine.set_last_error(
+            ServiceErrorCode::InvalidRequest,
+            "out_stream must not be null.".to_string(),
+        );
+        return false;
+    }
+
+    true
+}
+
+fn require_source_stream(
+    engine: &DeltaServiceEngine,
+    source_stream: *mut FFI_ArrowArrayStream,
+) -> bool {
+    if source_stream.is_null() {
+        engine.set_last_error(
+            ServiceErrorCode::InvalidRequest,
+            "source_stream must not be null.".to_string(),
+        );
+        return false;
+    }
+
+    true
+}
+
+fn json_value_into_native_string(
+    engine: &DeltaServiceEngine,
+    result: serde_json::Value,
+) -> *mut c_char {
+    match CString::new(result.to_string()) {
+        Ok(result) => result.into_raw(),
+        Err(error) => {
+            engine.set_last_error(ServiceErrorCode::Internal, error.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+fn write_arrow_schema(
+    engine: &DeltaServiceEngine,
+    schema: &ArrowSchema,
+    out_schema: *mut FFI_ArrowSchema,
+) -> i32 {
+    let ffi_schema = match FFI_ArrowSchema::try_from(schema) {
+        Ok(schema) => schema,
+        Err(error) => {
+            engine.set_last_error(ServiceErrorCode::Arrow, error.to_string());
+            return 0;
+        }
+    };
+
+    // SAFETY: `out_schema` is validated non-null by the caller and points to
+    // caller-allocated writable memory for a single `FFI_ArrowSchema` value.
+    unsafe {
+        ptr::write(out_schema, ffi_schema);
+    }
+
+    1
+}
+
+fn write_arrow_stream(
+    reader: Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+    out_stream: *mut FFI_ArrowArrayStream,
+) -> i32 {
+    let ffi_stream = FFI_ArrowArrayStream::new(reader);
+
+    // SAFETY: `out_stream` is validated non-null by the caller and points to
+    // caller-allocated writable memory for a single `FFI_ArrowArrayStream` value.
+    unsafe {
+        ptr::write(out_stream, ffi_stream);
+    }
+
+    1
+}
+
+fn import_source_stream(
+    engine: &DeltaServiceEngine,
+    source_stream: *mut FFI_ArrowArrayStream,
+) -> Option<ArrowArrayStreamReader> {
+    match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
+        Ok(reader) => Some(reader),
+        Err(error) => {
+            engine.set_last_error(ServiceErrorCode::Arrow, error.to_string());
+            None
+        }
+    }
+}
+
 /// Creates a new native service engine.
 #[unsafe(no_mangle)]
 pub extern "C" fn dts_create_engine() -> *mut DeltaServiceEngine {
@@ -462,27 +576,16 @@ pub extern "C" fn dts_get_schema(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return 0;
-        }
-
-        if out_schema.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "out_schema must not be null.".to_string(),
-            );
-            return 0;
-        }
-
-        let command = match unsafe { CStr::from_ptr(command_json) }.to_bytes() {
-            bytes => bytes,
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return 0,
         };
 
-        let schema = match engine_ref.block_on(engine_ref.service.get_schema(command)) {
+        if !require_out_schema(engine_ref, out_schema) {
+            return 0;
+        }
+
+        let schema = match engine_ref.block_on(engine_ref.service.get_schema(command.as_slice())) {
             Ok(schema) => schema,
             Err(error) => {
                 engine_ref.set_service_error(error);
@@ -490,21 +593,7 @@ pub extern "C" fn dts_get_schema(
             }
         };
 
-        let ffi_schema = match FFI_ArrowSchema::try_from(&schema) {
-            Ok(schema) => schema,
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
-                return 0;
-            }
-        };
-
-        // SAFETY: `out_schema` is validated non-null above and points to caller-
-        // allocated writable memory for a single `FFI_ArrowSchema` value.
-        unsafe {
-            ptr::write(out_schema, ffi_schema);
-        }
-
-        1
+        write_arrow_schema(engine_ref, &schema, out_schema)
     })
     .unwrap_or(0)
 }
@@ -540,27 +629,19 @@ pub extern "C" fn dts_read_table(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return 0,
+        };
+
+        if !require_out_stream(engine_ref, out_stream) {
             return 0;
         }
 
-        if out_stream.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "out_stream must not be null.".to_string(),
-            );
-            return 0;
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
         let reader = match engine_ref.block_on(
             engine_ref
                 .service
-                .read_batches(command, engine_ref.runtime_handle()),
+                .read_batches(command.as_slice(), engine_ref.runtime_handle()),
         ) {
             Ok(reader) => reader,
             Err(error) => {
@@ -569,13 +650,7 @@ pub extern "C" fn dts_read_table(
             }
         };
 
-        let ffi_stream = FFI_ArrowArrayStream::new(reader);
-
-        unsafe {
-            ptr::write(out_stream, ffi_stream);
-        }
-
-        1
+        write_arrow_stream(reader, out_stream)
     })
     .unwrap_or(0)
 }
@@ -613,16 +688,14 @@ pub extern "C" fn dts_plan_read_partitions(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
 
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
-        let result = match engine_ref.block_on(engine_ref.service.plan_read_partitions(command)) {
+        let result = match engine_ref
+            .block_on(engine_ref.service.plan_read_partitions(command.as_slice()))
+        {
             Ok(result) => result,
             Err(error) => {
                 engine_ref.set_service_error(error);
@@ -630,13 +703,7 @@ pub extern "C" fn dts_plan_read_partitions(
             }
         };
 
-        match CString::new(result.to_string()) {
-            Ok(result) => result.into_raw(),
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
-                ptr::null_mut()
-            }
-        }
+        json_value_into_native_string(engine_ref, result)
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -752,15 +819,10 @@ where
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
         let service = engine_ref.service.clone();
         spawn_async_operation(completion, engine_ref.runtime_handle(), async move {
             async_operation_state_from_action(|| action(service, command)).await
@@ -782,15 +844,10 @@ where
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
         let service = engine_ref.service.clone();
         spawn_async_operation(completion, engine_ref.runtime_handle(), async move {
             async_operation_state_from_action(|| action(service, command)).await
@@ -818,15 +875,10 @@ where
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
         let service = engine_ref.service.clone();
         let runtime_handle = engine_ref.runtime_handle();
         spawn_async_operation(completion, engine_ref.runtime_handle(), async move {
@@ -1097,27 +1149,19 @@ pub extern "C" fn dts_execute_query(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return 0,
+        };
+
+        if !require_out_stream(engine_ref, out_stream) {
             return 0;
         }
 
-        if out_stream.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "out_stream must not be null.".to_string(),
-            );
-            return 0;
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
         let reader = match engine_ref.block_on(
             engine_ref
                 .service
-                .execute_query_reader(command, engine_ref.runtime_handle()),
+                .execute_query_reader(command.as_slice(), engine_ref.runtime_handle()),
         ) {
             Ok(reader) => reader,
             Err(error) => {
@@ -1126,13 +1170,7 @@ pub extern "C" fn dts_execute_query(
             }
         };
 
-        let ffi_stream = FFI_ArrowArrayStream::new(reader);
-
-        unsafe {
-            ptr::write(out_stream, ffi_stream);
-        }
-
-        1
+        write_arrow_stream(reader, out_stream)
     })
     .unwrap_or(0)
 }
@@ -1171,27 +1209,19 @@ pub extern "C" fn dts_read_change_data(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return 0,
+        };
+
+        if !require_out_stream(engine_ref, out_stream) {
             return 0;
         }
 
-        if out_stream.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "out_stream must not be null.".to_string(),
-            );
-            return 0;
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
         let reader = match engine_ref.block_on(
             engine_ref
                 .service
-                .read_change_data_batches(command, engine_ref.runtime_handle()),
+                .read_change_data_batches(command.as_slice(), engine_ref.runtime_handle()),
         ) {
             Ok(reader) => reader,
             Err(error) => {
@@ -1200,13 +1230,7 @@ pub extern "C" fn dts_read_change_data(
             }
         };
 
-        let ffi_stream = FFI_ArrowArrayStream::new(reader);
-
-        unsafe {
-            ptr::write(out_stream, ffi_stream);
-        }
-
-        1
+        write_arrow_stream(reader, out_stream)
     })
     .unwrap_or(0)
 }
@@ -1245,32 +1269,21 @@ pub extern "C" fn dts_insert(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return 0;
-        }
-
-        if source_stream.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "source_stream must not be null.".to_string(),
-            );
-            return 0;
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
-        let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
-            Ok(reader) => reader,
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
-                return 0;
-            }
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return 0,
         };
 
-        match engine_ref.block_on(engine_ref.service.insert_reader(command, reader)) {
+        if !require_source_stream(engine_ref, source_stream) {
+            return 0;
+        }
+
+        let reader = match import_source_stream(engine_ref, source_stream) {
+            Some(reader) => reader,
+            None => return 0,
+        };
+
+        match engine_ref.block_on(engine_ref.service.insert_reader(command.as_slice(), reader)) {
             Ok(_) => 1,
             Err(error) => {
                 engine_ref.set_service_error(error);
@@ -1319,29 +1332,18 @@ where
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
+
+        if !require_source_stream(engine_ref, source_stream) {
             return ptr::null_mut();
         }
 
-        if source_stream.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "source_stream must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
-        let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
-            Ok(reader) => reader,
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
-                return ptr::null_mut();
-            }
+        let reader = match import_source_stream(engine_ref, source_stream) {
+            Some(reader) => reader,
+            None => return ptr::null_mut(),
         };
 
         let service = engine_ref.service.clone();
@@ -1363,29 +1365,18 @@ pub extern "C" fn dts_merge_stream(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
+
+        if !require_source_stream(engine_ref, source_stream) {
             return ptr::null_mut();
         }
 
-        if source_stream.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "source_stream must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes().to_vec();
-        let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
-            Ok(reader) => reader,
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
-                return ptr::null_mut();
-            }
+        let reader = match import_source_stream(engine_ref, source_stream) {
+            Some(reader) => reader,
+            None => return ptr::null_mut(),
         };
 
         let service = engine_ref.service.clone();
@@ -1406,13 +1397,7 @@ pub extern "C" fn dts_merge_stream(
             }
         };
 
-        match CString::new(result.to_string()) {
-            Ok(result) => result.into_raw(),
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
-                ptr::null_mut()
-            }
-        }
+        json_value_into_native_string(engine_ref, result)
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -1449,16 +1434,13 @@ pub extern "C" fn dts_create_table(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
 
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
-        let result = match engine_ref.block_on(engine_ref.service.create_table(command)) {
+        let result = match engine_ref.block_on(engine_ref.service.create_table(command.as_slice()))
+        {
             Ok(result) => result,
             Err(error) => {
                 engine_ref.set_service_error(error);
@@ -1466,13 +1448,7 @@ pub extern "C" fn dts_create_table(
             }
         };
 
-        match CString::new(result.to_string()) {
-            Ok(result) => result.into_raw(),
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
-                ptr::null_mut()
-            }
-        }
+        json_value_into_native_string(engine_ref, result)
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -1487,30 +1463,21 @@ pub extern "C" fn dts_upgrade_protocol(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
-
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
-        let result = match engine_ref.block_on(engine_ref.service.upgrade_protocol(command)) {
-            Ok(result) => result,
-            Err(error) => {
-                engine_ref.set_service_error(error);
-                return ptr::null_mut();
-            }
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
         };
 
-        match CString::new(result.to_string()) {
-            Ok(result) => result.into_raw(),
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
-                ptr::null_mut()
-            }
-        }
+        let result =
+            match engine_ref.block_on(engine_ref.service.upgrade_protocol(command.as_slice())) {
+                Ok(result) => result,
+                Err(error) => {
+                    engine_ref.set_service_error(error);
+                    return ptr::null_mut();
+                }
+            };
+
+        json_value_into_native_string(engine_ref, result)
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -1525,16 +1492,12 @@ pub extern "C" fn dts_execute_dml(
     with_engine(engine, |engine_ref| {
         engine_ref.clear_last_error();
 
-        if command_json.is_null() {
-            engine_ref.set_last_error(
-                ServiceErrorCode::InvalidRequest,
-                "command_json must not be null.".to_string(),
-            );
-            return ptr::null_mut();
-        }
+        let command = match command_json_bytes(engine_ref, command_json) {
+            Some(command) => command,
+            None => return ptr::null_mut(),
+        };
 
-        let command = unsafe { CStr::from_ptr(command_json) }.to_bytes();
-        let result = match engine_ref.block_on(engine_ref.service.execute_dml(command)) {
+        let result = match engine_ref.block_on(engine_ref.service.execute_dml(command.as_slice())) {
             Ok(result) => result,
             Err(error) => {
                 engine_ref.set_service_error(error);
@@ -1542,13 +1505,7 @@ pub extern "C" fn dts_execute_dml(
             }
         };
 
-        match CString::new(result.to_string()) {
-            Ok(result) => result.into_raw(),
-            Err(error) => {
-                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
-                ptr::null_mut()
-            }
-        }
+        json_value_into_native_string(engine_ref, result)
     })
     .unwrap_or(ptr::null_mut())
 }
@@ -1685,6 +1642,10 @@ mod tests {
         let engine = dts_create_engine();
         assert_eq!(0, dts_read_table(engine, ptr::null(), ptr::null_mut()));
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -1693,6 +1654,10 @@ mod tests {
         let engine = dts_create_engine();
         assert_eq!(0, dts_execute_query(engine, ptr::null(), ptr::null_mut()));
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -1715,6 +1680,10 @@ mod tests {
         let operation = dts_plan_read_partitions_async(engine, ptr::null());
         assert!(operation.is_null());
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -1730,6 +1699,56 @@ mod tests {
             dts_async_operation_get_error_code(ptr::null_mut())
         );
         assert!(dts_async_operation_take_result(ptr::null_mut()).is_null());
+    }
+
+    #[test]
+    fn async_operation_take_schema_rejects_null_arguments() {
+        let mut ffi_schema = FFI_ArrowSchema::empty();
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_schema(ptr::null_mut(), &mut ffi_schema)
+        );
+
+        let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
+            AsyncOperationCompletion::none(),
+            shared_runtime().handle().clone(),
+        )));
+        unsafe {
+            (*operation).set_operation_ptr(operation);
+        }
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_schema(operation, ptr::null_mut())
+        );
+
+        dts_async_operation_destroy(operation);
+    }
+
+    #[test]
+    fn async_operation_take_stream_rejects_null_arguments() {
+        let mut ffi_stream = FFI_ArrowArrayStream::empty();
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_stream(ptr::null_mut(), &mut ffi_stream)
+        );
+
+        let operation = Box::into_raw(Box::new(DeltaAsyncOperation::new(
+            AsyncOperationCompletion::none(),
+            shared_runtime().handle().clone(),
+        )));
+        unsafe {
+            (*operation).set_operation_ptr(operation);
+        }
+
+        assert_eq!(
+            0,
+            dts_async_operation_take_stream(operation, ptr::null_mut())
+        );
+
+        dts_async_operation_destroy(operation);
     }
 
     #[test]
@@ -2392,6 +2411,10 @@ mod tests {
         let engine = dts_create_engine();
         assert_eq!(0, dts_insert(engine, ptr::null(), ptr::null_mut()));
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -2407,6 +2430,10 @@ mod tests {
         );
         assert!(operation.is_null());
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -2415,6 +2442,10 @@ mod tests {
         let engine = dts_create_engine();
         assert!(dts_merge_stream(engine, ptr::null(), ptr::null_mut()).is_null());
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -2430,6 +2461,10 @@ mod tests {
         );
         assert!(operation.is_null());
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -2438,6 +2473,10 @@ mod tests {
         let engine = dts_create_engine();
         assert!(dts_create_table(engine, ptr::null()).is_null());
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -2446,6 +2485,10 @@ mod tests {
         let engine = dts_create_engine();
         assert!(dts_upgrade_protocol(engine, ptr::null()).is_null());
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
@@ -2454,6 +2497,10 @@ mod tests {
         let engine = dts_create_engine();
         assert!(dts_execute_dml(engine, ptr::null()).is_null());
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
     }
 
