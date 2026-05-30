@@ -921,6 +921,138 @@ namespace DeltaLakeSharp.Client
         }
 
         // ------------------------------------------------------------------ //
+        //  Distributed writes: worker/coordinator workflow
+        // ------------------------------------------------------------------ //
+
+        /// <summary>
+        /// Begins a V3 distributed write run identified by a globally unique run ID.
+        /// </summary>
+        /// <remarks>
+        /// The caller supplies <see cref="DeltaDistributedWriteOptions.RunId"/> and is
+        /// responsible for ensuring it is globally unique for the distributed activity.
+        /// Distributed writes are supported only by the V3 native Rust backend.
+        /// </remarks>
+        /// <param name="path">Path to the target Delta table.</param>
+        /// <param name="options">Distributed write run options, including the required run ID.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>A session descriptor that workers and the coordinator use for the same run.</returns>
+        public Task<DeltaDistributedWriteSession> BeginDistributedWriteAsync(
+            string path,
+            DeltaDistributedWriteOptions options,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                throw new ArgumentException("Table path must be provided.", nameof(path));
+            }
+
+            if (options == null)
+            {
+                throw new ArgumentNullException(nameof(options));
+            }
+
+            if (options.RunId == Guid.Empty)
+            {
+                throw new ArgumentException("Distributed write options must include a caller-provided run ID.", nameof(options));
+            }
+
+            return _backend.BeginDistributedWriteAsync(path, options, storageConfig, cancellationToken);
+        }
+
+        /// <summary>
+        /// Stages one worker's Arrow batches as uncommitted Parquet files and Add-action artifacts for a distributed write run.
+        /// </summary>
+        /// <remarks>
+        /// This scaffolded API is reserved for the V3 distributed write worker path.
+        /// The current implementation shape is public for API review; full staging
+        /// behavior is implemented in a follow-up slice.
+        /// </remarks>
+        /// <param name="session">Distributed write session returned by <see cref="BeginDistributedWriteAsync"/>.</param>
+        /// <param name="schema">Arrow schema for the batches staged by this worker.</param>
+        /// <param name="batches">Async stream of Arrow record batches to stage.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>Aggregate staging statistics for the worker contribution.</returns>
+        public Task<DeltaStagedWriteResult> StageDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            Schema schema,
+            IAsyncEnumerable<RecordBatch> batches,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (session == null)
+            {
+                throw new ArgumentNullException(nameof(session));
+            }
+
+            if (schema == null)
+            {
+                throw new ArgumentNullException(nameof(schema));
+            }
+
+            if (batches == null)
+            {
+                throw new ArgumentNullException(nameof(batches));
+            }
+
+            return _backend.StageDistributedWriteAsync(session, schema, batches, storageConfig, cancellationToken);
+        }
+
+        /// <summary>
+        /// Commits all staged Add-action artifacts for a distributed write run in one coordinator transaction.
+        /// </summary>
+        /// <remarks>
+        /// This coordinator API is V3-only. The coordinator reads staged artifacts
+        /// for <paramref name="session"/> and commits one atomic Delta transaction
+        /// once the implementation slice is complete.
+        /// </remarks>
+        /// <param name="session">Distributed write session shared by all workers in the run.</param>
+        /// <param name="options">Optional coordinator commit behavior.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>An execution result for the coordinator commit.</returns>
+        public Task<ExecuteResult> CommitDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            DeltaDistributedCommitOptions? options = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (session == null)
+            {
+                throw new ArgumentNullException(nameof(session));
+            }
+
+            return _backend.CommitDistributedWriteAsync(session, options, storageConfig, cancellationToken);
+        }
+
+        /// <summary>
+        /// Deletes staging artifacts for a distributed write run without committing table changes.
+        /// </summary>
+        /// <remarks>
+        /// Abort is best-effort and scoped to staging artifacts. It does not remove
+        /// committed Delta files and should not be used as a substitute for table
+        /// retention or vacuum cleanup.
+        /// </remarks>
+        /// <param name="session">Distributed write session to abort.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Optional cancellation token.</param>
+        /// <returns>An execution result for the abort operation.</returns>
+        public Task<ExecuteResult> AbortDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (session == null)
+            {
+                throw new ArgumentNullException(nameof(session));
+            }
+
+            return _backend.AbortDistributedWriteAsync(session, storageConfig, cancellationToken);
+        }
+
+        // ------------------------------------------------------------------ //
         //  DML: DELETE
         // ------------------------------------------------------------------ //
 

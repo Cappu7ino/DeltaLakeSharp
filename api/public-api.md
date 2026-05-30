@@ -185,6 +185,10 @@ Method families:
 
 - `CreateTableAsync`
 - `InsertAsync`
+- `BeginDistributedWriteAsync`
+- `StageDistributedWriteAsync`
+- `CommitDistributedWriteAsync`
+- `AbortDistributedWriteAsync`
 - `DeleteAsync`
 - `UpdateAsync`
 - `MergeAsync`
@@ -201,12 +205,47 @@ Intended usage:
 - Use `SaveMode` for append/overwrite.
 - Use `WriteSchemaMode` only where backend supports schema evolution modes.
 - Use `MergeDataAsync` for streaming source data.
+- Use distributed write APIs only with V3 native Rust; the current scaffold exposes the public shape while stage/commit/abort implementation lands in follow-up slices.
 
 Common pitfalls:
 
 - Calling protocol upgrade APIs during normal setup.
 - Using SQL strings that do not match the helper method prefix.
 - Assuming ADBC can perform writes.
+
+## Distributed Write APIs
+
+Types and methods:
+
+- `DeltaDistributedWriteOptions`
+- `DeltaDistributedWriteSession`
+- `DeltaStagedWriteResult`
+- `DeltaDistributedCommitOptions`
+- `DistributedWriteTableDisposition`
+- `DistributedOverwriteScope`
+- `BeginDistributedWriteAsync`
+- `StageDistributedWriteAsync`
+- `CommitDistributedWriteAsync`
+- `AbortDistributedWriteAsync`
+
+Responsibility:
+
+- Model a V3 worker/coordinator write workflow keyed by a caller-provided `Guid` run ID.
+- Allow workers to stage uncommitted data files and Add-action artifacts.
+- Allow one coordinator to commit staged artifacts atomically once the implementation is complete.
+
+Lifecycle:
+
+- Callers create a globally unique `Guid` run ID and pass it in `DeltaDistributedWriteOptions.RunId`.
+- `BeginDistributedWriteAsync` returns a `DeltaDistributedWriteSession` that is shared by all workers and the coordinator.
+- `StageDistributedWriteAsync`, `CommitDistributedWriteAsync`, and `AbortDistributedWriteAsync` are scaffolded public API shapes in this slice and are V3-only.
+
+Common pitfalls:
+
+- Passing `Guid.Empty` as a run ID.
+- Calling distributed write APIs on V1/V2 Flight modes.
+- Assuming staged artifacts are committed before the coordinator commit completes.
+- Treating staging cleanup as equivalent to Delta vacuum or data-file retention cleanup.
 
 ## `StorageConfig`
 

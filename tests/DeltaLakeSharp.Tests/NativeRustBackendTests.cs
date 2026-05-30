@@ -81,6 +81,66 @@ namespace DeltaLakeSharp.Tests
         }
 
         [TestMethod]
+        public async Task NativeBackend_BeginDistributedWriteAsync_UsesProvidedRunId()
+        {
+            using var backend = new NativeRustBackend();
+            var runId = Guid.Parse("123e4567-e89b-12d3-a456-426614174000");
+
+            DeltaDistributedWriteSession session = await backend.BeginDistributedWriteAsync(
+                "/tmp/table",
+                new DeltaDistributedWriteOptions
+                {
+                    RunId = runId,
+                    Mode = SaveMode.Append,
+                    TableDisposition = DistributedWriteTableDisposition.ExistingTable,
+                    PartitionBy = new[] { "region" },
+                });
+
+            Assert.AreEqual(runId, session.RunId);
+            Assert.AreEqual("/tmp/table", session.TablePath);
+            Assert.AreEqual(SaveMode.Append, session.Mode);
+            Assert.AreEqual(DistributedWriteTableDisposition.ExistingTable, session.TableDisposition);
+            Assert.AreEqual("_staging", session.StagingPrefix);
+            Assert.AreEqual("region", session.PartitionBy[0]);
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_BeginDistributedWriteAsync_UsesCustomStagingPrefix()
+        {
+            using var backend = new NativeRustBackend();
+            var runId = Guid.Parse("123e4567-e89b-12d3-a456-426614174000");
+
+            DeltaDistributedWriteSession session = await backend.BeginDistributedWriteAsync(
+                "/tmp/table",
+                new DeltaDistributedWriteOptions
+                {
+                    RunId = runId,
+                    StagingPrefix = "custom_staging",
+                });
+
+            Assert.AreEqual(runId, session.RunId);
+            Assert.AreEqual("custom_staging", session.StagingPrefix);
+        }
+
+        [TestMethod]
+        public async Task NativeBackend_BeginDistributedWriteAsync_MissingRunIdThrows()
+        {
+            using var backend = new NativeRustBackend();
+
+            await Assert.ThrowsExceptionAsync<ArgumentException>(() =>
+                backend.BeginDistributedWriteAsync("/tmp/table", new DeltaDistributedWriteOptions()));
+        }
+
+        [TestMethod]
+        public async Task Client_BeginDistributedWriteAsync_MissingRunIdThrowsAtPublicBoundary()
+        {
+            using var client = new DeltaTableServiceClient(ServiceMode.V3_Rust);
+
+            await Assert.ThrowsExceptionAsync<ArgumentException>(() =>
+                client.BeginDistributedWriteAsync("/tmp/table", new DeltaDistributedWriteOptions()));
+        }
+
+        [TestMethod]
         public void NativeAsyncOperationStatus_NumericValuesMatchNativeAbi()
         {
             Assert.AreEqual(0, (int)NativeAsyncOperationStatus.Pending);

@@ -765,6 +765,25 @@ pub extern "C" fn dts_create_table_async_with_callback(
     )
 }
 
+/// Starts distributed write run initialization and invokes `callback` after terminal state is stored.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_begin_distributed_write_async_with_callback(
+    engine: *mut DeltaServiceEngine,
+    command_json: *const c_char,
+    callback: Option<AsyncOperationCompletedCallback>,
+    user_data: *mut c_void,
+) -> *mut DeltaAsyncOperation {
+    start_json_async_operation(
+        engine,
+        command_json,
+        AsyncOperationCompletion {
+            callback,
+            user_data,
+        },
+        |service, command| async move { service.begin_distributed_write(command.as_slice()).await },
+    )
+}
+
 /// Starts protocol upgrade and invokes `callback` after terminal state is stored.
 #[unsafe(no_mangle)]
 pub extern "C" fn dts_upgrade_protocol_async_with_callback(
