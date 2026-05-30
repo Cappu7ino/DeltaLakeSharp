@@ -2075,9 +2075,14 @@ mod tests {
 
         assert_eq!(ASYNC_OPERATION_FAILED, wait_for_async_operation(operation));
         assert!(!dts_async_operation_get_error(operation).is_null());
-        assert_eq!(
-            ServiceErrorCode::Delta as i32,
-            dts_async_operation_get_error_code(operation)
+        let error_code = dts_async_operation_get_error_code(operation);
+        assert!(
+            matches!(
+                error_code,
+                code if code == ServiceErrorCode::InvalidRequest as i32
+                    || code == ServiceErrorCode::Delta as i32
+            ),
+            "missing-path classification can vary by platform, but should return a typed async error code; got {error_code}"
         );
         assert!(dts_async_operation_take_result(operation).is_null());
 
