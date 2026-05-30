@@ -22,7 +22,7 @@ use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
 use arrow::record_batch::{RecordBatch, RecordBatchReader};
 use tracing_subscriber::EnvFilter;
 
-use crate::error::ServiceError;
+use crate::error::{ServiceError, ServiceErrorCode};
 use crate::service::DeltaService;
 
 static INIT_TRACING: Once = Once::new();
@@ -38,10 +38,30 @@ fn shared_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+struct NativeLastError {
+    code: ServiceErrorCode,
+    message: CString,
+}
+
+fn c_string_lossy(message: String) -> CString {
+    match CString::new(message) {
+        Ok(message) => message,
+        Err(error) => {
+            let sanitized = error
+                .into_vec()
+                .into_iter()
+                .filter(|byte| *byte != 0)
+                .collect::<Vec<_>>();
+            CString::new(sanitized)
+                .expect("interior NUL bytes were removed before CString construction")
+        }
+    }
+}
+
 /// Opaque native engine handle owned by the consumer.
 pub struct DeltaServiceEngine {
     service: DeltaService,
-    last_error: Mutex<Option<CString>>,
+    last_error: Mutex<Option<NativeLastError>>,
     runtime_handle: tokio::runtime::Handle,
 }
 
@@ -97,8 +117,8 @@ enum AsyncOperationState {
     SucceededStream(
         Option<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>>,
     ),
-    Failed(CString),
-    Cancelled(CString),
+    Failed(NativeLastError),
+    Cancelled(NativeLastError),
 }
 
 impl DeltaAsyncOperation {
@@ -150,17 +170,32 @@ fn notify_async_operation_completion(shared: &AsyncOperationShared) {
     }
 }
 
-fn async_operation_failed(error: impl ToString) -> AsyncOperationState {
-    AsyncOperationState::Failed(
-        CString::new(error.to_string())
-            .unwrap_or_else(|_| CString::new("native async operation failed").unwrap()),
-    )
+fn async_operation_failed(error: ServiceError) -> AsyncOperationState {
+    AsyncOperationState::Failed(native_last_error_from_service_error(error))
+}
+
+fn async_operation_failed_internal(error: impl ToString) -> AsyncOperationState {
+    AsyncOperationState::Failed(native_last_error(
+        ServiceErrorCode::Internal,
+        error.to_string(),
+    ))
+}
+
+fn native_last_error_from_service_error(error: ServiceError) -> NativeLastError {
+    native_last_error(error.code(), error.to_string())
+}
+
+fn native_last_error(code: ServiceErrorCode, message: String) -> NativeLastError {
+    NativeLastError {
+        code,
+        message: c_string_lossy(message),
+    }
 }
 
 fn async_operation_succeeded(result: serde_json::Value) -> AsyncOperationState {
     match CString::new(result.to_string()) {
         Ok(result) => AsyncOperationState::Succeeded(Some(result)),
-        Err(error) => async_operation_failed(error),
+        Err(error) => async_operation_failed_internal(error),
     }
 }
 
@@ -193,10 +228,15 @@ impl DeltaServiceEngine {
         }
     }
 
-    fn set_last_error_message(&self, message: String) {
+    fn set_last_error(&self, code: ServiceErrorCode, message: String) {
         if let Ok(mut slot) = self.last_error.lock() {
-            *slot = CString::new(message).ok();
+            let message = c_string_lossy(message);
+            *slot = Some(NativeLastError { code, message });
         }
+    }
+
+    fn set_service_error(&self, error: ServiceError) {
+        self.set_last_error(error.code(), error.to_string());
     }
 
     fn clear_last_error(&self) {
@@ -205,11 +245,21 @@ impl DeltaServiceEngine {
         }
     }
 
+    fn last_error_code(&self) -> i32 {
+        match self.last_error.lock() {
+            Ok(slot) => slot
+                .as_ref()
+                .map(|error| error.code as i32)
+                .unwrap_or(ServiceErrorCode::Ok as i32),
+            Err(_) => ServiceErrorCode::Internal as i32,
+        }
+    }
+
     fn last_error_ptr(&self) -> *const c_char {
         self.last_error
             .lock()
             .ok()
-            .and_then(|slot| slot.as_ref().map(|msg| msg.as_ptr()))
+            .and_then(|slot| slot.as_ref().map(|error| error.message.as_ptr()))
             .unwrap_or(ptr::null())
     }
 
@@ -277,8 +327,10 @@ pub extern "C" fn dts_health_check(engine: *mut DeltaServiceEngine) -> i32 {
         if body.get("status").and_then(|v| v.as_str()) == Some("healthy") {
             1
         } else {
-            engine_ref
-                .set_last_error_message("Health check did not return healthy status.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::Internal,
+                "Health check did not return healthy status.".to_string(),
+            );
             0
         }
     })
@@ -289,6 +341,13 @@ pub extern "C" fn dts_health_check(engine: *mut DeltaServiceEngine) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn dts_get_last_error(engine: *mut DeltaServiceEngine) -> *const c_char {
     with_engine(engine, |engine_ref| engine_ref.last_error_ptr()).unwrap_or(ptr::null())
+}
+
+/// Returns the stable code for the last engine error.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_get_last_error_code(engine: *mut DeltaServiceEngine) -> i32 {
+    with_engine(engine, |engine_ref| engine_ref.last_error_code())
+        .unwrap_or(ServiceErrorCode::Internal as i32)
 }
 
 /// Frees a UTF-8 string allocated by the native layer.
@@ -320,12 +379,18 @@ pub extern "C" fn dts_get_schema(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return 0;
         }
 
         if out_schema.is_null() {
-            engine_ref.set_last_error_message("out_schema must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "out_schema must not be null.".to_string(),
+            );
             return 0;
         }
 
@@ -336,7 +401,7 @@ pub extern "C" fn dts_get_schema(
         let schema = match engine_ref.block_on(engine_ref.service.get_schema(command)) {
             Ok(schema) => schema,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return 0;
             }
         };
@@ -344,7 +409,7 @@ pub extern "C" fn dts_get_schema(
         let ffi_schema = match FFI_ArrowSchema::try_from(&schema) {
             Ok(schema) => schema,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
                 return 0;
             }
         };
@@ -392,12 +457,18 @@ pub extern "C" fn dts_read_table(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return 0;
         }
 
         if out_stream.is_null() {
-            engine_ref.set_last_error_message("out_stream must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "out_stream must not be null.".to_string(),
+            );
             return 0;
         }
 
@@ -409,7 +480,7 @@ pub extern "C" fn dts_read_table(
         ) {
             Ok(reader) => reader,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return 0;
             }
         };
@@ -459,7 +530,10 @@ pub extern "C" fn dts_plan_read_partitions(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -467,7 +541,7 @@ pub extern "C" fn dts_plan_read_partitions(
         let result = match engine_ref.block_on(engine_ref.service.plan_read_partitions(command)) {
             Ok(result) => result,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return ptr::null_mut();
             }
         };
@@ -475,7 +549,7 @@ pub extern "C" fn dts_plan_read_partitions(
         match CString::new(result.to_string()) {
             Ok(result) => result.into_raw(),
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
                 ptr::null_mut()
             }
         }
@@ -595,7 +669,10 @@ where
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -644,7 +721,10 @@ where
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -699,7 +779,10 @@ where
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -756,8 +839,8 @@ pub extern "C" fn dts_async_operation_status(operation: *mut DeltaAsyncOperation
         .lock()
         .map(|mut state| match &*state {
             AsyncOperationState::Pending if finished_without_result => {
-                *state = AsyncOperationState::Failed(
-                    CString::new("Native async operation finished without a result.").unwrap(),
+                *state = async_operation_failed_internal(
+                    "Native async operation finished without a result.",
                 );
                 ASYNC_OPERATION_FAILED
             }
@@ -878,11 +961,30 @@ pub extern "C" fn dts_async_operation_get_error(
         .ok()
         .and_then(|state| match &*state {
             AsyncOperationState::Failed(error) | AsyncOperationState::Cancelled(error) => {
-                Some(error.as_ptr())
+                Some(error.message.as_ptr())
             }
             _ => None,
         })
         .unwrap_or(ptr::null())
+}
+
+/// Returns the stable error code for a failed or cancelled async operation.
+#[unsafe(no_mangle)]
+pub extern "C" fn dts_async_operation_get_error_code(operation: *mut DeltaAsyncOperation) -> i32 {
+    if operation.is_null() {
+        return ServiceErrorCode::Internal as i32;
+    }
+
+    let operation_ref = unsafe { &*operation };
+    match operation_ref.shared.state.lock() {
+        Ok(state) => match &*state {
+            AsyncOperationState::Failed(error) | AsyncOperationState::Cancelled(error) => {
+                error.code as i32
+            }
+            _ => ServiceErrorCode::Ok as i32,
+        },
+        Err(_) => ServiceErrorCode::Internal as i32,
+    }
 }
 
 /// Requests cancellation of an async operation.
@@ -907,9 +1009,10 @@ pub extern "C" fn dts_async_operation_cancel(operation: *mut DeltaAsyncOperation
                 let _ = handle.await;
                 if set_async_operation_terminal_state(
                     &shared.state,
-                    AsyncOperationState::Cancelled(
-                        CString::new("Native async operation was cancelled.").unwrap(),
-                    ),
+                    AsyncOperationState::Cancelled(native_last_error(
+                        ServiceErrorCode::Cancelled,
+                        "Native async operation was cancelled.".to_string(),
+                    )),
                 ) {
                     notify_async_operation_completion(&shared);
                 }
@@ -918,9 +1021,10 @@ pub extern "C" fn dts_async_operation_cancel(operation: *mut DeltaAsyncOperation
         None => {
             if set_async_operation_terminal_state(
                 &operation_ref.shared.state,
-                AsyncOperationState::Cancelled(
-                    CString::new("Native async operation was cancelled.").unwrap(),
-                ),
+                AsyncOperationState::Cancelled(native_last_error(
+                    ServiceErrorCode::Cancelled,
+                    "Native async operation was cancelled.".to_string(),
+                )),
             ) {
                 notify_async_operation_completion(&operation_ref.shared);
             }
@@ -980,12 +1084,18 @@ pub extern "C" fn dts_execute_query(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return 0;
         }
 
         if out_stream.is_null() {
-            engine_ref.set_last_error_message("out_stream must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "out_stream must not be null.".to_string(),
+            );
             return 0;
         }
 
@@ -997,7 +1107,7 @@ pub extern "C" fn dts_execute_query(
         ) {
             Ok(reader) => reader,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return 0;
             }
         };
@@ -1048,12 +1158,18 @@ pub extern "C" fn dts_read_change_data(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return 0;
         }
 
         if out_stream.is_null() {
-            engine_ref.set_last_error_message("out_stream must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "out_stream must not be null.".to_string(),
+            );
             return 0;
         }
 
@@ -1065,7 +1181,7 @@ pub extern "C" fn dts_read_change_data(
         ) {
             Ok(reader) => reader,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return 0;
             }
         };
@@ -1116,12 +1232,18 @@ pub extern "C" fn dts_insert(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return 0;
         }
 
         if source_stream.is_null() {
-            engine_ref.set_last_error_message("source_stream must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "source_stream must not be null.".to_string(),
+            );
             return 0;
         }
 
@@ -1129,7 +1251,7 @@ pub extern "C" fn dts_insert(
         let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
             Ok(reader) => reader,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
                 return 0;
             }
         };
@@ -1137,7 +1259,7 @@ pub extern "C" fn dts_insert(
         match engine_ref.block_on(engine_ref.service.insert_reader(command, reader)) {
             Ok(_) => 1,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 0
             }
         }
@@ -1184,12 +1306,18 @@ where
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
         if source_stream.is_null() {
-            engine_ref.set_last_error_message("source_stream must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "source_stream must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -1197,7 +1325,7 @@ where
         let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
             Ok(reader) => reader,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
                 return ptr::null_mut();
             }
         };
@@ -1244,12 +1372,18 @@ pub extern "C" fn dts_merge_stream(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
         if source_stream.is_null() {
-            engine_ref.set_last_error_message("source_stream must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "source_stream must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -1257,7 +1391,7 @@ pub extern "C" fn dts_merge_stream(
         let reader = match unsafe { ArrowArrayStreamReader::from_raw(source_stream) } {
             Ok(reader) => reader,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Arrow, error.to_string());
                 return ptr::null_mut();
             }
         };
@@ -1268,11 +1402,14 @@ pub extern "C" fn dts_merge_stream(
         {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return ptr::null_mut();
             }
             Err(error) => {
-                engine_ref.set_last_error_message(format!("Native merge task failed: {error}"));
+                engine_ref.set_last_error(
+                    ServiceErrorCode::Internal,
+                    format!("Native merge task failed: {error}"),
+                );
                 return ptr::null_mut();
             }
         };
@@ -1280,7 +1417,7 @@ pub extern "C" fn dts_merge_stream(
         match CString::new(result.to_string()) {
             Ok(result) => result.into_raw(),
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
                 ptr::null_mut()
             }
         }
@@ -1321,7 +1458,10 @@ pub extern "C" fn dts_create_table(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -1329,7 +1469,7 @@ pub extern "C" fn dts_create_table(
         let result = match engine_ref.block_on(engine_ref.service.create_table(command)) {
             Ok(result) => result,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return ptr::null_mut();
             }
         };
@@ -1337,7 +1477,7 @@ pub extern "C" fn dts_create_table(
         match CString::new(result.to_string()) {
             Ok(result) => result.into_raw(),
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
                 ptr::null_mut()
             }
         }
@@ -1356,7 +1496,10 @@ pub extern "C" fn dts_upgrade_protocol(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -1364,7 +1507,7 @@ pub extern "C" fn dts_upgrade_protocol(
         let result = match engine_ref.block_on(engine_ref.service.upgrade_protocol(command)) {
             Ok(result) => result,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return ptr::null_mut();
             }
         };
@@ -1372,7 +1515,7 @@ pub extern "C" fn dts_upgrade_protocol(
         match CString::new(result.to_string()) {
             Ok(result) => result.into_raw(),
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
                 ptr::null_mut()
             }
         }
@@ -1391,7 +1534,10 @@ pub extern "C" fn dts_execute_dml(
         engine_ref.clear_last_error();
 
         if command_json.is_null() {
-            engine_ref.set_last_error_message("command_json must not be null.".to_string());
+            engine_ref.set_last_error(
+                ServiceErrorCode::InvalidRequest,
+                "command_json must not be null.".to_string(),
+            );
             return ptr::null_mut();
         }
 
@@ -1399,7 +1545,7 @@ pub extern "C" fn dts_execute_dml(
         let result = match engine_ref.block_on(engine_ref.service.execute_dml(command)) {
             Ok(result) => result,
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_service_error(error);
                 return ptr::null_mut();
             }
         };
@@ -1407,7 +1553,7 @@ pub extern "C" fn dts_execute_dml(
         match CString::new(result.to_string()) {
             Ok(result) => result.into_raw(),
             Err(error) => {
-                engine_ref.set_last_error_message(error.to_string());
+                engine_ref.set_last_error(ServiceErrorCode::Internal, error.to_string());
                 ptr::null_mut()
             }
         }
@@ -1512,7 +1658,37 @@ mod tests {
         let engine = dts_create_engine();
         assert_eq!(0, dts_get_schema(engine, ptr::null(), ptr::null_mut()));
         assert!(!dts_get_last_error(engine).is_null());
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
         dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn health_check_clears_sync_last_error_code() {
+        let engine = dts_create_engine();
+        assert_eq!(0, dts_get_schema(engine, ptr::null(), ptr::null_mut()));
+        assert_eq!(
+            ServiceErrorCode::InvalidRequest as i32,
+            dts_get_last_error_code(engine)
+        );
+
+        assert_eq!(1, dts_health_check(engine));
+        assert_eq!(ServiceErrorCode::Ok as i32, dts_get_last_error_code(engine));
+        assert!(dts_get_last_error(engine).is_null());
+        dts_destroy_engine(engine);
+    }
+
+    #[test]
+    fn native_last_error_message_strips_interior_nul_bytes() {
+        let error = native_last_error(
+            ServiceErrorCode::Internal,
+            "before\0after\0".to_string(),
+        );
+
+        assert_eq!(ServiceErrorCode::Internal, error.code);
+        assert_eq!("beforeafter", error.message.to_str().expect("utf8 message"));
     }
 
     #[test]
@@ -1899,6 +2075,15 @@ mod tests {
 
         assert_eq!(ASYNC_OPERATION_FAILED, wait_for_async_operation(operation));
         assert!(!dts_async_operation_get_error(operation).is_null());
+        let error_code = dts_async_operation_get_error_code(operation);
+        assert!(
+            matches!(
+                error_code,
+                code if code == ServiceErrorCode::InvalidRequest as i32
+                    || code == ServiceErrorCode::Delta as i32
+            ),
+            "missing-path classification can vary by platform, but should return a typed async error code; got {error_code}"
+        );
         assert!(dts_async_operation_take_result(operation).is_null());
 
         dts_async_operation_destroy(operation);
@@ -1987,6 +2172,10 @@ mod tests {
             wait_for_async_operation(operation)
         );
         assert!(!dts_async_operation_get_error(operation).is_null());
+        assert_eq!(
+            ServiceErrorCode::Cancelled as i32,
+            dts_async_operation_get_error_code(operation)
+        );
         dts_async_operation_destroy(operation);
     }
 
