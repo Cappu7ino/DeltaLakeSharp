@@ -32,6 +32,10 @@ namespace DeltaLakeSharp.Client.Internal.Native
         [LibraryImport(LibraryName, EntryPoint = "dts_get_last_error")]
         internal static partial IntPtr GetLastError(IntPtr engine);
 
+        [LibraryImport(LibraryName, EntryPoint = "dts_get_last_error_code")]
+        [return: MarshalAs(UnmanagedType.I4)]
+        internal static partial int GetLastErrorCode(IntPtr engine);
+
         [DllImport(LibraryName, EntryPoint = "dts_get_schema_async_with_callback", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr GetSchemaAsyncWithCallbackNative(
             IntPtr engine,
@@ -229,6 +233,10 @@ namespace DeltaLakeSharp.Client.Internal.Native
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_get_error")]
         internal static partial IntPtr AsyncOperationGetError(IntPtr operation);
+
+        [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_get_error_code")]
+        [return: MarshalAs(UnmanagedType.I4)]
+        internal static partial int AsyncOperationGetErrorCode(IntPtr operation);
 
         [LibraryImport(LibraryName, EntryPoint = "dts_async_operation_cancel")]
         internal static partial void AsyncOperationCancel(IntPtr operation);

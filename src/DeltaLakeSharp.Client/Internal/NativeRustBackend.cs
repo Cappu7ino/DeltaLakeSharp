@@ -30,6 +30,8 @@ namespace DeltaLakeSharp.Client.Internal
         private const int NativeAsyncOperationSucceeded = 1;
         private const int NativeAsyncOperationFailed = 2;
         private const int NativeAsyncOperationCancelled = 3;
+        private const int NativeServiceErrorOk = 0;
+        private const int NativeServiceErrorCancelled = 8;
 
         private static readonly NativeMethods.NativeAsyncOperationCompletedCallback NativeAsyncOperationCompleted = OnNativeAsyncOperationCompleted;
 
@@ -610,8 +612,14 @@ namespace DeltaLakeSharp.Client.Internal
 
         private InvalidOperationException CreateNativeOperationFailedException(string operation)
         {
+            int lastErrorCode = NativeMethods.GetLastErrorCode(_engine.DangerousGetHandle());
             string? lastError = GetLastErrorMessage();
             string message = $"Native V3 backend operation '{operation}' failed.";
+
+            if (lastErrorCode != NativeServiceErrorOk)
+            {
+                message += $" Native error code: {lastErrorCode}.";
+            }
 
             if (!string.IsNullOrWhiteSpace(lastError))
             {
@@ -625,9 +633,15 @@ namespace DeltaLakeSharp.Client.Internal
             IntPtr operation,
             string operationName)
         {
+            int errorCode = NativeMethods.AsyncOperationGetErrorCode(operation);
             IntPtr errorPtr = NativeMethods.AsyncOperationGetError(operation);
             string? error = NativeMethods.PtrToStringUtf8(errorPtr);
             string message = $"Native V3 backend operation '{operationName}' failed.";
+
+            if (errorCode != NativeServiceErrorOk)
+            {
+                message += $" Native error code: {errorCode}.";
+            }
 
             if (!string.IsNullOrWhiteSpace(error))
             {
@@ -1410,6 +1424,12 @@ namespace DeltaLakeSharp.Client.Internal
 
             private static bool IsNativeCancellationFailure(IntPtr operation)
             {
+                int errorCode = NativeMethods.AsyncOperationGetErrorCode(operation);
+                if (errorCode == NativeServiceErrorCancelled)
+                {
+                    return true;
+                }
+
                 string? error = NativeMethods.PtrToStringUtf8(NativeMethods.AsyncOperationGetError(operation));
                 return error != null
                     && error.IndexOf("cancel", StringComparison.OrdinalIgnoreCase) >= 0;

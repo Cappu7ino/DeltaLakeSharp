@@ -459,6 +459,7 @@ namespace DeltaLakeSharp.Tests
                 backend.GetArrowSchemaAsync(tablePath));
 
             StringAssert.Contains(ex.Message, "GetArrowSchemaAsync");
+            StringAssert.Contains(ex.Message, "Native error code:");
             StringAssert.Contains(ex.Message, "Native error");
         }
 
