@@ -265,6 +265,8 @@ pub struct CommitDistributedWriteCommand {
     #[serde(default)]
     pub cleanup_staging_artifacts: Option<bool>,
     #[serde(default)]
+    pub validate_staged_data_files: Option<bool>,
+    #[serde(default)]
     pub storage_account: Option<String>,
     #[serde(default)]
     pub sas_token: Option<String>,

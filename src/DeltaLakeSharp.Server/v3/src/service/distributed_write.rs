@@ -6,6 +6,7 @@ use deltalake::logstore::object_store::{ObjectMeta, ObjectStoreExt};
 use deltalake::protocol::{DeltaOperation, SaveMode};
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
 use futures::TryStreamExt;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use tracing::{info, warn};
@@ -187,11 +188,16 @@ pub async fn commit_distributed_write(body: &[u8]) -> Result<serde_json::Value, 
     let mut actions = Vec::new();
     let mut added_file_count = 0_i64;
     let mut total_data_file_bytes = 0_i64;
+    let validate_staged_data_files = cmd.validate_staged_data_files.unwrap_or(false);
     for artifact in &artifacts {
-        let adds = read_add_artifact(&object_store, &artifact.location).await?;
-        for add in adds {
-            validate_staged_add(&add, &partition_columns)?;
-            validate_staged_data_file(&object_store, &add).await?;
+        let entries = read_add_artifact(&object_store, &artifact.location).await?;
+        for entry in entries {
+            validate_staged_add_artifact_entry(&entry, &partition_columns)?;
+            if validate_staged_data_files {
+                validate_staged_data_file(&object_store, &entry.add).await?;
+            }
+
+            let add = entry.add;
             total_data_file_bytes += add.size;
             added_file_count += 1;
             actions.push(Action::Add(add));
@@ -442,6 +448,24 @@ struct ArtifactStats {
     total_data_file_bytes: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StagedAddArtifactEntry {
+    add: Add,
+    verified_size: i64,
+    #[serde(default)]
+    e_tag: Option<String>,
+    #[serde(default)]
+    object_version: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct VerifiedDataFileMetadata {
+    verified_size: i64,
+    e_tag: Option<String>,
+    object_version: Option<String>,
+}
+
 async fn write_add_artifact(
     object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
     adds_prefix: &str,
@@ -459,7 +483,15 @@ async fn write_add_artifact(
     };
 
     for add in adds {
-        payload.push_str(&serde_json::to_string(&add).map_err(ServiceError::Json)?);
+        let verified_metadata = inspect_staged_data_file(object_store, &add).await?;
+        let artifact_entry = StagedAddArtifactEntry {
+            add,
+            verified_size: verified_metadata.verified_size,
+            e_tag: verified_metadata.e_tag,
+            object_version: verified_metadata.object_version,
+        };
+
+        payload.push_str(&serde_json::to_string(&artifact_entry).map_err(ServiceError::Json)?);
         payload.push('\n');
     }
 
@@ -486,7 +518,14 @@ async fn list_add_artifacts(
         .map_err(|error| {
             ServiceError::Internal(format!("failed to list staging artifacts: {error}"))
         })?;
-    artifacts.retain(|artifact| artifact.location.as_ref().ends_with(".jsonl"));
+    artifacts.retain(|artifact| {
+        artifact.location.as_ref().ends_with(".jsonl")
+            && artifact
+                .location
+                .parent()
+                .map(|parent| parent == prefix)
+                .unwrap_or(false)
+    });
     artifacts.sort_by(|left, right| left.location.cmp(&right.location));
     Ok(artifacts)
 }
@@ -494,7 +533,7 @@ async fn list_add_artifacts(
 async fn read_add_artifact(
     object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
     path: &Path,
-) -> Result<Vec<Add>, ServiceError> {
+) -> Result<Vec<StagedAddArtifactEntry>, ServiceError> {
     let bytes = object_store
         .get(path)
         .await
@@ -509,22 +548,22 @@ async fn read_add_artifact(
     let text = String::from_utf8(bytes.to_vec()).map_err(|error| {
         ServiceError::InvalidRequest(format!("staging artifact is not valid UTF-8: {error}"))
     })?;
-    let mut adds = Vec::new();
+    let mut entries = Vec::new();
     for (line_number, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
 
-        let add = serde_json::from_str::<Add>(line).map_err(|error| {
+        let entry = serde_json::from_str::<StagedAddArtifactEntry>(line).map_err(|error| {
             ServiceError::InvalidRequest(format!(
-                "invalid Add action in staging artifact at line {}: {error}",
+                "invalid staged Add artifact entry at line {}: {error}",
                 line_number + 1
             ))
         })?;
-        adds.push(add);
+        entries.push(entry);
     }
 
-    Ok(adds)
+    Ok(entries)
 }
 
 fn validate_staged_add(add: &Add, partition_columns: &[String]) -> Result<(), ServiceError> {
@@ -532,6 +571,22 @@ fn validate_staged_add(add: &Add, partition_columns: &[String]) -> Result<(), Se
         return Err(ServiceError::InvalidRequest(format!(
             "staged Add path '{}' is not a safe table-relative data path",
             add.path
+        )));
+    }
+
+    if !add.data_change {
+        return Err(ServiceError::InvalidRequest(format!(
+            "staged Add path '{}' must have data_change=true for append commits",
+            add.path
+        )));
+    }
+
+    if add.partition_values.len() != partition_columns.len() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "staged Add path '{}' partition value keys {:?} do not match table partition columns {:?}",
+            add.path,
+            add.partition_values.keys().collect::<Vec<_>>(),
+            partition_columns
         )));
     }
 
@@ -547,10 +602,33 @@ fn validate_staged_add(add: &Add, partition_columns: &[String]) -> Result<(), Se
     Ok(())
 }
 
+fn validate_staged_add_artifact_entry(
+    entry: &StagedAddArtifactEntry,
+    partition_columns: &[String],
+) -> Result<(), ServiceError> {
+    validate_staged_add(&entry.add, partition_columns)?;
+
+    if entry.verified_size != entry.add.size {
+        return Err(ServiceError::InvalidRequest(format!(
+            "staged Add path '{}' verified size {} does not match Add size {}",
+            entry.add.path, entry.verified_size, entry.add.size
+        )));
+    }
+
+    Ok(())
+}
+
 async fn validate_staged_data_file(
     object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
     add: &Add,
 ) -> Result<(), ServiceError> {
+    inspect_staged_data_file(object_store, add).await.map(|_| ())
+}
+
+async fn inspect_staged_data_file(
+    object_store: &std::sync::Arc<dyn deltalake::logstore::object_store::ObjectStore>,
+    add: &Add,
+) -> Result<VerifiedDataFileMetadata, ServiceError> {
     let data_path = Path::from(add.path.clone());
     let metadata = object_store.head(&data_path).await.map_err(|error| {
         ServiceError::InvalidRequest(format!(
@@ -571,7 +649,11 @@ async fn validate_staged_data_file(
         )));
     }
 
-    Ok(())
+    Ok(VerifiedDataFileMetadata {
+        verified_size: object_size,
+        e_tag: metadata.e_tag.clone(),
+        object_version: metadata.version.clone(),
+    })
 }
 
 fn is_safe_table_relative_data_path(path: &str) -> bool {
@@ -700,6 +782,34 @@ mod tests {
         assert!(!is_safe_table_relative_data_path("_staging/run/adds/a.jsonl"));
     }
 
+    #[test]
+    fn validate_staged_add_rejects_non_data_change_or_extra_partition_keys() {
+        let non_data_change = Add {
+            path: "part-000.parquet".to_string(),
+            size: 3,
+            data_change: false,
+            ..Default::default()
+        };
+        assert!(validate_staged_add(&non_data_change, &[]).is_err());
+
+        let extra_partition_keys = Add {
+            path: "region=us/part-000.parquet".to_string(),
+            size: 3,
+            data_change: true,
+            partition_values: [(
+                "region".to_string(),
+                Some("us".to_string()),
+            ), (
+                "unexpected".to_string(),
+                Some("x".to_string()),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        assert!(validate_staged_add(&extra_partition_keys, &["region".to_string()]).is_err());
+    }
+
     #[tokio::test]
     async fn validate_staged_data_file_checks_existence_and_size() {
         let store: std::sync::Arc<dyn ObjectStore> = std::sync::Arc::new(InMemory::new());
@@ -745,5 +855,33 @@ mod tests {
 
         let adds = read_add_artifact(&store, &path).await.expect("read artifact");
         assert!(adds.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_add_artifacts_only_returns_immediate_jsonl_children() {
+        let store: std::sync::Arc<dyn ObjectStore> = std::sync::Arc::new(InMemory::new());
+        let prefix = "_staging/123e4567-e89b-12d3-a456-426614174000/adds";
+        let valid = Path::from(format!("{prefix}/a.jsonl"));
+        let nested = Path::from(format!("{prefix}/nested/b.jsonl"));
+        let other_extension = Path::from(format!("{prefix}/c.txt"));
+
+        store
+            .put(&valid, PutPayload::from("{}\n".to_string()))
+            .await
+            .expect("put immediate jsonl artifact");
+        store
+            .put(&nested, PutPayload::from("{}\n".to_string()))
+            .await
+            .expect("put nested jsonl artifact");
+        store
+            .put(&other_extension, PutPayload::from("{}\n".to_string()))
+            .await
+            .expect("put non-jsonl artifact");
+
+        let artifacts = list_add_artifacts(&store, prefix)
+            .await
+            .expect("list artifacts");
+        assert_eq!(1, artifacts.len());
+        assert_eq!(valid, artifacts[0].location);
     }
 }

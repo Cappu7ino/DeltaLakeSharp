@@ -189,6 +189,7 @@ namespace DeltaLakeSharp.Tests
                 Assert.AreEqual(runId, secondStage.RunId);
                 Assert.AreEqual(1, secondStage.AddedFileCount);
 
+                // Exercise default coordinator behavior (ValidateStagedDataFiles=false).
                 ExecuteResult commitResult = await client.CommitDistributedWriteAsync(session);
                 Assert.IsTrue(commitResult.Success, $"CommitDistributedWriteAsync failed: {commitResult.Message}");
 
@@ -259,7 +260,13 @@ namespace DeltaLakeSharp.Tests
                 Assert.AreEqual(runId, stageResult.RunId);
                 Assert.AreEqual(2, stageResult.AddedFileCount);
 
-                ExecuteResult commitResult = await client.CommitDistributedWriteAsync(session);
+                // Keep an explicit coverage path for coordinator restat validation enabled.
+                ExecuteResult commitResult = await client.CommitDistributedWriteAsync(
+                    session,
+                    new DeltaDistributedCommitOptions
+                    {
+                        ValidateStagedDataFiles = true,
+                    });
                 Assert.IsTrue(commitResult.Success, $"CommitDistributedWriteAsync failed: {commitResult.Message}");
 
                 var rows = new List<(int Id, string Region, string Name)>();

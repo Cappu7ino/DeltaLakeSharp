@@ -1297,6 +1297,7 @@ namespace DeltaLakeSharp.Client.Internal
             if (options != null)
             {
                 command["cleanup_staging_artifacts"] = options.CleanupStagingArtifacts;
+                command["validate_staged_data_files"] = options.ValidateStagedDataFiles;
             }
 
             AddStorageConfig(command, storageConfig, null);

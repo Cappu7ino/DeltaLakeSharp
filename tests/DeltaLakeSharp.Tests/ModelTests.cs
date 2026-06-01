@@ -191,6 +191,30 @@ namespace DeltaLakeSharp.Tests
             _ = new DeltaStagedWriteResult(Guid.Parse("123e4567-e89b-12d3-a456-426614174000"), "_staging", -1, 0, 0);
         }
 
+        [TestMethod]
+        public void DeltaDistributedCommitOptions_Defaults_DisableFileRestatAndEnableCleanup()
+        {
+            var options = new DeltaDistributedCommitOptions();
+            Assert.IsTrue(options.CleanupStagingArtifacts);
+            Assert.IsFalse(options.ValidateStagedDataFiles);
+            Assert.IsNull(options.ExpectedVersion);
+        }
+
+        [TestMethod]
+        public void DeltaDistributedCommitOptions_AllowsEnablingFileRestatValidation()
+        {
+            var options = new DeltaDistributedCommitOptions
+            {
+                ValidateStagedDataFiles = true,
+                CleanupStagingArtifacts = false,
+                ExpectedVersion = 7,
+            };
+
+            Assert.IsTrue(options.ValidateStagedDataFiles);
+            Assert.IsFalse(options.CleanupStagingArtifacts);
+            Assert.AreEqual(7, options.ExpectedVersion);
+        }
+
         // ================================================================== //
         //  MergeOptions
         // ================================================================== //

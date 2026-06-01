@@ -152,11 +152,11 @@
       "type": "class",
       "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["distributed-write", "commit", "write"],
-      "intendedUsage": "Configure coordinator commit behavior for a distributed write run, including expected version and staging cleanup preference.",
-      "limitations": ["V3 native Rust only", "Existing-table append only in the current slice", "Cleanup applies to staging artifacts, not Delta data retention", "New table creation, overwrite, and schema evolution are planned follow-ups"],
+      "intendedUsage": "Configure coordinator commit behavior for a distributed write run, including expected version, staging cleanup preference, and optional staged data-file restat validation.",
+      "limitations": ["V3 native Rust only", "Existing-table append only in the current slice", "Cleanup applies to staging artifacts, not Delta data retention", "ValidateStagedDataFiles defaults to false for metadata-bound coordinator commits", "New table creation, overwrite, and schema evolution are planned follow-ups"],
       "relatedConcepts": ["CommitDistributedWriteAsync", "DeltaDistributedWriteSession"],
-      "keywords": ["distributed commit", "expected version", "cleanup staging"],
-      "performanceNotes": "Expected version is an optimistic guard; final commit still uses Delta transaction semantics.",
+      "keywords": ["distributed commit", "expected version", "cleanup staging", "validate staged data files"],
+      "performanceNotes": "Expected version is an optimistic guard; final commit still uses Delta transaction semantics. Worker staging verifies newly written data files, while coordinator restat validation is optional.",
       "threadingExpectations": "Configuration object; use per coordinator commit."
     },
     {

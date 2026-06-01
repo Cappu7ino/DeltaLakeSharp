@@ -247,6 +247,7 @@ Common pitfalls:
 - Calling distributed write APIs on V1/V2 Flight modes.
 - Assuming staged artifacts are committed before the coordinator commit completes.
 - Treating staging cleanup as equivalent to Delta vacuum or data-file retention cleanup.
+- Assuming coordinator commit always re-stats every staged data file. `DeltaDistributedCommitOptions.ValidateStagedDataFiles` defaults to `false`; worker staging performs file verification before publishing staged Add artifacts.
 
 ## `StorageConfig`
 
