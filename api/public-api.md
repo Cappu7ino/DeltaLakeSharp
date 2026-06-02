@@ -205,7 +205,7 @@ Intended usage:
 - Use `SaveMode` for append/overwrite.
 - Use `WriteSchemaMode` only where backend supports schema evolution modes.
 - Use `MergeDataAsync` for streaming source data.
-- Use distributed write APIs only with V3 native Rust; the current implementation supports existing-table append and keeps new-table creation, overwrite, and schema evolution for follow-up slices.
+- Use distributed write APIs only with V3 native Rust; the current implementation supports existing-table append and create-if-missing append, while overwrite, create-or-replace, and schema evolution remain follow-up slices.
 
 Common pitfalls:
 
@@ -221,7 +221,6 @@ Types and methods:
 - `DeltaDistributedWriteSession`
 - `DeltaStagedWriteResult`
 - `DeltaDistributedCommitOptions`
-- `DistributedWriteTableDisposition`
 - `DistributedOverwriteScope`
 - `BeginDistributedWriteAsync`
 - `StageDistributedWriteAsync`
@@ -238,8 +237,9 @@ Lifecycle:
 
 - Callers create a globally unique `Guid` run ID and pass it in `DeltaDistributedWriteOptions.RunId`.
 - `BeginDistributedWriteAsync` returns a `DeltaDistributedWriteSession` that is shared by all workers and the coordinator.
-- `StageDistributedWriteAsync`, `CommitDistributedWriteAsync`, and `AbortDistributedWriteAsync` currently support existing-table append only.
-- New table creation, overwrite, touched-partition overwrite, and schema evolution are planned follow-up scopes.
+- `StageDistributedWriteAsync`, `CommitDistributedWriteAsync`, and `AbortDistributedWriteAsync` currently support append to an existing table or automatic table creation when the table is absent.
+- Distributed writes require `DeltaDistributedWriteOptions.TableSchema` only when the table is absent; when the table already exists they append using existing-table schema enforcement.
+- Overwrite, replacement, touched-partition overwrite, and schema evolution are planned follow-up scopes.
 
 Common pitfalls:
 

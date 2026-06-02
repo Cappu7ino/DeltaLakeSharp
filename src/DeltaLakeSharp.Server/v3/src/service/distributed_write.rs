@@ -1,23 +1,28 @@
 use arrow::ffi_stream::ArrowArrayStreamReader;
-use deltalake::kernel::transaction::CommitBuilder;
+use arrow::datatypes::{Field, Schema};
+use deltalake::kernel::transaction::{CommitBuilder, CommitProperties};
+use deltalake::kernel::engine::arrow_conversion::TryIntoKernel;
 use deltalake::kernel::{Action, Add};
 use deltalake::logstore::object_store::path::Path;
 use deltalake::logstore::object_store::{ObjectMeta, ObjectStoreExt};
+use deltalake::operations::create::CreateBuilder;
 use deltalake::protocol::{DeltaOperation, SaveMode};
+use deltalake::table::state::DeltaTableState;
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::error::ServiceError;
 
-use super::helpers::open_delta_table;
+use super::helpers::{open_delta_table, open_or_initialize_delta_table, path_to_url, storage_options};
 use super::request::{
-    AbortDistributedWriteCommand, BeginDistributedWriteCommand, CommitDistributedWriteCommand,
-    StageDistributedWriteCommand,
+    arrow_type_from_str, AbortDistributedWriteCommand, BeginDistributedWriteCommand,
+    ColumnDef, CommitDistributedWriteCommand, StageDistributedWriteCommand,
 };
 
 const DEFAULT_STAGING_PREFIX: &str = "_staging";
@@ -35,8 +40,7 @@ pub async fn begin_distributed_write(body: &[u8]) -> Result<serde_json::Value, S
         Some(value) => Some(validate_schema_mode(&value)?.to_string()),
         None => None,
     };
-    let table_disposition =
-        validate_table_disposition(cmd.table_disposition.as_deref().unwrap_or("existingTable"))?;
+    validate_supported_append_mode(mode)?;
     let overwrite_scope =
         validate_overwrite_scope(cmd.overwrite_scope.as_deref().unwrap_or("fullTable"))?;
     let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &run_id)?;
@@ -52,10 +56,11 @@ pub async fn begin_distributed_write(body: &[u8]) -> Result<serde_json::Value, S
             "tablePath": cmd.path,
             "mode": mode,
             "schemaMode": schema_mode,
-            "tableDisposition": table_disposition,
             "overwriteScope": overwrite_scope,
             "stagingPrefix": staging_prefix,
             "addsPrefix": adds_prefix,
+            "schema": cmd.schema.unwrap_or_default(),
+            "configuration": cmd.configuration.unwrap_or_default(),
             "partitionBy": cmd.partition_by.unwrap_or_default(),
             "maxBufferedBytes": cmd.max_buffered_bytes,
             "maxBufferedRecordBatches": cmd.max_buffered_record_batches
@@ -68,28 +73,50 @@ pub async fn stage_distributed_write(
     mut reader: ArrowArrayStreamReader,
 ) -> Result<serde_json::Value, ServiceError> {
     validate_uuid(&cmd.run_id, "run_id")?;
-    validate_append_existing_table(&cmd.mode, cmd.table_disposition.as_deref())?;
+    validate_supported_append_mode(&cmd.mode)?;
     validate_optional_schema_mode(cmd.schema_mode.as_deref())?;
     validate_overwrite_scope(cmd.overwrite_scope.as_deref().unwrap_or("fullTable"))?;
 
-    let table = open_delta_table(
+    let partition_columns;
+    let object_store;
+    let mut writer;
+    let mut table = open_or_initialize_delta_table(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
         cmd.storage_options.as_ref(),
-        None,
     )
     .await?;
-    let partition_columns = table
-        .snapshot()
-        .map_err(ServiceError::Delta)?
-        .metadata()
-        .partition_columns()
-        .to_vec();
-    validate_requested_partition_columns(cmd.partition_by.as_ref(), &partition_columns)?;
-
-    let object_store = table.object_store();
-    let mut writer = RecordBatchWriter::for_table(&table).map_err(ServiceError::Delta)?;
+    object_store = table.object_store();
+    if table.log_store().is_delta_table_location().await.map_err(ServiceError::Delta)? {
+        table.load().await.map_err(ServiceError::Delta)?;
+        validate_optional_schema_matches_existing_table(cmd.schema.as_ref(), table.snapshot().map_err(ServiceError::Delta)?)?;
+        partition_columns = table
+            .snapshot()
+            .map_err(ServiceError::Delta)?
+            .metadata()
+            .partition_columns()
+            .to_vec();
+        validate_requested_partition_columns(cmd.partition_by.as_ref(), &partition_columns)?;
+        writer = RecordBatchWriter::for_table(&table).map_err(ServiceError::Delta)?;
+    } else {
+        partition_columns = cmd.partition_by.clone().unwrap_or_default();
+        validate_new_table_schema_partition_columns(cmd.schema.as_ref(), &partition_columns)?;
+        let schema = arrow_schema_from_columns(cmd.schema.as_ref().expect("schema validated"));
+        let table_url = path_to_url(&cmd.path)?;
+        let opts = storage_options(
+            cmd.storage_account.as_deref(),
+            cmd.sas_token.as_deref(),
+            cmd.storage_options.as_ref(),
+        );
+        writer = RecordBatchWriter::try_new(
+            table_url.as_str(),
+            Arc::new(schema),
+            Some(partition_columns.clone()),
+            Some(opts),
+        )
+        .map_err(ServiceError::Delta)?;
+    }
     let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &cmd.run_id)?;
     let max_buffered_record_batches = cmd
         .max_buffered_record_batches
@@ -146,35 +173,157 @@ pub async fn stage_distributed_write(
 pub async fn commit_distributed_write(body: &[u8]) -> Result<serde_json::Value, ServiceError> {
     let cmd: CommitDistributedWriteCommand = serde_json::from_slice(body)?;
     validate_uuid(&cmd.run_id, "run_id")?;
-    validate_append_existing_table(&cmd.mode, cmd.table_disposition.as_deref())?;
+    validate_supported_append_mode(&cmd.mode)?;
     validate_optional_schema_mode(cmd.schema_mode.as_deref())?;
     validate_overwrite_scope(cmd.overwrite_scope.as_deref().unwrap_or("fullTable"))?;
 
-    let mut table = open_delta_table(
+    commit_distributed_append_or_create(cmd).await
+}
+
+async fn commit_distributed_append_or_create(
+    cmd: CommitDistributedWriteCommand,
+) -> Result<serde_json::Value, ServiceError> {
+    let mut table = open_or_initialize_delta_table(
         &cmd.path,
         cmd.storage_account.as_deref(),
         cmd.sas_token.as_deref(),
         cmd.storage_options.as_ref(),
-        None,
     )
     .await?;
 
-    if let Some(expected_version) = cmd.expected_version {
-        let actual_version = table
-            .version()
-            .and_then(|version| i64::try_from(version).ok());
-        if actual_version != Some(expected_version) {
-            return Err(ServiceError::InvalidRequest(format!(
-                "table version {:?} does not match expected version {}",
-                actual_version, expected_version
-            )));
+    if table.log_store().is_delta_table_location().await.map_err(ServiceError::Delta)? {
+        table.load().await.map_err(ServiceError::Delta)?;
+        let snapshot = table.snapshot().map_err(ServiceError::Delta)?.clone();
+        validate_optional_schema_matches_existing_table(cmd.schema.as_ref(), &snapshot)?;
+        let partition_columns = snapshot.metadata().partition_columns().to_vec();
+        validate_requested_partition_columns(cmd.partition_by.as_ref(), &partition_columns)?;
+        return commit_existing_table_append(cmd, table, snapshot, partition_columns).await;
+    }
+
+    let partition_columns = cmd.partition_by.clone().unwrap_or_default();
+    validate_new_table_schema_partition_columns(cmd.schema.as_ref(), &partition_columns)?;
+
+    let object_store = table.object_store();
+    let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &cmd.run_id)?;
+    let artifacts = list_add_artifacts(&object_store, &adds_prefix).await?;
+    if artifacts.is_empty() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "no distributed write artifacts found for run_id {}",
+            cmd.run_id
+        )));
+    }
+
+    let mut actions = Vec::new();
+    let mut added_file_count = 0_i64;
+    let mut total_data_file_bytes = 0_i64;
+    let validate_staged_data_files = cmd.validate_staged_data_files.unwrap_or(false);
+    for artifact in &artifacts {
+        let entries = read_add_artifact(&object_store, &artifact.location).await?;
+        for entry in entries {
+            validate_staged_add_artifact_entry(&entry, &partition_columns)?;
+            if validate_staged_data_files {
+                validate_staged_data_file(&object_store, &entry.add).await?;
+            }
+
+            let add = entry.add;
+            total_data_file_bytes += add.size;
+            added_file_count += 1;
+            actions.push(Action::Add(add));
         }
     }
 
-    let snapshot = table.snapshot().map_err(ServiceError::Delta)?.clone();
-    let partition_columns = snapshot.metadata().partition_columns().to_vec();
-    validate_requested_partition_columns(cmd.partition_by.as_ref(), &partition_columns)?;
+    if actions.is_empty() {
+        return Err(ServiceError::InvalidRequest(format!(
+            "distributed write run {} has no staged Add actions",
+            cmd.run_id
+        )));
+    }
 
+    let delta_columns = delta_columns_from_schema(cmd.schema.as_ref().expect("schema validated"));
+    let mut create_builder = CreateBuilder::new()
+        .with_location(path_to_url(&cmd.path)?.to_string())
+        .with_save_mode(SaveMode::ErrorIfExists)
+        .with_columns(delta_columns)
+        .with_commit_properties(CommitProperties::default().with_metadata(distributed_commit_metadata(
+            &cmd.run_id,
+            artifacts.len(),
+            added_file_count,
+        )))
+        .with_actions(actions);
+
+    if !partition_columns.is_empty() {
+        create_builder = create_builder.with_partition_columns(partition_columns);
+    }
+
+    if let Some(config) = &cmd.configuration {
+        let config_pairs = config
+            .iter()
+            .map(|(key, value)| (key.clone(), Some(value.clone())))
+            .collect::<Vec<_>>();
+        create_builder = create_builder.with_configuration(config_pairs);
+    }
+
+    let opts = storage_options(
+        cmd.storage_account.as_deref(),
+        cmd.sas_token.as_deref(),
+        cmd.storage_options.as_ref(),
+    );
+    if !opts.is_empty() {
+        create_builder = create_builder.with_storage_options(opts);
+    }
+
+    let table = create_builder.await.map_err(ServiceError::Delta)?;
+    let version = table.version();
+
+    let mut staging_cleanup_failed = false;
+    if cmd.cleanup_staging_artifacts.unwrap_or(true) {
+        let artifact_paths = artifacts
+            .iter()
+            .map(|artifact| artifact.location.clone())
+            .collect::<Vec<_>>();
+        if let Err(error) = delete_artifacts(&object_store, artifact_paths).await {
+            staging_cleanup_failed = true;
+            warn!(
+                run_id = %cmd.run_id,
+                error = %error,
+                "distributed write create-if-missing commit succeeded but staging artifact cleanup failed"
+            );
+        }
+    }
+
+    Ok(json!({
+        "success": true,
+        "message": "Distributed write committed.",
+        "result": [{
+            "runId": cmd.run_id,
+            "version": version,
+            "artifactCount": artifacts.len(),
+            "addedFileCount": added_file_count,
+            "totalDataFileBytes": total_data_file_bytes,
+            "stagingCleanupFailed": staging_cleanup_failed
+        }]
+    }))
+}
+
+fn distributed_commit_metadata(
+    run_id: &str,
+    artifact_count: usize,
+    added_file_count: i64,
+) -> HashMap<String, serde_json::Value> {
+    HashMap::from([
+        ("distributedWrite".to_string(), json!(true)),
+        ("runId".to_string(), json!(run_id)),
+        ("artifactCount".to_string(), json!(artifact_count)),
+        ("addedFileCount".to_string(), json!(added_file_count)),
+    ])
+}
+
+async fn commit_existing_table_append(
+    cmd: CommitDistributedWriteCommand,
+    mut table: deltalake::DeltaTable,
+    snapshot: DeltaTableState,
+    partition_columns: Vec<String>,
+) -> Result<serde_json::Value, ServiceError> {
     let adds_prefix = staging_adds_prefix(cmd.staging_prefix.as_deref(), &cmd.run_id)?;
     let object_store = table.object_store();
     let artifacts = list_add_artifacts(&object_store, &adds_prefix).await?;
@@ -220,14 +369,12 @@ pub async fn commit_distributed_write(body: &[u8]) -> Result<serde_json::Value, 
         },
         predicate: None,
     };
-    let app_metadata = HashMap::from([
-        ("distributedWrite".to_string(), json!(true)),
-        ("runId".to_string(), json!(cmd.run_id)),
-        ("artifactCount".to_string(), json!(artifacts.len())),
-        ("addedFileCount".to_string(), json!(added_file_count)),
-    ]);
     let finalized = CommitBuilder::default()
-        .with_app_metadata(app_metadata)
+        .with_app_metadata(distributed_commit_metadata(
+            &cmd.run_id,
+            artifacts.len(),
+            added_file_count,
+        ))
         .with_actions(actions)
         .build(Some(&snapshot), table.log_store(), operation)
         .await
@@ -376,15 +523,6 @@ fn validate_schema_mode(value: &str) -> Result<&str, ServiceError> {
     }
 }
 
-fn validate_table_disposition(value: &str) -> Result<&str, ServiceError> {
-    match value {
-        "existingTable" | "createIfMissing" | "createOrReplace" => Ok(value),
-        other => Err(ServiceError::InvalidRequest(format!(
-            "unsupported distributed write table_disposition '{other}'"
-        ))),
-    }
-}
-
 fn validate_overwrite_scope(value: &str) -> Result<&str, ServiceError> {
     match value {
         "fullTable" | "touchedPartitions" => Ok(value),
@@ -394,20 +532,10 @@ fn validate_overwrite_scope(value: &str) -> Result<&str, ServiceError> {
     }
 }
 
-fn validate_append_existing_table(
-    mode: &str,
-    table_disposition: Option<&str>,
-) -> Result<(), ServiceError> {
+fn validate_supported_append_mode(mode: &str) -> Result<(), ServiceError> {
     if validate_mode(mode)? != "append" {
         return Err(ServiceError::InvalidRequest(
             "distributed write scaffold currently supports append only".to_string(),
-        ));
-    }
-
-    if validate_table_disposition(table_disposition.unwrap_or("existingTable"))? != "existingTable"
-    {
-        return Err(ServiceError::InvalidRequest(
-            "distributed write scaffold currently supports existing tables only".to_string(),
         ));
     }
 
@@ -428,6 +556,80 @@ fn validate_requested_partition_columns(
     }
 
     Ok(())
+}
+
+fn validate_optional_schema_matches_existing_table(
+    schema: Option<&Vec<ColumnDef>>,
+    table_state: &DeltaTableState,
+) -> Result<(), ServiceError> {
+    let Some(schema) = schema else {
+        return Ok(());
+    };
+
+    let requested_schema = deltalake::kernel::StructType::try_new(delta_columns_from_schema(schema))
+        .map_err(|error| {
+            ServiceError::InvalidRequest(format!(
+                "distributed create-if-missing schema is invalid: {error}"
+            ))
+        })?;
+    let table_schema = table_state
+        .metadata()
+        .parse_schema()
+        .map_err(|error| {
+            ServiceError::InvalidRequest(format!(
+                "existing table schema could not be parsed for distributed create-if-missing compatibility: {error}"
+            ))
+        })?;
+    if requested_schema != table_schema {
+        return Err(ServiceError::InvalidRequest(
+            "distributed create-if-missing schema does not match the existing table schema; restage against the existing table".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_new_table_schema_partition_columns(
+    schema: Option<&Vec<ColumnDef>>,
+    partition_columns: &[String],
+) -> Result<(), ServiceError> {
+    let schema = schema.ok_or_else(|| {
+        ServiceError::InvalidRequest(
+            "distributed create-if-missing writes require a table schema".to_string(),
+        )
+    })?;
+
+    for partition_column in partition_columns {
+        if !schema.iter().any(|column| column.name == *partition_column) {
+            return Err(ServiceError::InvalidRequest(format!(
+                "partition column '{}' is not present in the table schema",
+                partition_column
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn arrow_schema_from_columns(columns: &[ColumnDef]) -> Schema {
+    let fields = columns
+        .iter()
+        .map(|column| Field::new(&column.name, arrow_type_from_str(&column.data_type), column.nullable))
+        .collect::<Vec<_>>();
+    Schema::new(fields)
+}
+
+fn delta_columns_from_schema(columns: &[ColumnDef]) -> Vec<deltalake::kernel::StructField> {
+    arrow_schema_from_columns(columns)
+        .fields()
+        .iter()
+        .map(|field| {
+            field
+                .as_ref()
+                .try_into_kernel()
+                .expect("Arrow field to Delta StructField conversion should not fail")
+        })
+        .collect()
 }
 
 fn validate_optional_schema_mode(schema_mode: Option<&str>) -> Result<(), ServiceError> {

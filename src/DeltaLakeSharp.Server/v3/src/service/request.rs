@@ -132,11 +132,17 @@ impl Command {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ColumnDef {
     pub name: String,
     #[serde(rename = "type")]
     pub data_type: String,
+    #[serde(default = "default_nullable")]
+    pub nullable: bool,
+}
+
+fn default_nullable() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -189,8 +195,6 @@ pub struct BeginDistributedWriteCommand {
     #[serde(default)]
     pub schema_mode: Option<String>,
     #[serde(default)]
-    pub table_disposition: Option<String>,
-    #[serde(default)]
     pub overwrite_scope: Option<String>,
     #[serde(default)]
     pub schema: Option<Vec<ColumnDef>>,
@@ -221,9 +225,11 @@ pub struct StageDistributedWriteCommand {
     #[serde(default)]
     pub schema_mode: Option<String>,
     #[serde(default)]
-    pub table_disposition: Option<String>,
-    #[serde(default)]
     pub overwrite_scope: Option<String>,
+    #[serde(default)]
+    pub schema: Option<Vec<ColumnDef>>,
+    #[serde(default)]
+    pub configuration: Option<HashMap<String, String>>,
     #[serde(default)]
     pub partition_by: Option<Vec<String>>,
     #[serde(default)]
@@ -249,8 +255,6 @@ pub struct CommitDistributedWriteCommand {
     #[serde(default)]
     pub schema_mode: Option<String>,
     #[serde(default)]
-    pub table_disposition: Option<String>,
-    #[serde(default)]
     pub overwrite_scope: Option<String>,
     #[serde(default)]
     pub schema: Option<Vec<ColumnDef>>,
@@ -260,8 +264,6 @@ pub struct CommitDistributedWriteCommand {
     pub partition_by: Option<Vec<String>>,
     #[serde(default)]
     pub staging_prefix: Option<String>,
-    #[serde(default)]
-    pub expected_version: Option<i64>,
     #[serde(default)]
     pub cleanup_staging_artifacts: Option<bool>,
     #[serde(default)]

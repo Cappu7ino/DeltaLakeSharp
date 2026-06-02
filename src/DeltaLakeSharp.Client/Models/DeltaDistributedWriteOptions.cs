@@ -32,11 +32,6 @@ namespace DeltaLakeSharp.Client.Models
         public WriteSchemaMode? SchemaMode { get; set; }
 
         /// <summary>
-        /// Gets or sets whether the target table must already exist or may be created.
-        /// </summary>
-        public DistributedWriteTableDisposition TableDisposition { get; set; } = DistributedWriteTableDisposition.ExistingTable;
-
-        /// <summary>
         /// Gets or sets overwrite remove-action scope when <see cref="Mode"/> is <see cref="SaveMode.Overwrite"/>.
         /// </summary>
         public DistributedOverwriteScope OverwriteScope { get; set; } = DistributedOverwriteScope.FullTable;

@@ -21,23 +21,25 @@ namespace DeltaLakeSharp.Client.Models
         /// <param name="tablePath">Target Delta table path.</param>
         /// <param name="mode">Write mode used by the coordinator commit.</param>
         /// <param name="schemaMode">Optional schema evolution mode.</param>
-        /// <param name="tableDisposition">Expected target table disposition.</param>
         /// <param name="overwriteScope">Overwrite remove-action scope.</param>
         /// <param name="stagingPrefix">Table-relative staging prefix.</param>
         /// <param name="partitionBy">Optional target Delta partition columns.</param>
         /// <param name="maxBufferedBytes">Optional worker buffer byte threshold before flushing staged Add artifacts.</param>
         /// <param name="maxBufferedRecordBatches">Optional worker record-batch threshold before flushing staged Add artifacts.</param>
+        /// <param name="tableSchema">Optional table schema used by create-if-missing distributed runs.</param>
+        /// <param name="configuration">Optional table configuration used by create-if-missing distributed runs.</param>
         public DeltaDistributedWriteSession(
             Guid runId,
             string tablePath,
             SaveMode mode,
             WriteSchemaMode? schemaMode,
-            DistributedWriteTableDisposition tableDisposition,
             DistributedOverwriteScope overwriteScope,
             string stagingPrefix,
             IReadOnlyList<string>? partitionBy = null,
             long? maxBufferedBytes = null,
-            int? maxBufferedRecordBatches = null)
+            int? maxBufferedRecordBatches = null,
+            TableSchema? tableSchema = null,
+            IReadOnlyDictionary<string, string>? configuration = null)
         {
             if (runId == Guid.Empty)
             {
@@ -58,12 +60,13 @@ namespace DeltaLakeSharp.Client.Models
             TablePath = tablePath;
             Mode = mode;
             SchemaMode = schemaMode;
-            TableDisposition = tableDisposition;
             OverwriteScope = overwriteScope;
             StagingPrefix = stagingPrefix;
             PartitionBy = partitionBy ?? Array.Empty<string>();
             MaxBufferedBytes = maxBufferedBytes;
             MaxBufferedRecordBatches = maxBufferedRecordBatches;
+            TableSchema = tableSchema;
+            Configuration = configuration;
         }
 
         /// <summary>
@@ -87,11 +90,6 @@ namespace DeltaLakeSharp.Client.Models
         public WriteSchemaMode? SchemaMode { get; }
 
         /// <summary>
-        /// Gets whether the target table must already exist or may be created.
-        /// </summary>
-        public DistributedWriteTableDisposition TableDisposition { get; }
-
-        /// <summary>
         /// Gets the overwrite remove-action scope.
         /// </summary>
         public DistributedOverwriteScope OverwriteScope { get; }
@@ -105,6 +103,16 @@ namespace DeltaLakeSharp.Client.Models
         /// Gets the target Delta partition columns for this run.
         /// </summary>
         public IReadOnlyList<string> PartitionBy { get; }
+
+        /// <summary>
+        /// Gets the table schema used when a distributed run is allowed to create the target table.
+        /// </summary>
+        public TableSchema? TableSchema { get; }
+
+        /// <summary>
+        /// Gets table configuration properties used when a distributed run creates the target table.
+        /// </summary>
+        public IReadOnlyDictionary<string, string>? Configuration { get; }
 
         /// <summary>
         /// Gets the optional worker buffer byte threshold before flushing staged Add artifacts.

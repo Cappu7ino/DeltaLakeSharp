@@ -117,10 +117,10 @@
       "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["distributed-write", "write", "v3-native"],
       "intendedUsage": "Configure a V3 distributed write run before workers stage data and one coordinator commits it. RunId is a caller-provided Guid shared by all workers in the activity.",
-      "limitations": ["V3 native Rust only", "Existing-table append only in the current slice", "Caller owns run ID uniqueness", "Guid.Empty is invalid", "New table creation, overwrite, and schema evolution are planned follow-ups"],
+      "limitations": ["V3 native Rust only", "Supports existing-table append and create-if-missing append in the current slice", "Create-if-missing requires TableSchema only when the table is absent", "Caller owns run ID uniqueness", "Guid.Empty is invalid", "Overwrite, create-or-replace, and schema evolution are planned follow-ups"],
       "relatedConcepts": ["DeltaDistributedWriteSession", "DeltaStagedWriteResult", "DeltaDistributedCommitOptions", "SaveMode", "WriteSchemaMode"],
       "keywords": ["distributed write", "runId", "worker", "coordinator", "staging", "DeltaWriter"],
-      "performanceNotes": "Flush thresholds bound worker-side staged Add artifacts for existing-table append.",
+      "performanceNotes": "Flush thresholds bound worker-side staged Add artifacts for existing-table and create-if-missing append.",
       "threadingExpectations": "Configuration object; create per distributed run and avoid mutating after sharing with workers."
     },
     {
@@ -132,7 +132,7 @@
       "limitations": ["V3 native Rust only", "Represents an in-progress distributed write run", "Not a Delta transaction by itself"],
       "relatedConcepts": ["BeginDistributedWriteAsync", "StageDistributedWriteAsync", "CommitDistributedWriteAsync", "AbortDistributedWriteAsync"],
       "keywords": ["distributed write", "session", "runId", "staging prefix"],
-      "performanceNotes": "Carries scalar run metadata only; staged data and Add artifacts remain in storage.",
+      "performanceNotes": "Carries run metadata and optional create-table contract; staged data and Add artifacts remain in storage.",
       "threadingExpectations": "Immutable descriptor safe to pass between workers and coordinator."
     },
     {
@@ -141,7 +141,7 @@
       "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["distributed-write", "write", "staging"],
       "intendedUsage": "Summarize one worker staging operation without exposing raw Delta Add actions or artifact payloads.",
-      "limitations": ["V3 native Rust only", "Existing-table append only in the current slice", "Does not imply data has been committed"],
+      "limitations": ["V3 native Rust only", "Existing-table append and create-if-missing append only in the current slice", "Does not imply data has been committed"],
       "relatedConcepts": ["StageDistributedWriteAsync", "DeltaDistributedWriteSession"],
       "keywords": ["staged write", "artifact count", "added files", "runId"],
       "performanceNotes": "Reports aggregate counts so callers can monitor staging without materializing artifact payloads.",
@@ -152,24 +152,12 @@
       "type": "class",
       "namespace": "DeltaLakeSharp.Client.Models",
       "capabilities": ["distributed-write", "commit", "write"],
-      "intendedUsage": "Configure coordinator commit behavior for a distributed write run, including expected version, staging cleanup preference, and optional staged data-file restat validation.",
-      "limitations": ["V3 native Rust only", "Existing-table append only in the current slice", "Cleanup applies to staging artifacts, not Delta data retention", "ValidateStagedDataFiles defaults to false for metadata-bound coordinator commits", "New table creation, overwrite, and schema evolution are planned follow-ups"],
+      "intendedUsage": "Configure coordinator commit behavior for a distributed write run, including staging cleanup preference and optional staged data-file restat validation.",
+      "limitations": ["V3 native Rust only", "Existing-table append and create-if-missing append only in the current slice", "Cleanup applies to staging artifacts, not Delta data retention", "ValidateStagedDataFiles defaults to false for metadata-bound coordinator commits", "Overwrite, create-or-replace, and schema evolution are planned follow-ups"],
       "relatedConcepts": ["CommitDistributedWriteAsync", "DeltaDistributedWriteSession"],
-      "keywords": ["distributed commit", "expected version", "cleanup staging", "validate staged data files"],
-      "performanceNotes": "Expected version is an optimistic guard; final commit still uses Delta transaction semantics. Worker staging verifies newly written data files, while coordinator restat validation is optional.",
+      "keywords": ["distributed commit", "cleanup staging", "validate staged data files"],
+      "performanceNotes": "Final commit uses Delta transaction semantics. Worker staging verifies newly written data files, while coordinator restat validation is optional.",
       "threadingExpectations": "Configuration object; use per coordinator commit."
-    },
-    {
-      "id": "DistributedWriteTableDisposition",
-      "type": "enum",
-      "namespace": "DeltaLakeSharp.Client.Models",
-      "capabilities": ["distributed-write", "table-create", "write"],
-      "intendedUsage": "Describe whether the target table must already exist, may be created if missing, or may be created/replaced by the coordinator.",
-      "limitations": ["Evaluated by V3 distributed commit workflow", "Create/replace implementation is planned after existing-table append"],
-      "relatedConcepts": ["DeltaDistributedWriteOptions", "CommitDistributedWriteAsync"],
-      "keywords": ["existing table", "create if missing", "create or replace", "distributed write"],
-      "performanceNotes": "Create/replace may require metadata and remove actions in the coordinator transaction.",
-      "threadingExpectations": "Immutable enum value."
     },
     {
       "id": "DistributedOverwriteScope",

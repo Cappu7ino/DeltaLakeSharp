@@ -134,23 +134,36 @@ namespace DeltaLakeSharp.Tests
                 "/tmp/table",
                 SaveMode.Append,
                 WriteSchemaMode.Merge,
-                DistributedWriteTableDisposition.ExistingTable,
                 DistributedOverwriteScope.FullTable,
                 "_staging",
                 new[] { "region" },
                 maxBufferedBytes: 4096,
-                maxBufferedRecordBatches: 3);
+                maxBufferedRecordBatches: 3,
+                tableSchema: new TableSchema(new[]
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("region", "string"),
+                }),
+                configuration: new Dictionary<string, string>
+                {
+                    ["delta.appendOnly"] = "true",
+                });
 
             Assert.AreEqual(Guid.Parse("123e4567-e89b-12d3-a456-426614174000"), session.RunId);
             Assert.AreEqual("/tmp/table", session.TablePath);
             Assert.AreEqual(SaveMode.Append, session.Mode);
             Assert.AreEqual(WriteSchemaMode.Merge, session.SchemaMode);
-            Assert.AreEqual(DistributedWriteTableDisposition.ExistingTable, session.TableDisposition);
             Assert.AreEqual(DistributedOverwriteScope.FullTable, session.OverwriteScope);
             Assert.AreEqual("_staging", session.StagingPrefix);
             Assert.AreEqual("region", session.PartitionBy[0]);
             Assert.AreEqual(4096, session.MaxBufferedBytes);
             Assert.AreEqual(3, session.MaxBufferedRecordBatches);
+            TableSchema tableSchema = session.TableSchema!;
+            IReadOnlyDictionary<string, string> configuration = session.Configuration!;
+            Assert.IsNotNull(tableSchema);
+            Assert.AreEqual(2, tableSchema.Columns.Count);
+            Assert.IsNotNull(configuration);
+            Assert.AreEqual("true", configuration["delta.appendOnly"]);
         }
 
         [TestMethod]
@@ -162,7 +175,6 @@ namespace DeltaLakeSharp.Tests
                 "/tmp/table",
                 SaveMode.Append,
                 schemaMode: null,
-                DistributedWriteTableDisposition.ExistingTable,
                 DistributedOverwriteScope.FullTable,
                 "_staging");
         }
@@ -197,7 +209,6 @@ namespace DeltaLakeSharp.Tests
             var options = new DeltaDistributedCommitOptions();
             Assert.IsTrue(options.CleanupStagingArtifacts);
             Assert.IsFalse(options.ValidateStagedDataFiles);
-            Assert.IsNull(options.ExpectedVersion);
         }
 
         [TestMethod]
@@ -207,12 +218,10 @@ namespace DeltaLakeSharp.Tests
             {
                 ValidateStagedDataFiles = true,
                 CleanupStagingArtifacts = false,
-                ExpectedVersion = 7,
             };
 
             Assert.IsTrue(options.ValidateStagedDataFiles);
             Assert.IsFalse(options.CleanupStagingArtifacts);
-            Assert.AreEqual(7, options.ExpectedVersion);
         }
 
         // ================================================================== //

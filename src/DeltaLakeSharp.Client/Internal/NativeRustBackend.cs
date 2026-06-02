@@ -1195,7 +1195,6 @@ namespace DeltaLakeSharp.Client.Internal
                 ["path"] = path,
                 ["run_id"] = options.RunId.ToString("D"),
                 ["mode"] = options.Mode == SaveMode.Append ? "append" : "overwrite",
-                ["table_disposition"] = ToDistributedWriteTableDispositionValue(options.TableDisposition),
                 ["overwrite_scope"] = ToDistributedOverwriteScopeValue(options.OverwriteScope),
             };
 
@@ -1241,7 +1240,6 @@ namespace DeltaLakeSharp.Client.Internal
                 ["path"] = session.TablePath,
                 ["run_id"] = session.RunId.ToString("D"),
                 ["mode"] = session.Mode == SaveMode.Append ? "append" : "overwrite",
-                ["table_disposition"] = ToDistributedWriteTableDispositionValue(session.TableDisposition),
                 ["overwrite_scope"] = ToDistributedOverwriteScopeValue(session.OverwriteScope),
                 ["staging_prefix"] = session.StagingPrefix,
             };
@@ -1253,6 +1251,14 @@ namespace DeltaLakeSharp.Client.Internal
             if (session.PartitionBy.Count > 0)
             {
                 command["partition_by"] = session.PartitionBy;
+            }
+            if (session.TableSchema != null)
+            {
+                command["schema"] = BuildSchemaPayload(session.TableSchema);
+            }
+            if (session.Configuration != null && session.Configuration.Count > 0)
+            {
+                command["configuration"] = session.Configuration;
             }
             if (session.MaxBufferedBytes.HasValue)
             {
@@ -1277,7 +1283,6 @@ namespace DeltaLakeSharp.Client.Internal
                 ["path"] = session.TablePath,
                 ["run_id"] = session.RunId.ToString("D"),
                 ["mode"] = session.Mode == SaveMode.Append ? "append" : "overwrite",
-                ["table_disposition"] = ToDistributedWriteTableDispositionValue(session.TableDisposition),
                 ["overwrite_scope"] = ToDistributedOverwriteScopeValue(session.OverwriteScope),
                 ["staging_prefix"] = session.StagingPrefix,
             };
@@ -1290,9 +1295,13 @@ namespace DeltaLakeSharp.Client.Internal
             {
                 command["partition_by"] = session.PartitionBy;
             }
-            if (options?.ExpectedVersion != null)
+            if (session.TableSchema != null)
             {
-                command["expected_version"] = options.ExpectedVersion.Value;
+                command["schema"] = BuildSchemaPayload(session.TableSchema);
+            }
+            if (session.Configuration != null && session.Configuration.Count > 0)
+            {
+                command["configuration"] = session.Configuration;
             }
             if (options != null)
             {
@@ -1302,17 +1311,6 @@ namespace DeltaLakeSharp.Client.Internal
 
             AddStorageConfig(command, storageConfig, null);
             return JsonSerializer.Serialize(command);
-        }
-
-        private static string ToDistributedWriteTableDispositionValue(DistributedWriteTableDisposition disposition)
-        {
-            return disposition switch
-            {
-                DistributedWriteTableDisposition.ExistingTable => "existingTable",
-                DistributedWriteTableDisposition.CreateIfMissing => "createIfMissing",
-                DistributedWriteTableDisposition.CreateOrReplace => "createOrReplace",
-                _ => throw new ArgumentOutOfRangeException(nameof(disposition), disposition, "Unknown distributed write table disposition."),
-            };
         }
 
         private static string ToDistributedOverwriteScopeValue(DistributedOverwriteScope overwriteScope)
@@ -1425,7 +1423,6 @@ namespace DeltaLakeSharp.Client.Internal
                 ?? throw new InvalidOperationException("Distributed write session is missing tablePath.");
             string mode = obj["mode"]?.GetValue<string>() ?? "append";
             string? schemaMode = obj["schemaMode"]?.GetValue<string>();
-            string tableDisposition = obj["tableDisposition"]?.GetValue<string>() ?? "existingTable";
             string overwriteScope = obj["overwriteScope"]?.GetValue<string>() ?? "fullTable";
             string stagingPrefix = obj["stagingPrefix"]?.GetValue<string>() ?? "_staging";
             long? maxBufferedBytes = obj["maxBufferedBytes"]?.GetValue<long>();
@@ -1441,18 +1438,58 @@ namespace DeltaLakeSharp.Client.Internal
                     }
                 }
             }
+            TableSchema? tableSchema = null;
+            if (obj["schema"] is JsonArray schemaArray && schemaArray.Count > 0)
+            {
+                tableSchema = ParseTableSchema(schemaArray);
+            }
+
+            Dictionary<string, string>? configuration = null;
+            if (obj["configuration"] is JsonObject configurationObject && configurationObject.Count > 0)
+            {
+                configuration = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (KeyValuePair<string, JsonNode?> item in configurationObject)
+                {
+                    if (item.Value != null)
+                    {
+                        configuration[item.Key] = item.Value.GetValue<string>();
+                    }
+                }
+            }
 
             return new DeltaDistributedWriteSession(
                 parsedRunId,
                 tablePath,
                 ParseSaveMode(mode),
                 ParseWriteSchemaMode(schemaMode),
-                ParseDistributedWriteTableDisposition(tableDisposition),
                 ParseDistributedOverwriteScope(overwriteScope),
                 stagingPrefix,
                 partitionBy,
                 maxBufferedBytes,
-                maxBufferedRecordBatches);
+                maxBufferedRecordBatches,
+                tableSchema,
+                configuration);
+        }
+
+        private static TableSchema ParseTableSchema(JsonArray schemaArray)
+        {
+            var columns = new List<ColumnDefinition>(schemaArray.Count);
+            foreach (JsonNode? item in schemaArray)
+            {
+                if (item is not JsonObject columnObject)
+                {
+                    continue;
+                }
+
+                string name = columnObject["name"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("Distributed write session schema column is missing name.");
+                string dataType = columnObject["type"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("Distributed write session schema column is missing type.");
+                bool nullable = columnObject["nullable"]?.GetValue<bool>() ?? true;
+                columns.Add(new ColumnDefinition(name, dataType, nullable));
+            }
+
+            return new TableSchema(columns);
         }
 
         private static DeltaStagedWriteResult ParseStagedWriteResult(string json)
@@ -1513,17 +1550,6 @@ namespace DeltaLakeSharp.Client.Internal
                 "merge" => WriteSchemaMode.Merge,
                 "overwrite" => WriteSchemaMode.Overwrite,
                 _ => throw new InvalidOperationException($"Distributed write session returned unsupported schema mode '{value}'."),
-            };
-        }
-
-        private static DistributedWriteTableDisposition ParseDistributedWriteTableDisposition(string value)
-        {
-            return value switch
-            {
-                "existingTable" => DistributedWriteTableDisposition.ExistingTable,
-                "createIfMissing" => DistributedWriteTableDisposition.CreateIfMissing,
-                "createOrReplace" => DistributedWriteTableDisposition.CreateOrReplace,
-                _ => throw new InvalidOperationException($"Distributed write session returned unsupported table disposition '{value}'."),
             };
         }
 
