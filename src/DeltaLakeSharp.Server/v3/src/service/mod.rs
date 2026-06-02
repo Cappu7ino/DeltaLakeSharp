@@ -9,6 +9,7 @@ use serde_json::json;
 use self::request::WriteCommand;
 use crate::error::ServiceError;
 
+pub mod distributed_write;
 pub mod helpers;
 pub mod read;
 pub mod request;
@@ -48,7 +49,10 @@ impl DeltaService {
         Ok(schema.as_ref().clone())
     }
 
-    pub async fn plan_read_partitions(&self, body: &[u8]) -> Result<serde_json::Value, ServiceError> {
+    pub async fn plan_read_partitions(
+        &self,
+        body: &[u8],
+    ) -> Result<serde_json::Value, ServiceError> {
         self::read::plan_read_partitions_from_command_bytes(body).await
     }
 
@@ -58,8 +62,10 @@ impl DeltaService {
         &self,
         body: &[u8],
         runtime_handle: tokio::runtime::Handle,
-    ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
-    {
+    ) -> Result<
+        Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+        ServiceError,
+    > {
         self::read::resolve_batch_reader_from_command_bytes(body, runtime_handle).await
     }
 
@@ -69,8 +75,10 @@ impl DeltaService {
         &self,
         body: &[u8],
         runtime_handle: tokio::runtime::Handle,
-    ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
-    {
+    ) -> Result<
+        Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+        ServiceError,
+    > {
         self::read::resolve_batch_reader_from_command_bytes(body, runtime_handle).await
     }
 
@@ -79,14 +87,51 @@ impl DeltaService {
         &self,
         body: &[u8],
         runtime_handle: tokio::runtime::Handle,
-    ) -> Result<Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>, ServiceError>
-    {
+    ) -> Result<
+        Box<dyn RecordBatchReader<Item = Result<RecordBatch, ArrowError>> + Send>,
+        ServiceError,
+    > {
         self::read::resolve_change_data_reader_from_command_bytes(body, runtime_handle).await
     }
 
     /// Delegates table creation to the write module.
     pub async fn create_table(&self, body: &[u8]) -> Result<serde_json::Value, ServiceError> {
         self::write::handle_create_table(body).await
+    }
+
+    /// Initializes a distributed write run descriptor.
+    pub async fn begin_distributed_write(
+        &self,
+        body: &[u8],
+    ) -> Result<serde_json::Value, ServiceError> {
+        self::distributed_write::begin_distributed_write(body).await
+    }
+
+    /// Consumes an imported Arrow C Stream reader and stages it for a distributed write run.
+    pub async fn stage_distributed_write_reader(
+        &self,
+        body: &[u8],
+        reader: ArrowArrayStreamReader,
+    ) -> Result<serde_json::Value, ServiceError> {
+        let cmd = serde_json::from_slice::<self::request::StageDistributedWriteCommand>(body)
+            .map_err(ServiceError::Json)?;
+        self::distributed_write::stage_distributed_write(cmd, reader).await
+    }
+
+    /// Commits staged distributed write artifacts for an existing-table append.
+    pub async fn commit_distributed_write(
+        &self,
+        body: &[u8],
+    ) -> Result<serde_json::Value, ServiceError> {
+        self::distributed_write::commit_distributed_write(body).await
+    }
+
+    /// Deletes staged distributed write artifacts without committing table changes.
+    pub async fn abort_distributed_write(
+        &self,
+        body: &[u8],
+    ) -> Result<serde_json::Value, ServiceError> {
+        self::distributed_write::abort_distributed_write(body).await
     }
 
     /// Consumes an imported Arrow C Stream reader and writes it to the target

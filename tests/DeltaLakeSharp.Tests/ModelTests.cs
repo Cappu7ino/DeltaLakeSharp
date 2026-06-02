@@ -96,9 +96,9 @@ namespace DeltaLakeSharp.Tests
         [TestMethod]
         public void ExecuteResult_Constructor_SetsAllProperties()
         {
-            var rows = new List<Dictionary<string, object>>
+            var rows = new List<Dictionary<string, object?>>
             {
-                new Dictionary<string, object> { ["a"] = 1 },
+                new Dictionary<string, object?> { ["a"] = 1 },
             };
 
             var result = new ExecuteResult(true, "ok", rows);
@@ -110,7 +110,7 @@ namespace DeltaLakeSharp.Tests
         [TestMethod]
         public void ExecuteResult_NullMessage_DefaultsToEmpty()
         {
-            var result = new ExecuteResult(false, null);
+            var result = new ExecuteResult(false, null!);
             Assert.IsFalse(result.Success);
             Assert.AreEqual(string.Empty, result.Message);
         }
@@ -120,6 +120,108 @@ namespace DeltaLakeSharp.Tests
         {
             var result = new ExecuteResult(true, "ok");
             Assert.AreEqual(0, result.Result.Count);
+        }
+
+        // ================================================================== //
+        //  Distributed write models
+        // ================================================================== //
+
+        [TestMethod]
+        public void DeltaDistributedWriteSession_Constructor_SetsProperties()
+        {
+            var session = new DeltaDistributedWriteSession(
+                Guid.Parse("123e4567-e89b-12d3-a456-426614174000"),
+                "/tmp/table",
+                SaveMode.Append,
+                WriteSchemaMode.Merge,
+                DistributedOverwriteScope.FullTable,
+                "_staging",
+                new[] { "region" },
+                maxBufferedBytes: 4096,
+                maxBufferedRecordBatches: 3,
+                tableSchema: new TableSchema(new[]
+                {
+                    new ColumnDefinition("id", "int32"),
+                    new ColumnDefinition("region", "string"),
+                }),
+                configuration: new Dictionary<string, string>
+                {
+                    ["delta.appendOnly"] = "true",
+                });
+
+            Assert.AreEqual(Guid.Parse("123e4567-e89b-12d3-a456-426614174000"), session.RunId);
+            Assert.AreEqual("/tmp/table", session.TablePath);
+            Assert.AreEqual(SaveMode.Append, session.Mode);
+            Assert.AreEqual(WriteSchemaMode.Merge, session.SchemaMode);
+            Assert.AreEqual(DistributedOverwriteScope.FullTable, session.OverwriteScope);
+            Assert.AreEqual("_staging", session.StagingPrefix);
+            Assert.AreEqual("region", session.PartitionBy[0]);
+            Assert.AreEqual(4096, session.MaxBufferedBytes);
+            Assert.AreEqual(3, session.MaxBufferedRecordBatches);
+            TableSchema tableSchema = session.TableSchema!;
+            IReadOnlyDictionary<string, string> configuration = session.Configuration!;
+            Assert.IsNotNull(tableSchema);
+            Assert.AreEqual(2, tableSchema.Columns.Count);
+            Assert.IsNotNull(configuration);
+            Assert.AreEqual("true", configuration["delta.appendOnly"]);
+        }
+
+        [TestMethod]
+        [ExpectedException(typeof(ArgumentException))]
+        public void DeltaDistributedWriteSession_EmptyRunId_Throws()
+        {
+            _ = new DeltaDistributedWriteSession(
+                Guid.Empty,
+                "/tmp/table",
+                SaveMode.Append,
+                schemaMode: null,
+                DistributedOverwriteScope.FullTable,
+                "_staging");
+        }
+
+        [TestMethod]
+        public void DeltaStagedWriteResult_Constructor_SetsProperties()
+        {
+            var result = new DeltaStagedWriteResult(
+                Guid.Parse("123e4567-e89b-12d3-a456-426614174000"),
+                "_staging",
+                artifactCount: 2,
+                addedFileCount: 3,
+                totalDataFileBytes: 1024);
+
+            Assert.AreEqual(Guid.Parse("123e4567-e89b-12d3-a456-426614174000"), result.RunId);
+            Assert.AreEqual("_staging", result.StagingPrefix);
+            Assert.AreEqual(2, result.ArtifactCount);
+            Assert.AreEqual(3, result.AddedFileCount);
+            Assert.AreEqual(1024, result.TotalDataFileBytes);
+        }
+
+        [TestMethod]
+        [ExpectedException(typeof(ArgumentOutOfRangeException))]
+        public void DeltaStagedWriteResult_NegativeArtifactCount_Throws()
+        {
+            _ = new DeltaStagedWriteResult(Guid.Parse("123e4567-e89b-12d3-a456-426614174000"), "_staging", -1, 0, 0);
+        }
+
+        [TestMethod]
+        public void DeltaDistributedCommitOptions_Defaults_DisableFileRestatAndEnableCleanup()
+        {
+            var options = new DeltaDistributedCommitOptions();
+            Assert.IsTrue(options.CleanupStagingArtifacts);
+            Assert.IsFalse(options.ValidateStagedDataFiles);
+        }
+
+        [TestMethod]
+        public void DeltaDistributedCommitOptions_AllowsEnablingFileRestatValidation()
+        {
+            var options = new DeltaDistributedCommitOptions
+            {
+                ValidateStagedDataFiles = true,
+                CleanupStagingArtifacts = false,
+            };
+
+            Assert.IsTrue(options.ValidateStagedDataFiles);
+            Assert.IsFalse(options.CleanupStagingArtifacts);
         }
 
         // ================================================================== //

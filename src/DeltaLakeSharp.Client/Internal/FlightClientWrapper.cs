@@ -403,6 +403,52 @@ namespace DeltaLakeSharp.Client.Internal
             await DoPutStreamingAsync(commandJson, schema, batches, cancellationToken).ConfigureAwait(false);
         }
 
+        public Task<DeltaDistributedWriteSession> BeginDistributedWriteAsync(
+            string path,
+            DeltaDistributedWriteOptions options,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw CreateDistributedWriteNotSupportedException();
+        }
+
+        public Task<DeltaStagedWriteResult> StageDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            Schema schema,
+            IAsyncEnumerable<RecordBatch> batches,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw CreateDistributedWriteNotSupportedException();
+        }
+
+        public Task<ExecuteResult> CommitDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            DeltaDistributedCommitOptions? options = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw CreateDistributedWriteNotSupportedException();
+        }
+
+        public Task<ExecuteResult> AbortDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            throw CreateDistributedWriteNotSupportedException();
+        }
+
+        private static NotSupportedException CreateDistributedWriteNotSupportedException()
+        {
+            return new NotSupportedException(
+                "Distributed writes are supported only by the V3 native Rust backend.");
+        }
+
         // ------------------------------------------------------------------ //
         //  DML operations (DELETE, UPDATE, MERGE) via DoAction("execute_dml")
         // ------------------------------------------------------------------ //

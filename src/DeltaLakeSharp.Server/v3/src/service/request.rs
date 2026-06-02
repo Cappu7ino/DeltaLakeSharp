@@ -132,11 +132,17 @@ impl Command {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ColumnDef {
     pub name: String,
     #[serde(rename = "type")]
     pub data_type: String,
+    #[serde(default = "default_nullable")]
+    pub nullable: bool,
+}
+
+fn default_nullable() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,6 +183,111 @@ pub struct UpgradeProtocolCommand {
     pub storage_account: Option<String>,
     #[serde(default)]
     pub sas_token: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BeginDistributedWriteCommand {
+    pub path: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default = "default_write_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub schema_mode: Option<String>,
+    #[serde(default)]
+    pub overwrite_scope: Option<String>,
+    #[serde(default)]
+    pub schema: Option<Vec<ColumnDef>>,
+    #[serde(default)]
+    pub configuration: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub partition_by: Option<Vec<String>>,
+    #[serde(default)]
+    pub staging_prefix: Option<String>,
+    #[serde(default)]
+    pub max_buffered_bytes: Option<u64>,
+    #[serde(default)]
+    pub max_buffered_record_batches: Option<usize>,
+    #[serde(default)]
+    pub storage_account: Option<String>,
+    #[serde(default)]
+    pub sas_token: Option<String>,
+    #[serde(default)]
+    pub storage_options: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StageDistributedWriteCommand {
+    pub path: String,
+    pub run_id: String,
+    #[serde(default = "default_write_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub schema_mode: Option<String>,
+    #[serde(default)]
+    pub overwrite_scope: Option<String>,
+    #[serde(default)]
+    pub schema: Option<Vec<ColumnDef>>,
+    #[serde(default)]
+    pub configuration: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub partition_by: Option<Vec<String>>,
+    #[serde(default)]
+    pub staging_prefix: Option<String>,
+    #[serde(default)]
+    pub max_buffered_bytes: Option<u64>,
+    #[serde(default)]
+    pub max_buffered_record_batches: Option<usize>,
+    #[serde(default)]
+    pub storage_account: Option<String>,
+    #[serde(default)]
+    pub sas_token: Option<String>,
+    #[serde(default)]
+    pub storage_options: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CommitDistributedWriteCommand {
+    pub path: String,
+    pub run_id: String,
+    #[serde(default = "default_write_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub schema_mode: Option<String>,
+    #[serde(default)]
+    pub overwrite_scope: Option<String>,
+    #[serde(default)]
+    pub schema: Option<Vec<ColumnDef>>,
+    #[serde(default)]
+    pub configuration: Option<HashMap<String, String>>,
+    #[serde(default)]
+    pub partition_by: Option<Vec<String>>,
+    #[serde(default)]
+    pub staging_prefix: Option<String>,
+    #[serde(default)]
+    pub cleanup_staging_artifacts: Option<bool>,
+    #[serde(default)]
+    pub validate_staged_data_files: Option<bool>,
+    #[serde(default)]
+    pub storage_account: Option<String>,
+    #[serde(default)]
+    pub sas_token: Option<String>,
+    #[serde(default)]
+    pub storage_options: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AbortDistributedWriteCommand {
+    pub path: String,
+    pub run_id: String,
+    #[serde(default)]
+    pub staging_prefix: Option<String>,
+    #[serde(default)]
+    pub storage_account: Option<String>,
+    #[serde(default)]
+    pub sas_token: Option<String>,
+    #[serde(default)]
+    pub storage_options: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]

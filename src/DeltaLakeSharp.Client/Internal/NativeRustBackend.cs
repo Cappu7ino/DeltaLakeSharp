@@ -506,6 +506,68 @@ namespace DeltaLakeSharp.Client.Internal
             return InsertCoreAsync(schema, batches, commandJson, cancellationToken);
         }
 
+        public Task<DeltaDistributedWriteSession> BeginDistributedWriteAsync(
+            string path,
+            DeltaDistributedWriteOptions options,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildBeginDistributedWriteCommandJson(path, options, storageConfig);
+            return ExecuteNativeJsonOperationAsync(
+                nameof(BeginDistributedWriteAsync),
+                "begin_distributed_write",
+                commandJson,
+                NativeMethods.BeginDistributedWriteAsyncWithCallback,
+                ParseDistributedWriteSession,
+                cancellationToken);
+        }
+
+        public Task<DeltaStagedWriteResult> StageDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            Schema schema,
+            IAsyncEnumerable<RecordBatch> batches,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildDistributedWriteSessionCommandJson(session, storageConfig);
+            return StageDistributedWriteCoreAsync(schema, batches, commandJson, cancellationToken);
+        }
+
+        public Task<ExecuteResult> CommitDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            DeltaDistributedCommitOptions? options = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildCommitDistributedWriteCommandJson(session, options, storageConfig);
+            return ExecuteNativeJsonOperationAsync(
+                nameof(CommitDistributedWriteAsync),
+                "commit_distributed_write",
+                commandJson,
+                NativeMethods.CommitDistributedWriteAsyncWithCallback,
+                ParseExecuteResult,
+                cancellationToken);
+        }
+
+        public Task<ExecuteResult> AbortDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string commandJson = BuildDistributedWriteSessionCommandJson(session, storageConfig);
+            return ExecuteNativeJsonOperationAsync(
+                nameof(AbortDistributedWriteAsync),
+                "abort_distributed_write",
+                commandJson,
+                NativeMethods.AbortDistributedWriteAsyncWithCallback,
+                ParseExecuteResult,
+                cancellationToken);
+        }
+
         public Task<ExecuteResult> DeleteAsync(
             string sql,
             string tablePath,
@@ -936,6 +998,33 @@ namespace DeltaLakeSharp.Client.Internal
             }
         }
 
+        private async Task<DeltaStagedWriteResult> StageDistributedWriteCoreAsync(
+            Schema schema,
+            IAsyncEnumerable<RecordBatch> batches,
+            string commandJson,
+            CancellationToken cancellationToken)
+        {
+            IArrowArrayStream stream = new AsyncEnumerableArrowArrayStream(schema, batches, cancellationToken);
+            IntPtr streamPtr = CreateNativeArrowArrayStream();
+            try
+            {
+                ExportArrowArrayStream(stream, streamPtr);
+                return await ExecuteNativeSourceStreamJsonOperationAsync(
+                    nameof(StageDistributedWriteAsync),
+                    "stage_distributed_write",
+                    commandJson,
+                    streamPtr,
+                    NativeMethods.StageDistributedWriteAsyncWithCallback,
+                    ParseStagedWriteResult,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                stream.Dispose();
+                FreeNativeArrowArrayStream(streamPtr);
+            }
+        }
+
         /// <summary>
         /// Parses the common V3 action result envelope into the public client model.
         /// Keeping the envelope identical to Flight simplifies migration and lets
@@ -1091,6 +1180,149 @@ namespace DeltaLakeSharp.Client.Internal
             return JsonSerializer.Serialize(command);
         }
 
+        private static string BuildBeginDistributedWriteCommandJson(
+            string path,
+            DeltaDistributedWriteOptions options,
+            StorageConfig? storageConfig)
+        {
+            if (options.RunId == Guid.Empty)
+            {
+                throw new ArgumentException("Distributed write options must include a caller-provided run ID.", nameof(options));
+            }
+
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = path,
+                ["run_id"] = options.RunId.ToString("D"),
+                ["mode"] = options.Mode == SaveMode.Append ? "append" : "overwrite",
+                ["overwrite_scope"] = ToDistributedOverwriteScopeValue(options.OverwriteScope),
+            };
+
+            if (options.SchemaMode.HasValue)
+            {
+                command["schema_mode"] = options.SchemaMode.Value.ToString().ToLowerInvariant();
+            }
+            if (options.TableSchema != null)
+            {
+                command["schema"] = BuildSchemaPayload(options.TableSchema);
+            }
+            if (options.Configuration != null && options.Configuration.Count > 0)
+            {
+                command["configuration"] = options.Configuration;
+            }
+            if (options.PartitionBy != null && options.PartitionBy.Count > 0)
+            {
+                command["partition_by"] = options.PartitionBy;
+            }
+            if (!string.IsNullOrWhiteSpace(options.StagingPrefix))
+            {
+                command["staging_prefix"] = options.StagingPrefix!;
+            }
+            if (options.MaxBufferedBytes.HasValue)
+            {
+                command["max_buffered_bytes"] = options.MaxBufferedBytes.Value;
+            }
+            if (options.MaxBufferedRecordBatches.HasValue)
+            {
+                command["max_buffered_record_batches"] = options.MaxBufferedRecordBatches.Value;
+            }
+
+            AddStorageConfig(command, storageConfig, null);
+            return JsonSerializer.Serialize(command);
+        }
+
+        private static string BuildDistributedWriteSessionCommandJson(
+            DeltaDistributedWriteSession session,
+            StorageConfig? storageConfig)
+        {
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = session.TablePath,
+                ["run_id"] = session.RunId.ToString("D"),
+                ["mode"] = session.Mode == SaveMode.Append ? "append" : "overwrite",
+                ["overwrite_scope"] = ToDistributedOverwriteScopeValue(session.OverwriteScope),
+                ["staging_prefix"] = session.StagingPrefix,
+            };
+
+            if (session.SchemaMode.HasValue)
+            {
+                command["schema_mode"] = session.SchemaMode.Value.ToString().ToLowerInvariant();
+            }
+            if (session.PartitionBy.Count > 0)
+            {
+                command["partition_by"] = session.PartitionBy;
+            }
+            if (session.TableSchema != null)
+            {
+                command["schema"] = BuildSchemaPayload(session.TableSchema);
+            }
+            if (session.Configuration != null && session.Configuration.Count > 0)
+            {
+                command["configuration"] = session.Configuration;
+            }
+            if (session.MaxBufferedBytes.HasValue)
+            {
+                command["max_buffered_bytes"] = session.MaxBufferedBytes.Value;
+            }
+            if (session.MaxBufferedRecordBatches.HasValue)
+            {
+                command["max_buffered_record_batches"] = session.MaxBufferedRecordBatches.Value;
+            }
+
+            AddStorageConfig(command, storageConfig, null);
+            return JsonSerializer.Serialize(command);
+        }
+
+        private static string BuildCommitDistributedWriteCommandJson(
+            DeltaDistributedWriteSession session,
+            DeltaDistributedCommitOptions? options,
+            StorageConfig? storageConfig)
+        {
+            var command = new Dictionary<string, object>
+            {
+                ["path"] = session.TablePath,
+                ["run_id"] = session.RunId.ToString("D"),
+                ["mode"] = session.Mode == SaveMode.Append ? "append" : "overwrite",
+                ["overwrite_scope"] = ToDistributedOverwriteScopeValue(session.OverwriteScope),
+                ["staging_prefix"] = session.StagingPrefix,
+            };
+
+            if (session.SchemaMode.HasValue)
+            {
+                command["schema_mode"] = session.SchemaMode.Value.ToString().ToLowerInvariant();
+            }
+            if (session.PartitionBy.Count > 0)
+            {
+                command["partition_by"] = session.PartitionBy;
+            }
+            if (session.TableSchema != null)
+            {
+                command["schema"] = BuildSchemaPayload(session.TableSchema);
+            }
+            if (session.Configuration != null && session.Configuration.Count > 0)
+            {
+                command["configuration"] = session.Configuration;
+            }
+            if (options != null)
+            {
+                command["cleanup_staging_artifacts"] = options.CleanupStagingArtifacts;
+                command["validate_staged_data_files"] = options.ValidateStagedDataFiles;
+            }
+
+            AddStorageConfig(command, storageConfig, null);
+            return JsonSerializer.Serialize(command);
+        }
+
+        private static string ToDistributedOverwriteScopeValue(DistributedOverwriteScope overwriteScope)
+        {
+            return overwriteScope switch
+            {
+                DistributedOverwriteScope.FullTable => "fullTable",
+                DistributedOverwriteScope.TouchedPartitions => "touchedPartitions",
+                _ => throw new ArgumentOutOfRangeException(nameof(overwriteScope), overwriteScope, "Unknown distributed overwrite scope."),
+            };
+        }
+
         private static string BuildReadTablePartitionCommandJson(
             string path,
             DeltaReadPartition partition,
@@ -1163,6 +1395,172 @@ namespace DeltaLakeSharp.Client.Internal
             }
 
             return partitions;
+        }
+
+        private static DeltaDistributedWriteSession ParseDistributedWriteSession(string json)
+        {
+            JsonNode root = JsonNode.Parse(json)
+                ?? throw new InvalidOperationException("Native backend returned invalid JSON for distributed write begin.");
+
+            if (!(root["success"]?.GetValue<bool>() ?? false))
+            {
+                string message = root["message"]?.GetValue<string>() ?? "Distributed write begin failed.";
+                throw new InvalidOperationException(message);
+            }
+
+            if (root["result"] is not JsonArray resultArray || resultArray.Count == 0 || resultArray[0] is not JsonObject obj)
+            {
+                throw new InvalidOperationException("Distributed write begin result is missing session data.");
+            }
+
+            string runId = obj["runId"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("Distributed write session is missing runId.");
+            if (!Guid.TryParseExact(runId, "D", out Guid parsedRunId))
+            {
+                throw new InvalidOperationException("Distributed write session returned an invalid runId.");
+            }
+            string tablePath = obj["tablePath"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("Distributed write session is missing tablePath.");
+            string mode = obj["mode"]?.GetValue<string>() ?? "append";
+            string? schemaMode = obj["schemaMode"]?.GetValue<string>();
+            string overwriteScope = obj["overwriteScope"]?.GetValue<string>() ?? "fullTable";
+            string stagingPrefix = obj["stagingPrefix"]?.GetValue<string>() ?? "_staging";
+            long? maxBufferedBytes = obj["maxBufferedBytes"]?.GetValue<long>();
+            int? maxBufferedRecordBatches = obj["maxBufferedRecordBatches"]?.GetValue<int>();
+            var partitionBy = new List<string>();
+            if (obj["partitionBy"] is JsonArray partitionArray)
+            {
+                foreach (JsonNode? item in partitionArray)
+                {
+                    if (item != null)
+                    {
+                        partitionBy.Add(item.GetValue<string>());
+                    }
+                }
+            }
+            TableSchema? tableSchema = null;
+            if (obj["schema"] is JsonArray schemaArray && schemaArray.Count > 0)
+            {
+                tableSchema = ParseTableSchema(schemaArray);
+            }
+
+            Dictionary<string, string>? configuration = null;
+            if (obj["configuration"] is JsonObject configurationObject && configurationObject.Count > 0)
+            {
+                configuration = new Dictionary<string, string>(StringComparer.Ordinal);
+                foreach (KeyValuePair<string, JsonNode?> item in configurationObject)
+                {
+                    if (item.Value != null)
+                    {
+                        configuration[item.Key] = item.Value.GetValue<string>();
+                    }
+                }
+            }
+
+            return new DeltaDistributedWriteSession(
+                parsedRunId,
+                tablePath,
+                ParseSaveMode(mode),
+                ParseWriteSchemaMode(schemaMode),
+                ParseDistributedOverwriteScope(overwriteScope),
+                stagingPrefix,
+                partitionBy,
+                maxBufferedBytes,
+                maxBufferedRecordBatches,
+                tableSchema,
+                configuration);
+        }
+
+        private static TableSchema ParseTableSchema(JsonArray schemaArray)
+        {
+            var columns = new List<ColumnDefinition>(schemaArray.Count);
+            foreach (JsonNode? item in schemaArray)
+            {
+                if (item is not JsonObject columnObject)
+                {
+                    continue;
+                }
+
+                string name = columnObject["name"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("Distributed write session schema column is missing name.");
+                string dataType = columnObject["type"]?.GetValue<string>()
+                    ?? throw new InvalidOperationException("Distributed write session schema column is missing type.");
+                bool nullable = columnObject["nullable"]?.GetValue<bool>() ?? true;
+                columns.Add(new ColumnDefinition(name, dataType, nullable));
+            }
+
+            return new TableSchema(columns);
+        }
+
+        private static DeltaStagedWriteResult ParseStagedWriteResult(string json)
+        {
+            JsonNode root = JsonNode.Parse(json)
+                ?? throw new InvalidOperationException("Native backend returned invalid JSON for distributed write staging.");
+
+            if (!(root["success"]?.GetValue<bool>() ?? false))
+            {
+                string message = root["message"]?.GetValue<string>() ?? "Distributed write staging failed.";
+                throw new InvalidOperationException(message);
+            }
+
+            if (root["result"] is not JsonArray resultArray || resultArray.Count == 0 || resultArray[0] is not JsonObject obj)
+            {
+                throw new InvalidOperationException("Distributed write staging result is missing summary data.");
+            }
+
+            string runId = obj["runId"]?.GetValue<string>()
+                ?? throw new InvalidOperationException("Distributed write staging result is missing runId.");
+            if (!Guid.TryParseExact(runId, "D", out Guid parsedRunId))
+            {
+                throw new InvalidOperationException("Distributed write staging result returned an invalid runId.");
+            }
+
+            string stagingPrefix = obj["stagingPrefix"]?.GetValue<string>() ?? "_staging";
+            int artifactCount = obj["artifactCount"]?.GetValue<int>() ?? 0;
+            long addedFileCount = obj["addedFileCount"]?.GetValue<long>() ?? 0;
+            long totalDataFileBytes = obj["totalDataFileBytes"]?.GetValue<long>() ?? 0;
+
+            return new DeltaStagedWriteResult(
+                parsedRunId,
+                stagingPrefix,
+                artifactCount,
+                addedFileCount,
+                totalDataFileBytes);
+        }
+
+        private static SaveMode ParseSaveMode(string value)
+        {
+            return value switch
+            {
+                "append" => SaveMode.Append,
+                "overwrite" => SaveMode.Overwrite,
+                _ => throw new InvalidOperationException($"Distributed write session returned unsupported mode '{value}'."),
+            };
+        }
+
+        private static WriteSchemaMode? ParseWriteSchemaMode(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return null;
+            }
+
+            return value switch
+            {
+                "merge" => WriteSchemaMode.Merge,
+                "overwrite" => WriteSchemaMode.Overwrite,
+                _ => throw new InvalidOperationException($"Distributed write session returned unsupported schema mode '{value}'."),
+            };
+        }
+
+        private static DistributedOverwriteScope ParseDistributedOverwriteScope(string value)
+        {
+            return value switch
+            {
+                "fullTable" => DistributedOverwriteScope.FullTable,
+                "touchedPartitions" => DistributedOverwriteScope.TouchedPartitions,
+                _ => throw new InvalidOperationException($"Distributed write session returned unsupported overwrite scope '{value}'."),
+            };
         }
 
         private Task<ArrowStreamResult> OpenChangeDataCoreStreamAsync(

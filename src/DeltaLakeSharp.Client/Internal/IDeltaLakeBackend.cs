@@ -211,6 +211,62 @@ namespace DeltaLakeSharp.Client.Internal
             CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Begins a distributed write run for a V3 worker/coordinator workflow.
+        /// </summary>
+        /// <param name="path">Path to the target Delta table.</param>
+        /// <param name="options">Distributed write options, including the caller-provided run ID.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>A distributed write session shared by workers and the coordinator.</returns>
+        Task<DeltaDistributedWriteSession> BeginDistributedWriteAsync(
+            string path,
+            DeltaDistributedWriteOptions options,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Stages one worker's Arrow batches as uncommitted data files and Add-action artifacts.
+        /// </summary>
+        /// <param name="session">Distributed write session returned by <see cref="BeginDistributedWriteAsync"/>.</param>
+        /// <param name="schema">Arrow schema for the worker batches.</param>
+        /// <param name="batches">Async stream of Arrow record batches to stage.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>Aggregate staging statistics for the worker contribution.</returns>
+        Task<DeltaStagedWriteResult> StageDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            Schema schema,
+            IAsyncEnumerable<RecordBatch> batches,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Commits staged Add-action artifacts for a distributed write run in one coordinator transaction.
+        /// </summary>
+        /// <param name="session">Distributed write session shared by all workers in the run.</param>
+        /// <param name="options">Optional coordinator commit options.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>An execution result for the coordinator commit.</returns>
+        Task<ExecuteResult> CommitDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            DeltaDistributedCommitOptions? options = null,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
+        /// Aborts a distributed write run by deleting staging artifacts without committing table changes.
+        /// </summary>
+        /// <param name="session">Distributed write session to abort.</param>
+        /// <param name="storageConfig">Optional ABFSS storage credentials.</param>
+        /// <param name="cancellationToken">Cancellation token.</param>
+        /// <returns>An execution result for the abort operation.</returns>
+        Task<ExecuteResult> AbortDistributedWriteAsync(
+            DeltaDistributedWriteSession session,
+            StorageConfig? storageConfig = null,
+            CancellationToken cancellationToken = default);
+
+        /// <summary>
         /// Executes a DELETE DML statement against a Delta table.
         /// The backend auto-registers the table before executing the SQL.
         /// </summary>
