@@ -30,8 +30,8 @@ futures = "0.3"
 async-trait = "0.1"
 
 # Delta Lake + query engine
-deltalake = { version = "0.32.1", features = ["datafusion", "azure"] }
-datafusion = "53"
+deltalake = { version = "0.32.4", features = ["datafusion", "azure"] }
+datafusion = "54"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
