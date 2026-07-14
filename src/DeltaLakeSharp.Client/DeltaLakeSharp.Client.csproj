@@ -42,20 +42,20 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Apache.Arrow" Version="22.1.0" />
-    <PackageReference Include="Apache.Arrow.Flight" Version="22.1.0" />
-    <PackageReference Include="Azure.Identity" Version="1.11.4" />
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.0" />
-    <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.11.0" />
-    <PackageReference Include="Google.Protobuf" Version="3.34.0" />
-    <PackageReference Include="Grpc.Net.Client" Version="2.76.0" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+    <PackageReference Include="Apache.Arrow" Version="23.0.0" />
+    <PackageReference Include="Apache.Arrow.Flight" Version="23.0.0" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
+    <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.27.1" />
+    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.80.0" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.300" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net472' Or '$(TargetFramework)' == 'netstandard2.0'">
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
-    <PackageReference Include="System.Text.Json" Version="8.0.5" />
-    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.0" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.9" />
+    <PackageReference Include="System.Text.Json" Version="10.0.9" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
   </ItemGroup>
 
   <ItemGroup>

@@ -17,11 +17,15 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Testcontainers" Version="4.3.0" />
+    <PackageReference Include="Testcontainers" Version="4.13.0" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(TargetFramework)' == 'net472'">
+    <PackageReference Include="Apache.Arrow" Version="23.0.0" />
+    <PackageReference Include="Apache.Arrow.Flight" Version="23.0.0" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
     <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
-    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.0" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.3" />
   </ItemGroup>
 </Project>
