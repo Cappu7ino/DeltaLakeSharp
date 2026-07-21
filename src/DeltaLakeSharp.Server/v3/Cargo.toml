@@ -17,8 +17,8 @@ path = "src/fixture_cli.rs"
 [dependencies]
 # Arrow / FFI
 # Keep Arrow aligned with DataFusion's Arrow dependency to avoid arrow-schema version splits.
-arrow-flight = "58"
-arrow = { version = "58", features = ["ipc", "ffi"] }
+arrow-flight = "59"
+arrow = { version = "59", features = ["ipc", "ffi"] }
 # URL parsing (required by delta-rs open_table APIs)
 url = "2"
 tonic = "0.14"
@@ -31,7 +31,7 @@ async-trait = "0.1"
 
 # Delta Lake + query engine
 deltalake = { version = "0.32.1", features = ["datafusion", "azure"] }
-datafusion = "53"
+datafusion = "54"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
